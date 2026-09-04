@@ -29,8 +29,8 @@ pub fn init(allocator: std.mem.Allocator, data_dir: []const u8) !*Core {
 }
 
 pub fn deinit(core: *Core) void {
-    core.allocator.destroy(core);
     core.db.deinit();
+    core.allocator.destroy(core);
 }
 
 pub fn increment(core: *Core) i64 {

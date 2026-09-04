@@ -9,11 +9,18 @@ pub export var plugin_is_GPL_compatible: c_int = 1;
 const Emacs = struct {
     const EmacsFunc = *const fn (env: [*c]c.emacs_env, nargs: c.ptrdiff_t, args: [*c]c.emacs_value, data: ?*anyopaque) callconv(.c) c.emacs_value;
 
-    fn message(env: *c.emacs_env, msg: []const u8) void {
+    /// Print a message to the emacs message buffer
+    fn message(env: *c.emacs_env, comptime fmt: []const u8, args: anytype) void {
+        var buf: [1024]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, fmt, args) catch |err| switch (err) {
+            error.NoSpaceLeft => std.fmt.allocPrint(std.heap.c_allocator, fmt, args) catch return,
+        };
+        defer if (msg.ptr != &buf) std.heap.c_allocator.free(msg);
+
         const q_message = env.intern.?(env, "message");
         const q_str = env.make_string.?(env, msg.ptr, @intCast(msg.len));
-        var args = [_]c.emacs_value{ q_str };
-        _ = env.funcall.?(env, q_message, 1, &args);
+        var emacs_args = [_]c.emacs_value{ q_str };
+        _ = env.funcall.?(env, q_message, 1, &emacs_args);
     }
 
     /// Copy an emacs sstring to a buffer
@@ -87,12 +94,12 @@ const Funcs = struct {
 
         var data_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
         const data_dir = Emacs.copyStringBuf(e, args[0], &data_dir_buf) orelse {
-            Emacs.message(e, "ilm: Failed to read data_dir argument");
+            Emacs.message(e, "ilm: Failed to read data_dir argument", .{});
             return null;
         };
 
-        const core = Core.init(std.heap.c_allocator, data_dir) catch {
-            Emacs.message(e, "Failed to init");
+        const core = Core.init(std.heap.c_allocator, data_dir) catch |err| {
+            Emacs.message(e, "ilm: Failed to init: {s}", .{ @errorName(err) });
             return null;
         };
         return e.*.make_user_ptr.?(e, finalizeCore, core);
@@ -117,7 +124,7 @@ const Funcs = struct {
 
 export fn emacs_module_init(rt: [*c]c.emacs_runtime) c_int {
     const env = rt.*.get_environment.?(rt);
-    Emacs.message(env, "wowowowwo");
+    Emacs.message(env, "wowowowwo", .{});
 
     Emacs.registerFunc(env, "ilm--init", 1, 1, Funcs.init, "Initialize ilm core and return state");
     Emacs.registerFunc(env, "ilm--inc", 1, 1, Funcs.inc, "Increment");
