@@ -17,7 +17,7 @@
   "Hack that copies the so file to a unique name and loads that as a module.
 Note that this does not unload the previous loaded objects."
   (let ((tmp (make-temp-file "ilm_el_" nil ".so")))
-    (copy-file "../zig-out/lib/ilm.so" tmp t)
+    (copy-file "../zig-out/lib/ilm-core.so" tmp t)
     (module-load tmp)))
 
 ;;;; Footer

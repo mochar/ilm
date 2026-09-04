@@ -62,7 +62,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const install_emacs = b.addInstallArtifact(emacs_lib, .{
-        .dest_sub_path = "ilm.so", // instead of libilm.so
+        .dest_sub_path = "ilm-core.so", // instead of libilm.so
     });
     b.getInstallStep().dependOn(&install_emacs.step);
 
