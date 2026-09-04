@@ -16,6 +16,19 @@ pub fn build(b: *std.Build) void {
     });
     const run_core_tests = b.addRunArtifact(core_tests);
 
+    // Dep: Sqlite
+    const sqlite = b.dependency("sqlite", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    core_mod.addImport("sqlite", sqlite.module("sqlite"));
+
+    // Dep: Known folders
+    const known_folders = b.dependency("known_folders", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    core_mod.addImport("known-folders", known_folders.module("known-folders"));
 
     // CLI
     const cli_exe = b.addExecutable(.{

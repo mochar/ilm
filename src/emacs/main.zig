@@ -16,6 +16,41 @@ const Emacs = struct {
         _ = env.funcall.?(env, q_message, 1, &args);
     }
 
+    /// Copy an emacs sstring to a buffer
+    fn copyStringBuf(env: *c.emacs_env, emacs_str: c.emacs_value, buf: []u8) ?[:0]const u8 {
+        var len: c.ptrdiff_t = @intCast(buf.len);
+        if (!env.*.copy_string_contents.?(env, emacs_str, buf.ptr, &len)) {
+            return null;
+        }
+        return buf[0..@intCast(len - 1) :0];
+    }
+    
+    /// Copy a emacs string to a zero terminated string
+    fn copyStringAlloc(env: *c.emacs_env, emacs_str: c.emacs_value, allocator: std.mem.Allocator) ![:0]u8 {
+        // The argument BUF can be a ‘NULL’ pointer, in which case the function
+        // store the contents of ARG, and returns ‘true’.  This is how you can
+        // determine the size of BUF needed to store a particular string: first
+        // call ‘copy_string_contents’ with ‘NULL’ as BUF, then allocate enough
+        // memory to hold the number of bytes stored by the function in ‘*LEN’,
+        // and call the function again with non-‘NULL’ BUF to actually perform
+        // the text copying.
+        var len: c.ptrdiff_t = 0;
+        if (!env.*.copy_string_contents.?(env, emacs_str, null, &len)) {
+            return error.EmacsStringCopyFailed;
+        }
+
+        const str_len: usize = @intCast(len - 1);
+        const buf = try allocator.allocSentinel(u8, str_len, 0);
+        errdefer allocator.free(buf);
+
+        // Copy string contents into allocated buffer
+        if (!env.*.copy_string_contents.?(env, emacs_str, buf.ptr, &len)) {
+            return error.EmacsStringCopyFailed;
+        }
+
+        return buf;
+    }
+    
     fn registerFunc(
         env: *c.emacs_env,
         name: [:0]const u8,
@@ -47,10 +82,16 @@ const Funcs = struct {
         data: ?*anyopaque,
     ) callconv(.c) c.emacs_value {
         _ = nargs; // autofix
-        _ = args; // autofix
         _ = data; // autofix
         const e = env orelse return null;
-        const core = Core.init(std.heap.c_allocator) catch {
+
+        var data_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const data_dir = Emacs.copyStringBuf(e, args[0], &data_dir_buf) orelse {
+            Emacs.message(e, "ilm: Failed to read data_dir argument");
+            return null;
+        };
+
+        const core = Core.init(std.heap.c_allocator, data_dir) catch {
             Emacs.message(e, "Failed to init");
             return null;
         };
@@ -78,7 +119,7 @@ export fn emacs_module_init(rt: [*c]c.emacs_runtime) c_int {
     const env = rt.*.get_environment.?(rt);
     Emacs.message(env, "wowowowwo");
 
-    Emacs.registerFunc(env, "ilm--init", 0, 0, Funcs.init, "Initialize ilm core and return state");
+    Emacs.registerFunc(env, "ilm--init", 1, 1, Funcs.init, "Initialize ilm core and return state");
     Emacs.registerFunc(env, "ilm--inc", 1, 1, Funcs.inc, "Increment");
 
     return 0;
