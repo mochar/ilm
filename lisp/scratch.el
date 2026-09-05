@@ -6,5 +6,5 @@
 
 (setq ilm-state (ilm--init "/home/mochar/tmp/ilm/")) 
 
-(ilm--new-uuid ilm-state)
-(ilm--inc ilm-state)
+(ilm--new-id ilm-state)
+(ilm--add-concept ilm-state "keklol")

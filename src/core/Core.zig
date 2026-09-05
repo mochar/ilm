@@ -60,13 +60,35 @@ pub fn deinit(core: *Core) void {
     core.allocator.destroy(core);
 }
 
-pub fn increment(core: *Core) i64 {
-    core.counter += 1;
-    return core.counter;
+pub const IdStr = [36]u8;
+pub const Id = struct {
+    uuid: Uuid,
+
+    pub fn new(io: std.Io) Id {
+        return .{ .uuid = uuid.v7.new(io) };
+    }
+
+    pub fn serialize(self: *Id) IdStr {
+        return uuid.urn.serialize(self.uuid);
+    }
+};
+
+pub fn newId(core: *Core) Id {
+    return Id.new(core.io);
 }
 
-pub fn newUuid(core: *Core) UuidStr {
-    const id = uuid.v7.new(core.io);
-    return uuid.urn.serialize(id);
+const Concept = struct {
+    id: Uuid,
+    name: []const u8,
+};
+
+pub fn addConcept(core: *Core, name: []const u8) !Id {
+    var stmt = try core.db.prepare("INSERT INTO concept(id, name) VALUES (?, ?)");
+    defer stmt.deinit();
+
+    const id = core.newId();
+    const id_blob: sqlite.Blob = .{ .data = std.mem.asBytes(&id.uuid) };
+    try stmt.exec(.{}, .{ .id = id_blob, .name = name });
+    return id;
 }
 

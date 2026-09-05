@@ -117,7 +117,7 @@ const Funcs = struct {
         return e.*.make_user_ptr.?(e, finalizeCore, core);
     }
 
-    pub fn newUuid(
+    pub fn newId(
         env: ?*c.emacs_env,
         nargs: isize,
         args: [*c]c.emacs_value,
@@ -129,12 +129,12 @@ const Funcs = struct {
         const user_ptr = e.*.get_user_ptr.?(e, args[0]) orelse return e.intern.?(e, "nil");
         const core: *Core = @ptrCast(@alignCast(user_ptr));
 
-        const uuid = core.newUuid();
-        const q_uuid = e.make_string.?(e, &uuid, @intCast(uuid.len));
-        return q_uuid;
+        var id = core.newId();
+        const id_str = id.serialize();
+        return e.make_string.?(e, &id_str, @intCast(id_str.len));
     }    
 
-    pub fn inc(
+    pub fn addConcept(
         env: ?*c.emacs_env,
         nargs: isize,
         args: [*c]c.emacs_value,
@@ -146,8 +146,18 @@ const Funcs = struct {
         const user_ptr = e.*.get_user_ptr.?(e, args[0]) orelse return e.intern.?(e, "nil");
         const core: *Core = @ptrCast(@alignCast(user_ptr));
 
-        const new_val = core.increment();
-        return e.*.make_integer.?(e, new_val);
+        var name_buf: [1028]u8 = undefined;
+        const name = Emacs.copyStringBuf(e, args[1], &name_buf) orelse {
+            Emacs.message(e, "ilm: Failed to copy string", .{});
+            return e.intern.?(e, "nil");
+        };
+
+        var id = core.addConcept(name) catch {
+            Emacs.message(e, "ilm: Failed to add concept", .{});
+            return e.intern.?(e, "nil");
+        };
+        const id_str = id.serialize();
+        return e.make_string.?(e, &id_str, @intCast(id_str.len));
     }
 };
 
@@ -156,8 +166,8 @@ export fn emacs_module_init(rt: [*c]c.emacs_runtime) c_int {
     Emacs.message(env, "wowowowwo", .{});
 
     Emacs.registerFunc(env, "ilm--init", 1, 1, Funcs.init, "Initialize ilm core and return state");
-    Emacs.registerFunc(env, "ilm--new-uuid", 1, 1, Funcs.newUuid, "New UUID");
-    Emacs.registerFunc(env, "ilm--inc", 1, 1, Funcs.inc, "Increment");
+    Emacs.registerFunc(env, "ilm--new-id", 1, 1, Funcs.newId, "New UUID");
+    Emacs.registerFunc(env, "ilm--add-concept", 2, 2, Funcs.addConcept, "Add new concept, return id");
 
     return 0;
 }
