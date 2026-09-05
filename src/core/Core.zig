@@ -1,16 +1,27 @@
 const std = @import("std");
 const sqlite = @import("sqlite");
+const uuid = @import("uuid");
+pub const Uuid = uuid.Uuid; // Alias for u128
+pub const UuidStr = uuid.urn.Urn; // Alias for [36]u8
 const Core = @This();
+
+const schema = @embedFile("schema.sql");
 
 counter: i64 = 0,
 allocator: std.mem.Allocator,
+io: std.Io,
 db: sqlite.Db,
 
-pub fn init(allocator: std.mem.Allocator, data_dir: []const u8) !*Core {
-    const db_path = try std.fs.path.joinZ(allocator, &.{ data_dir, "ilm.db" });
+pub const Options = struct {
+    data_dir: []const u8,
+    sqlite_diagnostics: ?*sqlite.Diagnostics = null,
+};
+
+pub fn init(allocator: std.mem.Allocator, io: std.Io, options: Options) !*Core {
+    const db_path = try std.fs.path.joinZ(allocator, &.{ options.data_dir, "ilm.db" });
     defer allocator.free(db_path);
 
-    const db = try sqlite.Db.init(.{
+    var db = try sqlite.Db.init(.{
         .mode = .{ .File = db_path },
         .open_flags = .{
             .write = true,
@@ -18,11 +29,27 @@ pub fn init(allocator: std.mem.Allocator, data_dir: []const u8) !*Core {
         },
         .threading_mode = .MultiThread,
     });
+    errdefer db.deinit();
 
+    // Execute schema script
+    var errmsg: [*c]u8 = null;
+    const rc = sqlite.c.sqlite3_exec(db.db, schema.ptr, null, null, &errmsg);
+    if (rc != sqlite.c.SQLITE_OK) {
+        if (options.sqlite_diagnostics) |diags| {
+            diags.err = db.getDetailedError();
+        }
+        if (errmsg != null) {
+            sqlite.c.sqlite3_free(errmsg);
+        }
+        return sqlite.errorFromResultCode(rc);
+    }
+
+    // Create instance and return
     const core = try allocator.create(Core);
     core.* = .{
         .counter = 0,
         .allocator = allocator,
+        .io = io,
         .db = db,
     };
     return core;
@@ -37,3 +64,9 @@ pub fn increment(core: *Core) i64 {
     core.counter += 1;
     return core.counter;
 }
+
+pub fn newUuid(core: *Core) UuidStr {
+    const id = uuid.v7.new(core.io);
+    return uuid.urn.serialize(id);
+}
+

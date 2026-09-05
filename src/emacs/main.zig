@@ -1,10 +1,14 @@
 const std = @import("std");
+
 const Core = @import("core").Core;
+const sqlite = @import("sqlite");
+
 const c = @cImport({
     @cInclude("emacs-module.h");
 });
 
 pub export var plugin_is_GPL_compatible: c_int = 1;
+var io = std.Io.Threaded.init_single_threaded;
 
 const Emacs = struct {
     const EmacsFunc = *const fn (env: [*c]c.emacs_env, nargs: c.ptrdiff_t, args: [*c]c.emacs_value, data: ?*anyopaque) callconv(.c) c.emacs_value;
@@ -19,11 +23,11 @@ const Emacs = struct {
 
         const q_message = env.intern.?(env, "message");
         const q_str = env.make_string.?(env, msg.ptr, @intCast(msg.len));
-        var emacs_args = [_]c.emacs_value{ q_str };
+        var emacs_args = [_]c.emacs_value{q_str};
         _ = env.funcall.?(env, q_message, 1, &emacs_args);
     }
 
-    /// Copy an emacs sstring to a buffer
+    /// Copy an emacs string to a buffer
     fn copyStringBuf(env: *c.emacs_env, emacs_str: c.emacs_value, buf: []u8) ?[:0]const u8 {
         var len: c.ptrdiff_t = @intCast(buf.len);
         if (!env.*.copy_string_contents.?(env, emacs_str, buf.ptr, &len)) {
@@ -31,7 +35,7 @@ const Emacs = struct {
         }
         return buf[0..@intCast(len - 1) :0];
     }
-    
+
     /// Copy a emacs string to a zero terminated string
     fn copyStringAlloc(env: *c.emacs_env, emacs_str: c.emacs_value, allocator: std.mem.Allocator) ![:0]u8 {
         // The argument BUF can be a ‘NULL’ pointer, in which case the function
@@ -57,7 +61,8 @@ const Emacs = struct {
 
         return buf;
     }
-    
+
+    /// Make a function available from emacs
     fn registerFunc(
         env: *c.emacs_env,
         name: [:0]const u8,
@@ -90,20 +95,44 @@ const Funcs = struct {
     ) callconv(.c) c.emacs_value {
         _ = nargs; // autofix
         _ = data; // autofix
-        const e = env orelse return null;
+        const e = env orelse unreachable;
 
         var data_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
         const data_dir = Emacs.copyStringBuf(e, args[0], &data_dir_buf) orelse {
             Emacs.message(e, "ilm: Failed to read data_dir argument", .{});
-            return null;
+            return e.intern.?(e, "nil");
         };
 
-        const core = Core.init(std.heap.c_allocator, data_dir) catch |err| {
-            Emacs.message(e, "ilm: Failed to init: {s}", .{ @errorName(err) });
-            return null;
+        var diags = sqlite.Diagnostics{};
+        const options: Core.Options = .{ .data_dir = data_dir, .sqlite_diagnostics = &diags };
+        const allocator = std.heap.c_allocator;
+        const core = Core.init(allocator, io.io(), options) catch |err| {
+            if (diags.err) |sqlite_err| {
+                Emacs.message(e, "ilm: Failed to init: {t}: {s}", .{ err, sqlite_err.message });
+            } else {
+                Emacs.message(e, "ilm: Failed to init: {t}", .{err});
+            }
+            return e.intern.?(e, "nil");
         };
         return e.*.make_user_ptr.?(e, finalizeCore, core);
     }
+
+    pub fn newUuid(
+        env: ?*c.emacs_env,
+        nargs: isize,
+        args: [*c]c.emacs_value,
+        data: ?*anyopaque,
+    ) callconv(.c) c.emacs_value {
+        _ = nargs; // autofix
+        _ = data; // autofix
+        const e = env orelse unreachable;
+        const user_ptr = e.*.get_user_ptr.?(e, args[0]) orelse return e.intern.?(e, "nil");
+        const core: *Core = @ptrCast(@alignCast(user_ptr));
+
+        const uuid = core.newUuid();
+        const q_uuid = e.make_string.?(e, &uuid, @intCast(uuid.len));
+        return q_uuid;
+    }    
 
     pub fn inc(
         env: ?*c.emacs_env,
@@ -113,8 +142,8 @@ const Funcs = struct {
     ) callconv(.c) c.emacs_value {
         _ = nargs; // autofix
         _ = data; // autofix
-        const e = env orelse return null;
-        const user_ptr = e.*.get_user_ptr.?(e, args[0]) orelse return null;
+        const e = env orelse unreachable;
+        const user_ptr = e.*.get_user_ptr.?(e, args[0]) orelse return e.intern.?(e, "nil");
         const core: *Core = @ptrCast(@alignCast(user_ptr));
 
         const new_val = core.increment();
@@ -127,6 +156,7 @@ export fn emacs_module_init(rt: [*c]c.emacs_runtime) c_int {
     Emacs.message(env, "wowowowwo", .{});
 
     Emacs.registerFunc(env, "ilm--init", 1, 1, Funcs.init, "Initialize ilm core and return state");
+    Emacs.registerFunc(env, "ilm--new-uuid", 1, 1, Funcs.newUuid, "New UUID");
     Emacs.registerFunc(env, "ilm--inc", 1, 1, Funcs.inc, "Increment");
 
     return 0;

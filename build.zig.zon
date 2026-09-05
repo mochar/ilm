@@ -40,6 +40,10 @@
             .url = "git+https://github.com/ziglibs/known-folders.git#6da0d0c41b78b9ed2d34fa364fcb81b5ebece6c4",
             .hash = "known_folders-0.0.0-Fy-PJiDLAAB98m3uYUzatrTb2mO2fpvwx2zpSroEtfbO",
         },
+        .uuid = .{
+            .url = "https://codeberg.org/r4gus/uuid-zig/archive/0.6.0.tar.gz",
+            .hash = "uuid-0.5.0-oOieIRSbAACFMLvr97X_oGqnr91fdthOrxzHaRI28bhJ",
+        },
     },
     .paths = .{
         "build.zig",

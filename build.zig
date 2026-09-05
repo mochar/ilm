@@ -17,18 +17,25 @@ pub fn build(b: *std.Build) void {
     const run_core_tests = b.addRunArtifact(core_tests);
 
     // Dep: Sqlite
-    const sqlite = b.dependency("sqlite", .{
+    const sqlite_dep = b.dependency("sqlite", .{
         .target = target,
         .optimize = optimize,
     });
-    core_mod.addImport("sqlite", sqlite.module("sqlite"));
+    core_mod.addImport("sqlite", sqlite_dep.module("sqlite"));
 
     // Dep: Known folders
-    const known_folders = b.dependency("known_folders", .{
+    const known_folders_dep = b.dependency("known_folders", .{
         .target = target,
         .optimize = optimize,
     });
-    core_mod.addImport("known-folders", known_folders.module("known-folders"));
+    core_mod.addImport("known-folders", known_folders_dep.module("known-folders"));
+
+    // Dep: UUID
+    const uuid_dep = b.dependency("uuid", .{
+        .target = target,
+        .optimize = optimize,
+    });    
+    core_mod.addImport("uuid", uuid_dep.module("uuid"));
 
     // CLI
     const cli_exe = b.addExecutable(.{
@@ -65,6 +72,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .imports = &.{
             .{ .name = "core", .module = core_mod },
+            .{ .name = "sqlite", .module = sqlite_dep.module("sqlite") },
         },
     });
     emacs_mod.addIncludePath(b.path("src/emacs/"));
