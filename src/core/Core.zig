@@ -2,11 +2,9 @@ const std = @import("std");
 
 const sqlite = @import("sqlite");
 const uuid = @import("uuid");
-pub const Uuid = uuid.Uuid;
-pub const UuidStr = uuid.urn.Urn;
+pub const Uuid = uuid.Uuid; // Alias for u128
+pub const UuidStr = uuid.urn.Urn; // Alias for [36]u8
 
-// Alias for u128
-// Alias for [36]u8
 const Core = @This();
 
 const schema = @embedFile("schema.sql");
@@ -72,8 +70,26 @@ pub const Id = struct {
         return .{ .uuid = uuid.v7.new(io) };
     }
 
-    pub fn serialize(self: *Id) IdStr {
+    pub fn serialize(self: Id) IdStr {
         return uuid.urn.serialize(self.uuid);
+    }
+
+    // Emacs
+    pub fn emacsRepr(self: Id) IdStr {
+        return self.serialize();
+    }
+
+    // Sqlite
+    pub const BaseType = sqlite.Blob;
+
+    pub fn bindField(self: *Id, _: std.mem.Allocator) BaseType {
+        const blob: sqlite.Blob = .{ .data = std.mem.asBytes(&self.uuid) };
+        return blob;
+    }
+
+    pub fn readField(_: std.mem.Allocator, blob: BaseType) !Id {
+        const uuid_int = std.mem.bytesAsValue(u128, blob.data);
+        return .{ .uuid = uuid_int.* };
     }
 };
 
@@ -82,7 +98,7 @@ pub fn newId(core: *Core) Id {
 }
 
 pub const Concept = struct {
-    id: Uuid,
+    id: Id,
     name: []const u8,
 };
 
@@ -99,7 +115,9 @@ pub fn addConcept(core: *Core, name: []const u8, diags: *sqlite.Diagnostics) !Id
 pub fn getAllConcepts(core: *Core, allocator: std.mem.Allocator, diags: *sqlite.Diagnostics) ![]Concept {
     var stmt = try core.db.prepareWithDiags("SELECT id, name FROM concept", .{ .diags = diags });
     defer stmt.deinit();
-    const concepts = try stmt.all(Concept, allocator, .{ .diags = diags, }, .{});
+    const concepts = try stmt.all(Concept, allocator, .{
+        .diags = diags,
+    }, .{});
     return concepts;
 }
 

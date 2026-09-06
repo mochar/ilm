@@ -135,6 +135,7 @@ pub fn convertFrom(comptime T: type, env: *c.emacs_env, val: c.emacs_value, allo
 }
 
 /// Convert value of type T to c.emacs_value.
+/// For structs, if "emacsRepr" function exists, will use that.
 /// Raises compile-time error unsupported types.
 pub fn convertTo(comptime T: type, env: *c.emacs_env, val: T) !c.emacs_value {
     switch (@typeInfo(T)) {
@@ -142,6 +143,12 @@ pub fn convertTo(comptime T: type, env: *c.emacs_env, val: T) !c.emacs_value {
         .int => return env.*.make_integer.?(env, @intCast(val)),
         .bool => return env.*.intern.?(env, if (val) "t" else "nil"),
         .@"struct" => |s| {
+            // First check if it has a "emacsRepr" method
+            if (@hasDecl(T, "emacsRepr")) {
+                const repr = val.emacsRepr();
+                return convertTo(@TypeOf(repr), env, repr);
+            }
+            
             // Convert struct into plist: (:field1 val1 :field2 val2 ...)
             const q_list = env.*.intern.?(env, "list");
             var plist_items: [s.fields.len * 2]c.emacs_value = undefined;

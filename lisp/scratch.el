@@ -8,3 +8,4 @@
 
 (ilm--core-new-id ilm-state)
 (ilm--core-add-concept ilm-state "lol")
+(ilm--core-all-concepts ilm-state)
