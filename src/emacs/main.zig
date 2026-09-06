@@ -1,13 +1,14 @@
 const std = @import("std");
+var io = std.Io.Threaded.init_single_threaded;
+
 const Core = @import("core").Core;
+const sqlite = @import("sqlite");
+
 const emacs = @import("emacs.zig");
 const Context = emacs.Context;
 const c = emacs.c;
-const sqlite = @import("sqlite");
 
 pub export var plugin_is_GPL_compatible: c_int = 1;
-var io = std.Io.Threaded.init_single_threaded;
-
 /// Functions that will be available to emacs
 const Funcs = struct {
     pub fn init(ctx: *Context, data_dir: []const u8) !*Core {
@@ -61,6 +62,35 @@ const Funcs = struct {
         };
         return concepts;
     }
+
+    pub fn getConceptsById(ctx: *Context, core: *Core, str_ids: [][]u8) ![]Core.Concept {
+        var arena = std.heap.ArenaAllocator.init(core.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+
+        // Parse string UUIDs from Emacs into Core.Id structs
+        const ids = try allocator.alloc(Core.Id, str_ids.len);
+        for (str_ids, 0..) |str_id, i| {
+            ids[i] = Core.Id.parse(str_id) catch {
+                ctx.setError("Invalid UUID: {s}", .{str_id});
+                return error.InvalidId;
+            };
+            emacs.message(ctx.env, "Found id: {}", .{ ids[i]});
+        }
+
+        // Query
+        var diags: sqlite.Diagnostics = .{};
+        const concepts = core.getConceptsById(allocator, ids, &diags) catch |err| {
+            if (diags.err) |sqlite_err| {
+                ctx.setError("Sqlite error: {s}", .{ sqlite_err.message });
+            } else {
+                ctx.setError("Failed to get concepts: {t}", .{err});
+            }
+            return err;
+        };
+        emacs.message(ctx.env, "Found {d} ids and {d} concepts", .{ ids.len, concepts.len});
+        return concepts;
+    }
 };
 
 export fn emacs_module_init(rt: [*c]c.emacs_runtime) c_int {
@@ -71,6 +101,7 @@ export fn emacs_module_init(rt: [*c]c.emacs_runtime) c_int {
     emacs.registerFunc(env, "ilm--core-new-id", Funcs.newId, "Generate a new UUID");
     emacs.registerFunc(env, "ilm--core-add-concept", Funcs.addConcept, "Add new concept, return id");
     emacs.registerFunc(env, "ilm--core-all-concepts", Funcs.getAllConcepts, "Get all concepts");
+    emacs.registerFunc(env, "ilm--core-concepts-by-id", Funcs.getConceptsById, "Get concepts by IDs");
 
     return 0;
 }

@@ -9,11 +9,13 @@
 ;; (message (ilm--core-add-concept ilm--core "mammamia"))
 ;; (message (ilm--core-add-concept ilm--core "mammamia"))
 (message "%s" (setq ilm-concepts (ilm--all-concepts)))
+(message "%s" (ilm--core-concepts-by-id ilm--core (mapcar (lambda (c) (map-elt c :id)) ilm-concepts)))
 #+end_src
 
 
-#+begin_src sh :noweb yes :noweb-prefix no 
-emacs -Q --eval '(progn <<initt>>)'
+#+begin_src sh :noweb yes :noweb-prefix no :var bg=(face-attribute 'default :background) fg=(face-attribute 'default :foreground)
+emacs -Q --eval '(progn (set-face-attribute (quote default) nil :height 160 :background "'"$bg"'" :foreground  "'"$fg"'")  <<initt>> (view-echo-area-messages))'
 #+end_src
 
 #+RESULTS:
+

@@ -115,7 +115,7 @@ pub fn registerEmacsFunc(
 }
 
 /// Convert a c.emacs_value to a native type T.
-/// Can allocate, so make sure to deallocate when type is: []u8.
+/// Can allocate, so make sure to deallocate when type is: []T.
 /// Raises compile-time error unsupported types.
 pub fn convertFrom(comptime T: type, env: *c.emacs_env, val: c.emacs_value, allocator: std.mem.Allocator) !T {
     switch (@typeInfo(T)) {
@@ -125,6 +125,26 @@ pub fn convertFrom(comptime T: type, env: *c.emacs_env, val: c.emacs_value, allo
                 return @ptrCast(@alignCast(ptr));
             } else if (pointer.size == .slice and pointer.child == u8) {
                 return copyStringAlloc(env, val, allocator);
+            } else {
+                // Convert Emacs list to Zig slice []T
+                const q_car = env.*.intern.?(env, "car");
+                const q_cdr = env.*.intern.?(env, "cdr");
+
+                // TODO memory managed right here?
+                var list: std.ArrayList(pointer.child) = .empty;
+                errdefer list.deinit(allocator);
+
+                var current = val;
+                while (env.*.is_not_nil.?(env, current)) {
+                    var args = [_]c.emacs_value{current};
+                    const head = env.*.funcall.?(env, q_car, 1, &args);
+                    current = env.*.funcall.?(env, q_cdr, 1, &args);
+
+                    const item = try convertFrom(pointer.child, env, head, allocator);
+                    try list.append(allocator, item);
+                }
+
+                return try list.toOwnedSlice(allocator);
             }
         },
         .int => return @intCast(env.*.extract_integer.?(env, val)),

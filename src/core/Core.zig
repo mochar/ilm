@@ -77,6 +77,11 @@ pub const Id = struct {
         return .{ .uuid = uuid.v7.new(io) };
     }
 
+    /// Parse a 36-character UUID string
+    pub fn parse(s: []const u8) !Id {
+        return .{ .uuid = try uuid.urn.deserialize(s) };
+    }
+
     pub fn serialize(self: Id) IdStr {
         return uuid.urn.serialize(self.uuid);
     }
@@ -89,9 +94,11 @@ pub const Id = struct {
     // Sqlite
     pub const BaseType = sqlite.Blob;
 
-    pub fn bindField(self: *Id, _: std.mem.Allocator) BaseType {
-        const blob: sqlite.Blob = .{ .data = std.mem.asBytes(&self.uuid) };
-        return blob;
+    pub fn bindField(self: Id, allocator: std.mem.Allocator) !BaseType {
+        // Since self is passed by value and sqlite.Blob only holds a reference,
+        // need to allocate on heap
+        const bytes = try allocator.dupe(u8, std.mem.asBytes(&self.uuid));
+        return .{ .data = bytes };
     }
 
     pub fn readField(_: std.mem.Allocator, blob: BaseType) !Id {
@@ -128,26 +135,35 @@ pub fn getAllConcepts(core: *Core, allocator: std.mem.Allocator, diags: *sqlite.
     return concepts;
 }
 
-fn getConceptsById(core: *Core, allocator: std.mem.Allocator, ids: []Uuid) ![]Concept {
-    // Build the query
-    var query_builder = std.array_list.Managed(u8).init(core.allocator);
-    defer query_builder.deinit();
+pub fn getConceptsById(core: *Core, allocator: std.mem.Allocator, ids: []const Id, diags: *sqlite.Diagnostics) ![]Concept {
+    if (ids.len == 0) return &.{};
 
-    try query_builder.appendSlice("SELECT id, name FROM items WHERE id IN (");
+    // Build the query
+    var query_builder: std.ArrayList(u8) = .empty;
+    defer query_builder.deinit(core.allocator);
+
+    try query_builder.appendSlice(core.allocator, "SELECT id, name FROM concept WHERE id IN (");
     for (0..ids.len) |i| {
-        if (i > 0) try query_builder.appendSlice(", ");
-        try query_builder.appendByte('?');
+        if (i > 0) try query_builder.append(core.allocator, ',');
+        try query_builder.append(core.allocator, '?');
     }
-    try query_builder.appendByte(')');
+    try query_builder.append(core.allocator, ')');
     const query: []const u8 = query_builder.items;
 
     // Execute
-    var stmt = try core.db.prepareDynamic(query);
+    var stmt = try core.db.prepareDynamicWithDiags(query, .{ .diags = diags });
     defer stmt.deinit();
 
-    // var arena = std.heap.ArenaAllocator.init(allocator);
-    // defer arena.deinit();
-
-    const concepts = try stmt.all(Concept, allocator, .{}, ids);
+    // TODO This gives an error because of a bug: https://github.com/vrischmann/zig-sqlite/issues/208
+    // For now just copy function inline with the fix (.empty instead of .{})
+    // const concepts = try stmt.all(Concept, allocator, .{ .diags = diags }, ids);
+    
+    var iter = try stmt.iteratorAlloc(Concept, allocator, ids);
+    var rows: std.ArrayList(Concept) = .empty;
+    while (try iter.nextAlloc(allocator, .{ .diags = diags })) |row| {
+        try rows.append(allocator, row);
+    }
+    const concepts = rows.toOwnedSlice(allocator);
+    
     return concepts;
 }

@@ -13,3 +13,5 @@
 
 (ilm--select-concept)
 
+(ilm-concepts-by-ids (mapcar (lambda (c) (map-elt c :id)) (ilm--all-concepts)))
+

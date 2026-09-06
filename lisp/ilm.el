@@ -63,6 +63,10 @@ Note that this does not unload the previous loaded objects."
      (lambda (selected candidates &rest _)
        (consult--lookup-prop 'concept selected candidates)))))
 
+(defun ilm-concepts-by-ids (ids)
+  (ilm-core-ensure)
+  (ilm--core-concepts-by-id ilm--core ids))
+
 ;;;; Footer
 
 (provide 'ilm)
