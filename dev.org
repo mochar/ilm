@@ -6,6 +6,8 @@
 (ilm--reload-module)
 (ilm-core-init "/home/mochar/tmp/ilm/")
 (message (ilm--core-new-id ilm--core))
+;; (message (ilm-add-concept "wowoow" ))
+(message (ilm-add-concept "wowoow" (mapcar (lambda (c) (map-elt c :id)) (ilm--all-concepts))))
 ;; (message (ilm--core-add-concept ilm--core "mammamia"))
 ;; (message (ilm--core-add-concept ilm--core "mammamia"))
 (message "%s" (setq ilm-concepts (ilm--all-concepts)))
@@ -14,7 +16,7 @@
 
 
 #+begin_src sh :noweb yes :noweb-prefix no :var bg=(face-attribute 'default :background) fg=(face-attribute 'default :foreground)
-emacs -Q --eval '(progn (set-face-attribute (quote default) nil :height 160 :background "'"$bg"'" :foreground  "'"$fg"'")  <<initt>> (view-echo-area-messages))'
+emacs -Q --eval '(progn (set-face-attribute (quote default) nil :height 160 :background "'"$bg"'" :foreground  "'"$fg"'") <<initt>> (view-echo-area-messages))'
 #+end_src
 
 #+RESULTS:

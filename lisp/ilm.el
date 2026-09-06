@@ -38,6 +38,12 @@ Note that this does not unload the previous loaded objects."
 
 ;;;; Concepts
 
+;; TODO Concept cache, just store all concepts in a var
+
+(defun ilm-add-concept (name &optional parent-ids)
+  (ilm-core-ensure)
+  (ilm--core-add-concept ilm--core name parent-ids))
+
 (defun ilm--all-concepts ()
   (ilm-core-ensure)
   (ilm--core-all-concepts ilm--core))

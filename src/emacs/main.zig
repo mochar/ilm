@@ -35,9 +35,9 @@ const Funcs = struct {
         return id.serialize();
     }
 
-    pub fn addConcept(ctx: *Context, core: *Core, name: []u8) !Core.IdStr {
+    pub fn addConcept(ctx: *Context, core: *Core, name: []u8, parent_ids: []Core.Id) !Core.IdStr {
         var diags: sqlite.Diagnostics = .{};
-        var id = core.addConcept(name, &diags) catch |err| {
+        var id = core.addConcept(name, parent_ids, &diags) catch |err| {
             if (diags.err) |sqlite_err| {
                 ctx.setError("Sqlite error: {s}", .{ sqlite_err.message });
             } else {
@@ -63,22 +63,11 @@ const Funcs = struct {
         return concepts;
     }
 
-    pub fn getConceptsById(ctx: *Context, core: *Core, str_ids: [][]u8) ![]Core.Concept {
+    pub fn getConceptsById(ctx: *Context, core: *Core, ids: []Core.Id) ![]Core.Concept {
         var arena = std.heap.ArenaAllocator.init(core.allocator);
         defer arena.deinit();
         const allocator = arena.allocator();
 
-        // Parse string UUIDs from Emacs into Core.Id structs
-        const ids = try allocator.alloc(Core.Id, str_ids.len);
-        for (str_ids, 0..) |str_id, i| {
-            ids[i] = Core.Id.parse(str_id) catch {
-                ctx.setError("Invalid UUID: {s}", .{str_id});
-                return error.InvalidId;
-            };
-            emacs.message(ctx.env, "Found id: {}", .{ ids[i]});
-        }
-
-        // Query
         var diags: sqlite.Diagnostics = .{};
         const concepts = core.getConceptsById(allocator, ids, &diags) catch |err| {
             if (diags.err) |sqlite_err| {

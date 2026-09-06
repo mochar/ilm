@@ -147,6 +147,35 @@ pub fn convertFrom(comptime T: type, env: *c.emacs_env, val: c.emacs_value, allo
                 return try list.toOwnedSlice(allocator);
             }
         },
+        .@"struct" => |s| {
+            // Custom deserializer 
+            if (@hasDecl(T, "fromEmacsRepr")) {
+                const fn_info = @typeInfo(@TypeOf(T.fromEmacsRepr)).@"fn";
+                const repr_type = fn_info.params[0].type.?;
+                const repr = try convertFrom(repr_type, env, val, allocator);
+                return try T.fromEmacsRepr(repr);
+            }
+
+            // Convert Elisp plist into Zig struct
+            const q_plist_get = env.*.intern.?(env, "plist-get");
+            var result: T = undefined;
+
+            inline for (s.fields) |field| {
+                const kw_name = ":" ++ field.name;
+                const q_key = env.*.intern.?(env, kw_name.ptr);
+                var get_args = [_]c.emacs_value{ val, q_key };
+                const field_emacs_val = env.*.funcall.?(env, q_plist_get, 2, &get_args);
+
+                @field(result, field.name) = try convertFrom(
+                    field.type,
+                    env,
+                    field_emacs_val,
+                    allocator,
+                );
+            }
+
+            return result;
+        },        
         .int => return @intCast(env.*.extract_integer.?(env, val)),
         .bool => return env.*.is_not_nil.?(env, val),
         else => {},
@@ -163,9 +192,9 @@ pub fn convertTo(comptime T: type, env: *c.emacs_env, val: T) !c.emacs_value {
         .int => return env.*.make_integer.?(env, @intCast(val)),
         .bool => return env.*.intern.?(env, if (val) "t" else "nil"),
         .@"struct" => |s| {
-            // First check if it has a "emacsRepr" method
-            if (@hasDecl(T, "emacsRepr")) {
-                const repr = val.emacsRepr();
+            // First check if it has a "toEmacsRepr" method
+            if (@hasDecl(T, "toEmacsRepr")) {
+                const repr = val.toEmacsRepr();
                 return convertTo(@TypeOf(repr), env, repr);
             }
             

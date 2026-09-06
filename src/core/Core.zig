@@ -87,16 +87,27 @@ pub const Id = struct {
     }
 
     // Emacs
-    pub fn emacsRepr(self: Id) IdStr {
+    pub fn toEmacsRepr(self: Id) IdStr {
         return self.serialize();
+    }
+    
+    pub fn fromEmacsRepr(id_str: []const u8) !Id {
+        return Id.parse(id_str);
     }
 
     // Sqlite
     pub const BaseType = sqlite.Blob;
 
+    pub fn asBlob(self: *const Id) sqlite.Blob {
+        // Must take in a pointer, otherwise &self.uuid points to this functions
+        // stack frame
+        return sqlite.Blob{ .data = std.mem.asBytes(&self.uuid) };
+    }
+
     pub fn bindField(self: Id, allocator: std.mem.Allocator) !BaseType {
         // Since self is passed by value and sqlite.Blob only holds a reference,
-        // need to allocate on heap
+        // need to allocate on heap. For this reason, prefer to do it manually:
+        //   try stmt.exec(.{ .diags = diags }, .{ .id = id.asBlob(), .name = name });
         const bytes = try allocator.dupe(u8, std.mem.asBytes(&self.uuid));
         return .{ .data = bytes };
     }
@@ -116,13 +127,29 @@ pub const Concept = struct {
     name: []const u8,
 };
 
-pub fn addConcept(core: *Core, name: []const u8, diags: *sqlite.Diagnostics) !Id {
-    var stmt = try core.db.prepareWithDiags("INSERT INTO concept(id, name) VALUES (?, ?)", .{ .diags = diags });
-    defer stmt.deinit();
-
+pub fn addConcept(core: *Core, name: []const u8, parent_ids: []const Id, diags: *sqlite.Diagnostics) !Id {
+    var savepoint = try core.db.savepoint("addconcept");
+    defer savepoint.rollback();
     const id = core.newId();
-    const id_blob: sqlite.Blob = .{ .data = std.mem.asBytes(&id.uuid) };
-    try stmt.exec(.{ .diags = diags }, .{ .id = id_blob, .name = name });
+    const id_blob = id.asBlob();
+
+    {
+        var stmt = try core.db.prepareWithDiags("INSERT INTO concept(id, name) VALUES (?, ?)", .{ .diags = diags });
+        defer stmt.deinit();
+        try stmt.exec(.{ .diags = diags }, .{ .id = id_blob, .name = name });
+    }
+
+    {
+        var stmt = try core.db.prepareWithDiags("INSERT INTO concept_rel(parent_id, child_id) VALUES (?, ?)", .{ .diags = diags });
+        defer stmt.deinit();
+        for (parent_ids) |*parent_id| {
+            stmt.reset();
+            try stmt.exec(.{ .diags = diags }, .{ .parent_id = parent_id.asBlob(), .child_id = id_blob });
+        }
+    }
+
+    savepoint.commit();
+
     return id;
 }
 
@@ -157,13 +184,13 @@ pub fn getConceptsById(core: *Core, allocator: std.mem.Allocator, ids: []const I
     // TODO This gives an error because of a bug: https://github.com/vrischmann/zig-sqlite/issues/208
     // For now just copy function inline with the fix (.empty instead of .{})
     // const concepts = try stmt.all(Concept, allocator, .{ .diags = diags }, ids);
-    
+
     var iter = try stmt.iteratorAlloc(Concept, allocator, ids);
     var rows: std.ArrayList(Concept) = .empty;
     while (try iter.nextAlloc(allocator, .{ .diags = diags })) |row| {
         try rows.append(allocator, row);
     }
     const concepts = rows.toOwnedSlice(allocator);
-    
+
     return concepts;
 }
