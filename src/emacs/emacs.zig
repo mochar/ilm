@@ -141,6 +141,23 @@ pub fn convertTo(comptime T: type, env: *c.emacs_env, val: T) !c.emacs_value {
         .void => return env.*.intern.?(env, "nil"),
         .int => return env.*.make_integer.?(env, @intCast(val)),
         .bool => return env.*.intern.?(env, if (val) "t" else "nil"),
+        .@"struct" => |s| {
+            // Convert struct into plist: (:field1 val1 :field2 val2 ...)
+            const q_list = env.*.intern.?(env, "list");
+            var plist_items: [s.fields.len * 2]c.emacs_value = undefined;
+
+            inline for (s.fields, 0..) |field, idx| {
+                const kw_name = ":" ++ field.name;
+                plist_items[idx * 2] = env.*.intern.?(env, kw_name.ptr);
+                plist_items[idx * 2 + 1] = try convertTo(
+                    field.type,
+                    env,
+                    @field(val, field.name)
+                );
+            }
+
+            return env.*.funcall.?(env, q_list, @intCast(plist_items.len), &plist_items);
+        },
         .pointer => |pointer| {
             if (pointer.size == .one) {
                 // Automatically create user_ptr with type-specific finalizer
@@ -153,8 +170,25 @@ pub fn convertTo(comptime T: type, env: *c.emacs_env, val: T) !c.emacs_value {
                     }
                 }.f;
                 return env.*.make_user_ptr.?(env, finalizer, val);
-            } else if (pointer.size == .slice and pointer.child == u8) {
-                return env.*.make_string.?(env, val.ptr, @intCast(val.len));
+            } else if (pointer.size == .slice) {
+                if (pointer.child == u8) {
+                    return env.*.make_string.?(env, val.ptr, @intCast(val.len));
+                } else {
+                    // Convert []T into Emacs list: (elem1 elem2 ...)
+                    const q_cons = env.*.intern.?(env, "cons");
+                    var list = env.*.intern.?(env, "nil");
+
+                    // Build list backwards with cons.
+                    // This prevents needing to allocate using an ArrayList
+                    var i: usize = val.len;
+                    while (i > 0) {
+                        i -= 1;
+                        const elem = try convertTo(pointer.child, env, val[i]);
+                        var cons_args = [_]c.emacs_value{ elem, list };
+                        list = env.*.funcall.?(env, q_cons, 2, &cons_args);
+                    }
+                    return list;
+                }
             }
         },
         .array => |array| {

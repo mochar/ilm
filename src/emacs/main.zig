@@ -42,6 +42,21 @@ const Funcs = struct {
         };
         return id.serialize();
     }
+
+    pub fn getAllConcepts(ctx: *Context, core: *Core) ![]Core.Concept {
+        var arena = std.heap.ArenaAllocator.init(core.allocator);
+        defer arena.deinit();
+        var diags: sqlite.Diagnostics = .{};
+        const concepts = core.getAllConcepts(arena.allocator(), &diags) catch |err| {
+            if (diags.err) |sqlite_err| {
+                ctx.setError("Sqlite error: {s}", .{ sqlite_err.message });
+            } else {
+                ctx.setError("Failed to get concepts: {t}", .{err});
+            }
+            return err;
+        };
+        return concepts;
+    }
 };
 
 export fn emacs_module_init(rt: [*c]c.emacs_runtime) c_int {
@@ -50,6 +65,7 @@ export fn emacs_module_init(rt: [*c]c.emacs_runtime) c_int {
     emacs.registerFunc(env, "ilm--core-init", Funcs.init, "Initialize ilm core and return state");
     emacs.registerFunc(env, "ilm--core-new-id", Funcs.newId, "Generate a new UUID");
     emacs.registerFunc(env, "ilm--core-add-concept", Funcs.addConcept, "Add new concept, return id");
+    emacs.registerFunc(env, "ilm--core-all-concepts", Funcs.getAllConcepts, "Get all concepts");
 
     return 0;
 }

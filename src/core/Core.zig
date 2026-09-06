@@ -81,13 +81,13 @@ pub fn newId(core: *Core) Id {
     return Id.new(core.io);
 }
 
-const Concept = struct {
+pub const Concept = struct {
     id: Uuid,
     name: []const u8,
 };
 
 pub fn addConcept(core: *Core, name: []const u8, diags: *sqlite.Diagnostics) !Id {
-    var stmt = try core.db.prepare("INSERT INTO concept(id, name) VALUES (?, ?)");
+    var stmt = try core.db.prepareWithDiags("INSERT INTO concept(id, name) VALUES (?, ?)", .{ .diags = diags });
     defer stmt.deinit();
 
     const id = core.newId();
@@ -96,11 +96,18 @@ pub fn addConcept(core: *Core, name: []const u8, diags: *sqlite.Diagnostics) !Id
     return id;
 }
 
+pub fn getAllConcepts(core: *Core, allocator: std.mem.Allocator, diags: *sqlite.Diagnostics) ![]Concept {
+    var stmt = try core.db.prepareWithDiags("SELECT id, name FROM concept", .{ .diags = diags });
+    defer stmt.deinit();
+    const concepts = try stmt.all(Concept, allocator, .{ .diags = diags, }, .{});
+    return concepts;
+}
+
 fn getConceptsById(core: *Core, allocator: std.mem.Allocator, ids: []Uuid) ![]Concept {
     // Build the query
     var query_builder = std.array_list.Managed(u8).init(core.allocator);
     defer query_builder.deinit();
-    
+
     try query_builder.appendSlice("SELECT id, name FROM items WHERE id IN (");
     for (0..ids.len) |i| {
         if (i > 0) try query_builder.appendSlice(", ");
@@ -108,11 +115,11 @@ fn getConceptsById(core: *Core, allocator: std.mem.Allocator, ids: []Uuid) ![]Co
     }
     try query_builder.appendByte(')');
     const query: []const u8 = query_builder.items;
-    
+
     // Execute
     var stmt = try core.db.prepareDynamic(query);
     defer stmt.deinit();
-    
+
     // var arena = std.heap.ArenaAllocator.init(allocator);
     // defer arena.deinit();
 

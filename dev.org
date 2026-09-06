@@ -6,8 +6,9 @@
 (ilm--reload-module)
 (setq ilm-state (ilm--core-init "/home/mochar/tmp/ilm/"))
 (message (ilm--core-new-id ilm-state))
-(message (ilm--core-add-concept ilm-state "mammamia"))
-(message (ilm--core-add-concept ilm-state "mammamia"))
+;; (message (ilm--core-add-concept ilm-state "mammamia"))
+;; (message (ilm--core-add-concept ilm-state "mammamia"))
+(message "%s" (setq ilm-concepts (ilm--core-all-concepts ilm-state)))
 #+end_src
 
 
