@@ -4,8 +4,12 @@
 
 (ilm--reload-module)
 
-(setq ilm-state (ilm--core-init "/home/mochar/tmp/ilm/")) 
+(ilm-core-init "/home/mochar/tmp/ilm/")
 
-(ilm--core-new-id ilm-state)
-(ilm--core-add-concept ilm-state "lol")
-(ilm--core-all-concepts ilm-state)
+(ilm--core-new-id ilm--core)
+(ilm--core-add-concept ilm--core "lol")
+
+(ilm--all-concepts)
+
+(ilm--select-concept)
+

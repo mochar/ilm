@@ -9,7 +9,6 @@ const Core = @This();
 
 const schema = @embedFile("schema.sql");
 
-counter: i64 = 0,
 allocator: std.mem.Allocator,
 io: std.Io,
 db: sqlite.Db,
@@ -49,7 +48,6 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, options: Options) !*Core {
     // Create instance and return
     const core = try allocator.create(Core);
     core.* = .{
-        .counter = 0,
         .allocator = allocator,
         .io = io,
         .db = db,
@@ -60,6 +58,15 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, options: Options) !*Core {
 pub fn deinit(core: *Core) void {
     core.db.deinit();
     core.allocator.destroy(core);
+}
+
+/// Returns true if still functional
+pub fn isValid(core: *Core) bool {
+    // https://stackoverflow.com/a/21146372
+    _ = core.db.pragma([128:0]u8, .{}, "schema_version", null) catch {
+        return false;
+    };
+    return true;
 }
 
 pub const IdStr = [36]u8;

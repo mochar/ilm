@@ -25,6 +25,10 @@ const Funcs = struct {
         return core;
     }
 
+    pub fn isValid(_: *Context, core: *Core) bool {
+        return core.isValid();
+    }
+
     pub fn newId(_: *Context, core: *Core) Core.IdStr {
         var id = core.newId();
         return id.serialize();
@@ -63,6 +67,7 @@ export fn emacs_module_init(rt: [*c]c.emacs_runtime) c_int {
     const env = rt.*.get_environment.?(rt);
 
     emacs.registerFunc(env, "ilm--core-init", Funcs.init, "Initialize ilm core and return state");
+    emacs.registerFunc(env, "ilm--core-is-valid", Funcs.isValid, "Return t if core in valid state");
     emacs.registerFunc(env, "ilm--core-new-id", Funcs.newId, "Generate a new UUID");
     emacs.registerFunc(env, "ilm--core-add-concept", Funcs.addConcept, "Add new concept, return id");
     emacs.registerFunc(env, "ilm--core-all-concepts", Funcs.getAllConcepts, "Get all concepts");
