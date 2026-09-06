@@ -1,8 +1,12 @@
 const std = @import("std");
+
 const sqlite = @import("sqlite");
 const uuid = @import("uuid");
-pub const Uuid = uuid.Uuid; // Alias for u128
-pub const UuidStr = uuid.urn.Urn; // Alias for [36]u8
+pub const Uuid = uuid.Uuid;
+pub const UuidStr = uuid.urn.Urn;
+
+// Alias for u128
+// Alias for [36]u8
 const Core = @This();
 
 const schema = @embedFile("schema.sql");
@@ -82,13 +86,36 @@ const Concept = struct {
     name: []const u8,
 };
 
-pub fn addConcept(core: *Core, name: []const u8) !Id {
+pub fn addConcept(core: *Core, name: []const u8, diags: *sqlite.Diagnostics) !Id {
     var stmt = try core.db.prepare("INSERT INTO concept(id, name) VALUES (?, ?)");
     defer stmt.deinit();
 
     const id = core.newId();
     const id_blob: sqlite.Blob = .{ .data = std.mem.asBytes(&id.uuid) };
-    try stmt.exec(.{}, .{ .id = id_blob, .name = name });
+    try stmt.exec(.{ .diags = diags }, .{ .id = id_blob, .name = name });
     return id;
 }
 
+fn getConceptsById(core: *Core, allocator: std.mem.Allocator, ids: []Uuid) ![]Concept {
+    // Build the query
+    var query_builder = std.array_list.Managed(u8).init(core.allocator);
+    defer query_builder.deinit();
+    
+    try query_builder.appendSlice("SELECT id, name FROM items WHERE id IN (");
+    for (0..ids.len) |i| {
+        if (i > 0) try query_builder.appendSlice(", ");
+        try query_builder.appendByte('?');
+    }
+    try query_builder.appendByte(')');
+    const query: []const u8 = query_builder.items;
+    
+    // Execute
+    var stmt = try core.db.prepareDynamic(query);
+    defer stmt.deinit();
+    
+    // var arena = std.heap.ArenaAllocator.init(allocator);
+    // defer arena.deinit();
+
+    const concepts = try stmt.all(Concept, allocator, .{}, ids);
+    return concepts;
+}

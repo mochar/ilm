@@ -3,7 +3,7 @@
 ---
 CREATE TABLE IF NOT EXISTS concept (
     id   BLOB PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE
+    name TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS concept_rel (

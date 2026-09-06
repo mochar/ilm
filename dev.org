@@ -1,0 +1,18 @@
+
+#+name: initt
+#+begin_src emacs-lisp :eval no
+(setq default-directory (expand-file-name "lisp"))
+(load-file "./ilm.el")
+(ilm--reload-module)
+(setq ilm-state (ilm--core-init "/home/mochar/tmp/ilm/"))
+(message (ilm--core-new-id ilm-state))
+(message (ilm--core-add-concept ilm-state "mammamia"))
+(message (ilm--core-add-concept ilm-state "mammamia"))
+#+end_src
+
+
+#+begin_src sh :noweb yes :noweb-prefix no
+emacs -Q --eval '(progn <<initt>>)'
+#+end_src
+
+#+RESULTS:
