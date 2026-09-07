@@ -101,8 +101,25 @@ const Funcs = struct {
             }
             return err;
         };
-        emacs.message(ctx.env, "Found {d} ids and {d} concepts", .{ ids.len, concepts.len});
+        emacs.message(ctx.env, "Found {d} ids and {d} concepts", .{ ids.len, concepts.len });
         return concepts;
+    }
+
+    pub fn getAncestors(ctx: *Context, core: *Core, ids: []Core.Id, direct_only: bool) ![]Core.ConceptAncestor {
+        var arena = std.heap.ArenaAllocator.init(core.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+
+        var diags: sqlite.Diagnostics = .{};
+        const ancestors = core.getAncestors(allocator, ids, direct_only, &diags) catch |err| {
+            if (diags.err) |sqlite_err| {
+                ctx.setError("Sqlite error: {s}", .{ sqlite_err.message });
+            } else {
+                ctx.setError("Failed to get ancestors: {t}", .{err});
+            }
+            return err;
+        };
+        return ancestors;
     }
 };
 
@@ -117,6 +134,7 @@ export fn emacs_module_init(rt: [*c]c.emacs_runtime) c_int {
     emacs.registerFunc(env, "ilm--core-remove-concept-parent", Funcs.removeConceptParent, "Unassign a parent from a concept");
     emacs.registerFunc(env, "ilm--core-all-concepts", Funcs.getAllConcepts, "Get all concepts");
     emacs.registerFunc(env, "ilm--core-concepts-by-id", Funcs.getConceptsById, "Get concepts by IDs");
+    emacs.registerFunc(env, "ilm--core-ancestors", Funcs.getAncestors, "Get ancestory of concepts");
 
     return 0;
 }

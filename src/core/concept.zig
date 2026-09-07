@@ -161,3 +161,79 @@ test "concept: transitive reduction prunes shortcut edge after insertion" {
     });
     try std.testing.expectEqual(@as(?usize, 1), count_bc);
 }
+
+test "concept: getAncestors hierarchy and direct parents" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const core = try createTestCore(&tmp);
+    defer core.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var diags: sqlite.Diagnostics = .{};
+    // Hierarchy: A -> B -> C -> D
+    // and        E -> C
+    const a = try core.addConcept("A", &.{}, &diags);
+    const b = try core.addConcept("B", &.{a}, &diags);
+    const e = try core.addConcept("E", &.{}, &diags);
+    const c = try core.addConcept("C", &.{ b, e }, &diags);
+    const d = try core.addConcept("D", &.{c}, &diags);
+
+    // 1. Direct parents of D: only C
+    {
+        const direct_d = try core.getAncestors(alloc, &.{d}, true, &diags);
+        try std.testing.expectEqual(@as(usize, 1), direct_d.len);
+        try std.testing.expectEqual(c.uuid, direct_d[0].id.uuid);
+        try std.testing.expectEqualStrings("C", direct_d[0].name);
+        try std.testing.expectEqual(d.uuid, direct_d[0].child_id.uuid);
+        try std.testing.expectEqual(@as(usize, 1), direct_d[0].depth);
+        try std.testing.expect(direct_d[0].is_direct);
+    }
+
+    // 2. Full hierarchy of D: C (direct, depth 1), B & E (depth 2), A (depth 3)
+    {
+        const all_d = try core.getAncestors(alloc, &.{d}, false, &diags);
+        try std.testing.expectEqual(@as(usize, 4), all_d.len);
+
+        // Find C (direct parent)
+        var found_c: ?Core.ConceptAncestor = null;
+        var found_b: ?Core.ConceptAncestor = null;
+        var found_e: ?Core.ConceptAncestor = null;
+        var found_a: ?Core.ConceptAncestor = null;
+
+        for (all_d) |anc| {
+            if (anc.id.uuid == c.uuid) found_c = anc;
+            if (anc.id.uuid == b.uuid) found_b = anc;
+            if (anc.id.uuid == e.uuid) found_e = anc;
+            if (anc.id.uuid == a.uuid) found_a = anc;
+        }
+
+        try std.testing.expect(found_c != null);
+        try std.testing.expect(found_c.?.is_direct);
+        try std.testing.expectEqual(@as(usize, 1), found_c.?.depth);
+
+        try std.testing.expect(found_b != null);
+        try std.testing.expect(!found_b.?.is_direct);
+        try std.testing.expectEqual(@as(usize, 2), found_b.?.depth);
+
+        try std.testing.expect(found_e != null);
+        try std.testing.expect(!found_e.?.is_direct);
+        try std.testing.expectEqual(@as(usize, 2), found_e.?.depth);
+
+        try std.testing.expect(found_a != null);
+        try std.testing.expect(!found_a.?.is_direct);
+        try std.testing.expectEqual(@as(usize, 3), found_a.?.depth);
+    }
+
+    // 3. Multi-concept query: ancestors of C and D simultaneously
+    {
+        const multi = try core.getAncestors(alloc, &.{ c, d }, true, &diags);
+        // Direct parents of C are B and E (2 parents)
+        // Direct parent of D is C (1 parent)
+        // Total = 3
+        try std.testing.expectEqual(@as(usize, 3), multi.len);
+    }
+}

@@ -131,6 +131,14 @@ pub const Concept = struct {
     name: []const u8,
 };
 
+pub const ConceptAncestor = struct {
+    id: Id,
+    name: []const u8,
+    child_id: Id,
+    depth: usize,
+    is_direct: bool,
+};
+
 pub fn addConcept(core: *Core, name: []const u8, parent_ids: []const Id, diags: *sqlite.Diagnostics) !Id {
     var savepoint = try core.db.savepoint("addconcept");
     defer savepoint.rollback();
@@ -221,4 +229,68 @@ pub fn getConceptsById(core: *Core, allocator: std.mem.Allocator, ids: []const I
     const concepts = rows.toOwnedSlice(allocator);
 
     return concepts;
+}
+
+pub fn getAncestors(
+    core: *Core,
+    allocator: std.mem.Allocator,
+    ids: []const Id,
+    direct_only: bool,
+    diags: *sqlite.Diagnostics,
+) ![]ConceptAncestor {
+    if (ids.len == 0) return &.{};
+
+    var query_builder: std.ArrayList(u8) = .empty;
+    defer query_builder.deinit(core.allocator);
+
+    if (direct_only) {
+        try query_builder.appendSlice(core.allocator,
+            \\SELECT c.id, c.name, cr.child_id, 1 AS depth, 1 AS is_direct
+            \\FROM concept_rel cr
+            \\JOIN concept c ON cr.parent_id = c.id
+            \\WHERE cr.child_id IN (
+        );
+        for (0..ids.len) |i| {
+            if (i > 0) try query_builder.append(core.allocator, ',');
+            try query_builder.append(core.allocator, '?');
+        }
+        try query_builder.appendSlice(core.allocator, ") ORDER BY cr.child_id, c.name");
+    } else {
+        try query_builder.appendSlice(core.allocator,
+            \\WITH RECURSIVE ancestors(id, child_id, depth) AS (
+            \\    SELECT cr.parent_id, cr.child_id, 1
+            \\    FROM concept_rel cr
+            \\    WHERE cr.child_id IN (
+        );
+        for (0..ids.len) |i| {
+            if (i > 0) try query_builder.append(core.allocator, ',');
+            try query_builder.append(core.allocator, '?');
+        }
+        try query_builder.appendSlice(core.allocator,
+            \\    )
+            \\    UNION ALL
+            \\    SELECT cr.parent_id, a.child_id, a.depth + 1
+            \\    FROM concept_rel cr
+            \\    JOIN ancestors a ON cr.child_id = a.id
+            \\)
+            \\SELECT c.id, c.name, a.child_id, MIN(a.depth) AS depth, (MIN(a.depth) = 1) AS is_direct
+            \\FROM ancestors a
+            \\JOIN concept c ON a.id = c.id
+            \\GROUP BY c.id, a.child_id
+            \\ORDER BY a.child_id, depth, c.name
+        );
+    }
+
+    const query: []const u8 = query_builder.items;
+    var stmt = try core.db.prepareDynamicWithDiags(query, .{ .diags = diags });
+    defer stmt.deinit();
+
+    var iter = try stmt.iteratorAlloc(ConceptAncestor, allocator, ids);
+    var rows: std.ArrayList(ConceptAncestor) = .empty;
+    while (try iter.nextAlloc(allocator, .{ .diags = diags })) |row| {
+        try rows.append(allocator, row);
+    }
+    const result = rows.toOwnedSlice(allocator);
+
+    return result;
 }

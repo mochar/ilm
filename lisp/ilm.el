@@ -73,6 +73,18 @@ Note that this does not unload the previous loaded objects."
   (ilm-core-ensure)
   (ilm--core-concepts-by-id ilm--core ids))
 
+(defun ilm-concept-ancestors (ids &optional direct-only)
+  "Return the ancestors of concept IDS.
+If DIRECT-ONLY is non-nil, only return direct parents.
+Otherwise return the full hierarchy with :is_direct and :depth properties."
+  (ilm-core-ensure)
+  (let ((ids-list (ensure-list ids)))
+    (ilm--core-ancestors ilm--core ids-list (if direct-only t nil))))
+
+(defun ilm-concept-parents (ids)
+  "Return only direct parents of concept IDS."
+  (ilm-concept-ancestors ids t))
+
 ;;;; Footer
 
 (provide 'ilm)

@@ -10,8 +10,10 @@
   (ilm-core-init data-dir))
 (let* ((a (ilm-add-concept "A"))
        (b (ilm-add-concept "B" (list a)))
-       (c (ilm-add-concept "C" (list a b)))))
-(message "%s" (setq ilm-concepts (ilm--all-concepts)))
+       (c (ilm-add-concept "C" (list a b))))
+  (message "A: %s" (ilm-concept-ancestors a))
+  (message "B: %s" (ilm-concept-ancestors b))
+  (message "C: %s" (ilm-concept-ancestors c)))
 #+end_src
 
 
