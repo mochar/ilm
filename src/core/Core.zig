@@ -69,6 +69,8 @@ pub fn isValid(core: *Core) bool {
     return true;
 }
 
+// ** Id
+
 pub const IdStr = [36]u8;
 pub const Id = struct {
     uuid: Uuid,
@@ -122,6 +124,8 @@ pub fn newId(core: *Core) Id {
     return Id.new(core.io);
 }
 
+// ** Concept
+
 pub const Concept = struct {
     id: Id,
     name: []const u8,
@@ -135,13 +139,19 @@ pub fn addConcept(core: *Core, name: []const u8, parent_ids: []const Id, diags: 
 
     {
         var stmt = try core.db.prepareWithDiags("INSERT INTO concept(id, name) VALUES (?, ?)", .{ .diags = diags });
-        defer stmt.deinit();
+        defer {
+            _ = sqlite.c.sqlite3_reset(stmt.dynamic_stmt.stmt);
+            stmt.deinit();
+        }
         try stmt.exec(.{ .diags = diags }, .{ .id = id_blob, .name = name });
     }
 
     {
         var stmt = try core.db.prepareWithDiags("INSERT INTO concept_rel(parent_id, child_id) VALUES (?, ?)", .{ .diags = diags });
-        defer stmt.deinit();
+        defer {
+            _ = sqlite.c.sqlite3_reset(stmt.dynamic_stmt.stmt);
+            stmt.deinit();
+        }
         for (parent_ids) |*parent_id| {
             stmt.reset();
             try stmt.exec(.{ .diags = diags }, .{ .parent_id = parent_id.asBlob(), .child_id = id_blob });
@@ -151,6 +161,24 @@ pub fn addConcept(core: *Core, name: []const u8, parent_ids: []const Id, diags: 
     savepoint.commit();
 
     return id;
+}
+
+pub fn addConceptParent(core: *Core, child_id: Id, parent_id: Id, diags: *sqlite.Diagnostics) !void {
+    var stmt = try core.db.prepareWithDiags("INSERT OR IGNORE INTO concept_rel(parent_id, child_id) VALUES (?, ?)", .{ .diags = diags });
+    defer {
+        _ = sqlite.c.sqlite3_reset(stmt.dynamic_stmt.stmt);
+        stmt.deinit();
+    }
+    try stmt.exec(.{ .diags = diags }, .{ .parent_id = parent_id.asBlob(), .child_id = child_id.asBlob() });
+}
+
+pub fn removeConceptParent(core: *Core, child_id: Id, parent_id: Id, diags: *sqlite.Diagnostics) !void {
+    var stmt = try core.db.prepareWithDiags("DELETE FROM concept_rel WHERE parent_id = ? AND child_id = ?", .{ .diags = diags });
+    defer {
+        _ = sqlite.c.sqlite3_reset(stmt.dynamic_stmt.stmt);
+        stmt.deinit();
+    }
+    try stmt.exec(.{ .diags = diags }, .{ .parent_id = parent_id.asBlob(), .child_id = child_id.asBlob() });
 }
 
 pub fn getAllConcepts(core: *Core, allocator: std.mem.Allocator, diags: *sqlite.Diagnostics) ![]Concept {

@@ -4,14 +4,14 @@
 (setq default-directory (expand-file-name "lisp"))
 (load-file "./ilm.el")
 (ilm--reload-module)
-(ilm-core-init "/home/mochar/tmp/ilm/")
-(message (ilm--core-new-id ilm--core))
-;; (message (ilm-add-concept "wowoow" ))
-(message (ilm-add-concept "wowoow" (mapcar (lambda (c) (map-elt c :id)) (ilm--all-concepts))))
-;; (message (ilm--core-add-concept ilm--core "mammamia"))
-;; (message (ilm--core-add-concept ilm--core "mammamia"))
+(let ((data-dir "/home/mochar/tmp/ilm/"))
+  (delete-directory data-dir t)
+  (make-directory data-dir)
+  (ilm-core-init data-dir))
+(let* ((a (ilm-add-concept "A"))
+       (b (ilm-add-concept "B" (list a)))
+       (c (ilm-add-concept "C" (list a b)))))
 (message "%s" (setq ilm-concepts (ilm--all-concepts)))
-(message "%s" (ilm--core-concepts-by-id ilm--core (mapcar (lambda (c) (map-elt c :id)) ilm-concepts)))
 #+end_src
 
 

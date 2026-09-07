@@ -48,6 +48,30 @@ const Funcs = struct {
         return id.serialize();
     }
 
+    pub fn addConceptParent(ctx: *Context, core: *Core, child_id: Core.Id, parent_id: Core.Id) !void {
+        var diags: sqlite.Diagnostics = .{};
+        core.addConceptParent(child_id, parent_id, &diags) catch |err| {
+            if (diags.err) |sqlite_err| {
+                ctx.setError("Sqlite error: {s}", .{ sqlite_err.message });
+            } else {
+                ctx.setError("Failed to add concept parent: {t}", .{err});
+            }
+            return err;
+        };
+    }
+
+    pub fn removeConceptParent(ctx: *Context, core: *Core, child_id: Core.Id, parent_id: Core.Id) !void {
+        var diags: sqlite.Diagnostics = .{};
+        core.removeConceptParent(child_id, parent_id, &diags) catch |err| {
+            if (diags.err) |sqlite_err| {
+                ctx.setError("Sqlite error: {s}", .{ sqlite_err.message });
+            } else {
+                ctx.setError("Failed to remove concept parent: {t}", .{err});
+            }
+            return err;
+        };
+    }
+
     pub fn getAllConcepts(ctx: *Context, core: *Core) ![]Core.Concept {
         var arena = std.heap.ArenaAllocator.init(core.allocator);
         defer arena.deinit();
@@ -89,6 +113,8 @@ export fn emacs_module_init(rt: [*c]c.emacs_runtime) c_int {
     emacs.registerFunc(env, "ilm--core-is-valid", Funcs.isValid, "Return t if core in valid state");
     emacs.registerFunc(env, "ilm--core-new-id", Funcs.newId, "Generate a new UUID");
     emacs.registerFunc(env, "ilm--core-add-concept", Funcs.addConcept, "Add new concept, return id");
+    emacs.registerFunc(env, "ilm--core-add-concept-parent", Funcs.addConceptParent, "Assign a parent to a concept");
+    emacs.registerFunc(env, "ilm--core-remove-concept-parent", Funcs.removeConceptParent, "Unassign a parent from a concept");
     emacs.registerFunc(env, "ilm--core-all-concepts", Funcs.getAllConcepts, "Get all concepts");
     emacs.registerFunc(env, "ilm--core-concepts-by-id", Funcs.getConceptsById, "Get concepts by IDs");
 
