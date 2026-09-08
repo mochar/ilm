@@ -1,6 +1,10 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const dvui = @import("dvui");
+const sqlite = @import("sqlite");
+
+const Core = @import("core").Core;
+const Content = @import("Content.zig");
 
 pub const dvui_app: dvui.App = .{
     .config = .{
@@ -20,19 +24,24 @@ pub const std_options: std.Options = .{
     .logFn = dvui.App.logFn,
 };
 
-var gpa_instance = std.heap.GeneralPurposeAllocator(.{}){};
+var gpa_instance = std.heap.DebugAllocator(.{}){};
 const gpa = gpa_instance.allocator();
+
+var content: ?Content = null;
+var core: ?*Core = null;
 
 // Runs before the first frame, after backend and dvui.Window.init()
 // - runs between win.begin()/win.end()
 pub fn appInit(win: *dvui.Window) !void {
     _ = win;
+    connect();
 }
 
 // Run as app is shutting down before dvui.Window.deinit()
 pub fn appDeinit(win: *dvui.Window) void {
     _ = win;
-    // good place to free anything you've allocated with win.gpa
+    if (content) |*c| c.deinit();
+    if (core) |c| c.deinit();
 }
 
 pub fn appFrame() !dvui.App.Result {
@@ -44,7 +53,9 @@ pub fn appFrame() !dvui.App.Result {
     var scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both, .style = .window });
     defer scroll.deinit();
 
-    if (content()) |res| return res;
+    if (content) |*c| {
+        if (c.render()) |res| return res;
+    }
 
     return .ok;
 }
@@ -71,16 +82,28 @@ pub fn menu() ?dvui.App.Result {
         }
     }
 
-    return null;
-}
-
-pub fn content() ?dvui.App.Result {
-    var tl = dvui.textLayout(@src(), .{}, .{ .expand = .horizontal, .font = .theme(.title) });
-    const lorem = "This is a dvui.App example that can compile on multiple backends.\n";
-    tl.addText(lorem, .{});
-    tl.format("Current backend: {s}", .{@tagName(dvui.backend.kind)}, .{});
-    tl.deinit();
+    if (dvui.menuItemLabel(@src(), "Connect", .{ .submenu = true }, .{})) |_| {
+        connect();
+    }
 
     return null;
 }
 
+fn connect() void {
+    if (content) |*c| c.deinit();
+    if (core) |c| c.deinit();
+
+    var diags: sqlite.Diagnostics = .{};
+    const options: Core.Options = .{ .data_dir = "/home/mochar/tmp/ilm/", .sqlite_diagnostics = &diags };
+    if (Core.init(gpa, dvui.io, options)) |c| {
+        core = c;
+        content = Content.init(gpa, c);
+        dvui.toast(@src(), .{ .message = "Connected!" });
+    } else |err| {
+        var err_buf: [1024]u8 = undefined;
+        const err_msg = if (diags.err) |sqlite_err| blk: {
+            break :blk std.fmt.bufPrint(&err_buf, "Failed to init: {t}: {s}", .{ err, sqlite_err.message }) catch "Failed to init";
+        } else std.fmt.bufPrint(&err_buf, "Failed to init: {t}", .{err}) catch "Failed to init";
+        dvui.toast(@src(), .{ .message = err_msg });
+    }
+}
