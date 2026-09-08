@@ -44,6 +44,10 @@
             .url = "https://codeberg.org/r4gus/uuid-zig/archive/0.6.0.tar.gz",
             .hash = "uuid-0.5.0-oOieIRSbAACFMLvr97X_oGqnr91fdthOrxzHaRI28bhJ",
         },
+        .dvui = .{
+            .url = "git+https://github.com/david-vanderson/dvui?ref=main#7b6f5f959e0ba8c8538d0f72ee432c698d2e95be",
+            .hash = "dvui-0.5.0-dev-AQFJmcRcAwFsKsTXaf0DH8vwZNoqsJ4a7qb030OPsDoH",
+        },
     },
     .paths = .{
         "build.zig",

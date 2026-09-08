@@ -17,6 +17,7 @@ pub fn main(init: std.process.Init) !void {
     try stdout_writer.flush();
 
     while (try stdin_reader.interface.takeDelimiter('\n')) |input| {
+        _ = input;
         // if (std.meta.stringToEnum(enum { concepts, }, input)) |cmd| {
         //     switch (cmd) {
         //         .concepts => _ = core.increment(),

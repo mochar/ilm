@@ -10,7 +10,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    
+
     const core_tests = b.addTest(.{
         .root_module = core_mod,
     });
@@ -34,7 +34,7 @@ pub fn build(b: *std.Build) void {
     const uuid_dep = b.dependency("uuid", .{
         .target = target,
         .optimize = optimize,
-    });    
+    });
     core_mod.addImport("uuid", uuid_dep.module("uuid"));
 
     // CLI
@@ -91,8 +91,42 @@ pub fn build(b: *std.Build) void {
     const emacs_step = b.step("emacs", "Build the Emacs dynamic module");
     emacs_step.dependOn(&install_emacs.step);
 
+    // GUI (dvui)
+    const dvui_dep = b.dependency("dvui", .{ .target = target, .optimize = optimize, .backend = .sdl3 });
+
+    const gui_exe = b.addExecutable(.{
+        .name = "ilm-gui",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/gui/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "core", .module = core_mod },
+            },
+        }),
+    });
+
+    gui_exe.root_module.addImport("dvui", dvui_dep.module("dvui_sdl3"));
+    gui_exe.root_module.addImport("sdl-backend", dvui_dep.module("sdl3")); // for zls
+
+    b.installArtifact(gui_exe);
+    
+    const gui_cmd = b.addRunArtifact(gui_exe);
+    gui_cmd.step.dependOn(b.getInstallStep());
+    const gui_step = b.step("gui", "Start the GUI");
+    gui_step.dependOn(&gui_cmd.step);
+    if (b.args) |args| {
+        gui_cmd.addArgs(args);
+    }
+
+    const gui_tests = b.addTest(.{
+        .root_module = gui_exe.root_module,
+    });
+    const run_gui_tests = b.addRunArtifact(gui_tests);
+
     // Tests
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_core_tests.step);
     test_step.dependOn(&run_cli_tests.step);
+    test_step.dependOn(&run_gui_tests.step);
 }
