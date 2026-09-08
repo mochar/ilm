@@ -4,12 +4,60 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // PlutoVG static library
+    const plutovg_mod = b.createModule(.{
+        .link_libc = true,
+        .target = target,
+        .optimize = optimize,
+    });
+    plutovg_mod.addIncludePath(b.path("vendor/plutovg/include"));
+    plutovg_mod.addIncludePath(b.path("vendor/plutovg/source"));
+    plutovg_mod.addCSourceFiles(.{
+        .root = b.path("vendor/plutovg/source/"),
+        .files = &[_][]const u8{
+            "plutovg-blend.c",
+            "plutovg-canvas.c",
+            "plutovg-font.c",
+            "plutovg-matrix.c",
+            "plutovg-paint.c",
+            "plutovg-path.c",
+            "plutovg-rasterize.c",
+            "plutovg-surface.c",
+            "plutovg-ft-math.c",
+            "plutovg-ft-raster.c",
+            "plutovg-ft-stroker.c",
+        },
+        .flags = &[_][]const u8{
+            "-std=gnu11",
+            "-DPLUTOVG_BUILD",
+            "-DPLUTOVG_BUILD_STATIC",
+            "-Wno-sign-compare",
+            "-Wno-unused-function",
+        },
+    });
+    if (target.result.os.tag == .linux) {
+        plutovg_mod.linkSystemLibrary("m", .{});
+        plutovg_mod.linkSystemLibrary("pthread", .{});
+    } else if (target.result.os.tag == .macos) {
+        plutovg_mod.linkSystemLibrary("pthread", .{});
+    }
+    const plutovg_lib = b.addLibrary(.{
+        .name = "plutovg",
+        .linkage = .static,
+        .root_module = plutovg_mod,
+    });
+
     // Core
     const core_mod = b.addModule("core", .{
         .root_source_file = b.path("src/core/root.zig"),
         .target = target,
         .optimize = optimize,
     });
+
+    core_mod.linkSystemLibrary("cgraph", .{});
+    core_mod.linkSystemLibrary("gvc", .{});
+    core_mod.linkLibrary(plutovg_lib);
+    core_mod.addIncludePath(b.path("vendor/plutovg/include"));
 
     const core_tests = b.addTest(.{
         .root_module = core_mod,
@@ -112,7 +160,7 @@ pub fn build(b: *std.Build) void {
     gui_exe.root_module.addImport("sdl-backend", dvui_dep.module("sdl3")); // for zls
 
     b.installArtifact(gui_exe);
-    
+
     const gui_cmd = b.addRunArtifact(gui_exe);
     gui_cmd.step.dependOn(b.getInstallStep());
     const gui_step = b.step("gui", "Start the GUI");

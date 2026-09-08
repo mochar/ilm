@@ -97,8 +97,12 @@ fn connect() void {
     const options: Core.Options = .{ .data_dir = "/home/mochar/tmp/ilm/", .sqlite_diagnostics = &diags };
     if (Core.init(gpa, dvui.io, options)) |c| {
         core = c;
-        content = Content.init(gpa, c);
-        dvui.toast(@src(), .{ .message = "Connected!" });
+        if (Content.init(gpa, c)) |con| {
+            content = con;
+            dvui.toast(@src(), .{ .message = "Connected!" });
+        } else |_| {
+            dvui.toast(@src(), .{ .message = "Content init failed" });
+        }
     } else |err| {
         var err_buf: [1024]u8 = undefined;
         const err_msg = if (diags.err) |sqlite_err| blk: {

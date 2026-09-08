@@ -10,11 +10,11 @@ core: *Core,
 concepts: Concepts,
 tab: usize = 0,
 
-pub fn init(gpa: std.mem.Allocator, core: *Core) Self {
+pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
     return .{
         .gpa = gpa,
         .core = core,
-        .concepts = .init(gpa, core),
+        .concepts = try .init(gpa, core),
     };
 }
 
@@ -34,7 +34,6 @@ pub fn render(self: *Self) ?dvui.App.Result {
     {
         if (self.tab == 0) {
             self.concepts.render();
-            std.log.info("owaoa", .{});
         }
     }
 
