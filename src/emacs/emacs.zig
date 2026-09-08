@@ -6,6 +6,7 @@ pub const c = @cImport({
 
 pub const Context = struct {
     env: *c.emacs_env,
+    arena: std.mem.Allocator,
     err_msg_buf: [1024]u8 = undefined,
     err_msg: ?[]const u8 = null,
 
@@ -148,7 +149,7 @@ pub fn convertFrom(comptime T: type, env: *c.emacs_env, val: c.emacs_value, allo
             }
         },
         .@"struct" => |s| {
-            // Custom deserializer 
+            // Custom deserializer
             if (@hasDecl(T, "fromEmacsRepr")) {
                 const fn_info = @typeInfo(@TypeOf(T.fromEmacsRepr)).@"fn";
                 const repr_type = fn_info.params[0].type.?;
@@ -175,7 +176,7 @@ pub fn convertFrom(comptime T: type, env: *c.emacs_env, val: c.emacs_value, allo
             }
 
             return result;
-        },        
+        },
         .int => return @intCast(env.*.extract_integer.?(env, val)),
         .bool => return env.*.is_not_nil.?(env, val),
         else => {},
@@ -197,7 +198,7 @@ pub fn convertTo(comptime T: type, env: *c.emacs_env, val: T) !c.emacs_value {
                 const repr = val.toEmacsRepr();
                 return convertTo(@TypeOf(repr), env, repr);
             }
-            
+
             // Convert struct into plist: (:field1 val1 :field2 val2 ...)
             const q_list = env.*.intern.?(env, "list");
             var plist_items: [s.fields.len * 2]c.emacs_value = undefined;
@@ -205,11 +206,7 @@ pub fn convertTo(comptime T: type, env: *c.emacs_env, val: T) !c.emacs_value {
             inline for (s.fields, 0..) |field, idx| {
                 const kw_name = ":" ++ field.name;
                 plist_items[idx * 2] = env.*.intern.?(env, kw_name.ptr);
-                plist_items[idx * 2 + 1] = try convertTo(
-                    field.type,
-                    env,
-                    @field(val, field.name)
-                );
+                plist_items[idx * 2 + 1] = try convertTo(field.type, env, @field(val, field.name));
             }
 
             return env.*.funcall.?(env, q_list, @intCast(plist_items.len), &plist_items);
@@ -280,12 +277,12 @@ pub fn wrapFunc(comptime func: anytype) EmacsFunc {
             _ = nargs;
             _ = data;
             const env = env_opt orelse unreachable;
-            var ctx: Context = .{ .env = env };
             const q_nil = env.intern.?(env, "nil");
 
             var arena = std.heap.ArenaAllocator.init(std.heap.c_allocator);
             defer arena.deinit();
             const allocator = arena.allocator();
+            var ctx: Context = .{ .env = env, .arena = allocator };
 
             // Build tuple of arguments converted at comptime
             var args_tuple: std.meta.ArgsTuple(@TypeOf(func)) = undefined;
@@ -293,7 +290,7 @@ pub fn wrapFunc(comptime func: anytype) EmacsFunc {
                 if (i == 0) {
                     args_tuple[0] = &ctx;
                 } else {
-                    args_tuple[i] = convertFrom(param.type.?, env, args[i-1], allocator) catch |err| {
+                    args_tuple[i] = convertFrom(param.type.?, env, args[i - 1], allocator) catch |err| {
                         ctx.setError("Error building emacs function: {t}", .{err});
                         ctx.signalError(.{});
                         return q_nil;

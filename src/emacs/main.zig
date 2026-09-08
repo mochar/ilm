@@ -73,10 +73,8 @@ const Funcs = struct {
     }
 
     pub fn getAllConcepts(ctx: *Context, core: *Core) ![]Core.Concept {
-        var arena = std.heap.ArenaAllocator.init(core.allocator);
-        defer arena.deinit();
         var diags: sqlite.Diagnostics = .{};
-        const concepts = core.getAllConcepts(arena.allocator(), &diags) catch |err| {
+        const concepts = core.getAllConcepts(ctx.arena, &diags) catch |err| {
             if (diags.err) |sqlite_err| {
                 ctx.setError("Sqlite error: {s}", .{ sqlite_err.message });
             } else {
@@ -88,12 +86,8 @@ const Funcs = struct {
     }
 
     pub fn getConceptsById(ctx: *Context, core: *Core, ids: []Core.Id) ![]Core.Concept {
-        var arena = std.heap.ArenaAllocator.init(core.allocator);
-        defer arena.deinit();
-        const allocator = arena.allocator();
-
         var diags: sqlite.Diagnostics = .{};
-        const concepts = core.getConceptsById(allocator, ids, &diags) catch |err| {
+        const concepts = core.getConceptsById(ctx.arena, ids, &diags) catch |err| {
             if (diags.err) |sqlite_err| {
                 ctx.setError("Sqlite error: {s}", .{ sqlite_err.message });
             } else {
@@ -106,12 +100,8 @@ const Funcs = struct {
     }
 
     pub fn getAncestors(ctx: *Context, core: *Core, ids: []Core.Id, direct_only: bool) ![]Core.ConceptAncestor {
-        var arena = std.heap.ArenaAllocator.init(core.allocator);
-        defer arena.deinit();
-        const allocator = arena.allocator();
-
         var diags: sqlite.Diagnostics = .{};
-        const ancestors = core.getAncestors(allocator, ids, direct_only, &diags) catch |err| {
+        const ancestors = core.getAncestors(ctx.arena, ids, direct_only, &diags) catch |err| {
             if (diags.err) |sqlite_err| {
                 ctx.setError("Sqlite error: {s}", .{ sqlite_err.message });
             } else {
