@@ -46,6 +46,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "core", .module = core_mod },
+                .{ .name = "known-folders", .module = known_folders_dep.module("known-folders") },
             },
         }),
     });

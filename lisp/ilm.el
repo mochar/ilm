@@ -10,6 +10,7 @@
 
 (require 'cl-lib)
 (require 'map)
+(require 'dag-draw)
 
 ;;;; Module
 
@@ -36,6 +37,27 @@ Note that this does not unload the previous loaded objects."
     (error "Ilm core invalid: state invalid"))
   ilm--core)
 
+;;;; Utils
+
+(defmacro ilm-with-special-buffer (buf-name &rest body)
+  "Evaluate BODY and display the result in a popup window named BUFFER-NAME.
+
+The buffer becomes the current buffer and `standard-output` is bound to
+it.  After BODY executes, the buffer is put in
+`special-mode` (dismissible with 'q')."
+  (declare (indent 1) (debug t))
+  (let ((buf (make-symbol "buf")))
+    `(let* ((,buf (get-buffer-create ,buf-name))
+            ;; Bind standard-output so `princ` and `print` write here
+            (standard-output ,buf))
+       (with-current-buffer ,buf
+         (let ((inhibit-read-only t))
+           (erase-buffer)
+           ,@body)
+         (special-mode)
+         (goto-char (point-min)))
+       (pop-to-buffer ,buf))))
+
 ;;;; Concepts
 
 ;; TODO Concept cache, just store all concepts in a var
@@ -44,30 +66,19 @@ Note that this does not unload the previous loaded objects."
   (ilm-core-ensure)
   (ilm--core-add-concept ilm--core name parent-ids))
 
+(defun ilm-add-concept-parents (id parent-ids)
+  (ilm-core-ensure)
+  (dolist (parent-id (ensure-list parent-ids))
+    (ilm--core-add-concept-parent ilm--core id parent-id)))
+
+(defun ilm-remove-concept-parents (id parent-ids)
+  (ilm-core-ensure)
+  (dolist (parent-id (ensure-list parent-ids))
+    (ilm--core-remove-concept-parent ilm--core id parent-id)))
+
 (defun ilm--all-concepts ()
   (ilm-core-ensure)
   (ilm--core-all-concepts ilm--core))
-
-(defun ilm--select-concept ()
-  (ilm-core-ensure)
-  (let* ((concepts (ilm--core-all-concepts ilm--core))
-         (options (mapcar (lambda (concept)
-                            (map-let (:name :id) concept
-                              (propertize
-                               ;; Invisible suffix ensures candidates with
-                               ;; identical names are unique strings.
-                               (concat name (propertize (format " #%s" id) 'invisible t))
-                               'concept concept)))
-                          concepts)))
-    (consult--read
-     options
-     :prompt "Concepts: "
-     :annotate (lambda (option)
-                 (let ((c (get-text-property 0 'concept option)))
-                   (format " %s" (map-elt c :id))))
-     :lookup
-     (lambda (selected candidates &rest _)
-       (consult--lookup-prop 'concept selected candidates)))))
 
 (defun ilm-concepts-by-ids (ids)
   (ilm-core-ensure)
@@ -84,6 +95,58 @@ Otherwise return the full hierarchy with :is_direct and :depth properties."
 (defun ilm-concept-parents (ids)
   "Return only direct parents of concept IDS."
   (ilm-concept-ancestors ids t))
+
+(defun ilm--concept-ancestors ()
+  (let* ((concept (ilm--select-concept)))
+    (ilm-concept-ancestors (map-elt concept :id))))
+
+(defun ilm-draw-concept-graph (concept)
+  (let* ((as (ilm-concept-ancestors (map-elt concept :id)))
+         (g (dag-draw-create-graph)))
+    (dag-draw-add-node g (intern (map-elt concept :id)) (map-elt concept :name))
+    (dolist (a as)
+      (dag-draw-add-node g (intern (map-elt a :id)) (map-elt a :name))
+      (dag-draw-add-edge g (intern (map-elt a :child_id)) (intern (map-elt a :id))))
+    (dag-draw-layout-graph g)
+    (dag-draw-render-graph g 'ascii (intern (map-elt concept :id)))))
+
+(defvar ilm-concept-graph-buffer "*ilm concept graph*")
+
+(defun ilm--concept-consult-state (action concept)
+  "State function for previewing concepts in consult."
+  (pcase action
+    ('return)
+    ('exit
+     (when-let* ((win (get-buffer-window ilm-concept-graph-buffer)))
+       (quit-window nil win)))
+    ('preview
+     (if concept
+         (ilm-with-special-buffer ilm-concept-graph-buffer
+           (princ (ilm-draw-concept-graph concept)))
+       (when-let* ((win (get-buffer-window ilm-concept-graph-buffer)))
+         (quit-window nil win))))))
+
+(defun ilm--select-concept ()
+  (ilm-core-ensure)
+  (let* ((concepts (ilm--core-all-concepts ilm--core))
+         (options (mapcar (lambda (concept)
+                            (map-let (:name :id) concept
+                              (propertize
+                               ;; Invisible suffix ensures candidates with
+                               ;; identical names are unique strings.
+                               (concat name (propertize (format " #%s" id) 'invisible t))
+                               'concept concept)))
+                          concepts)))
+    (consult--read
+     options
+     :prompt "Concepts: "
+     :state #'ilm--concept-consult-state
+     :annotate (lambda (option)
+                 (let ((c (get-text-property 0 'concept option)))
+                   (format " %s" (map-elt c :id))))
+     :lookup
+     (lambda (selected candidates &rest _)
+       (consult--lookup-prop 'concept selected candidates)))))
 
 ;;;; Footer
 
