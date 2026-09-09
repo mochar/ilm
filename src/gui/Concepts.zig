@@ -11,7 +11,6 @@ const Self = @This();
 
 const MAX_GRAPH_WIDTH: u32 = 2048;
 const MAX_GRAPH_HEIGHT: u32 = 2048;
-const BUFFER_STRIDE: usize = MAX_GRAPH_WIDTH * 4;
 
 core: *Core,
 arena: std.heap.ArenaAllocator,
@@ -19,7 +18,7 @@ render_arena: std.heap.ArenaAllocator,
 concepts: []Concept = &.{},
 selected: ?*Concept = null,
 graph: Graph,
-graph_buffer: []u8,
+graph_renderer: Graph.Renderer,
 graph_texture: dvui.Texture,
 rendered_width: u32 = 0,
 rendered_height: u32 = 0,
@@ -31,14 +30,17 @@ pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
     const render_arena = std.heap.ArenaAllocator.init(gpa);
     errdefer render_arena.deinit();
 
-    const graph_buffer = try arena.allocator().alloc(u8, MAX_GRAPH_WIDTH * MAX_GRAPH_HEIGHT * 4);
-    @memset(graph_buffer, 0);
-
-    const graph_texture = try dvui.Texture.create(@ptrCast(graph_buffer), .{
+    const graph = try Graph.init(gpa, .{
         .width = MAX_GRAPH_WIDTH,
         .height = MAX_GRAPH_HEIGHT,
     });
-    const graph = try Graph.init(gpa, .{
+    const graph_renderer = try Graph.Renderer.init(.{
+        .gpa = gpa,
+        .graph = &graph,
+        .buffer_stride = MAX_GRAPH_WIDTH,
+        .buffer_height = MAX_GRAPH_HEIGHT,
+    });
+    const graph_texture = try dvui.Texture.create(@ptrCast(graph_renderer.buffer), .{
         .width = MAX_GRAPH_WIDTH,
         .height = MAX_GRAPH_HEIGHT,
     });
@@ -48,7 +50,7 @@ pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
         .arena = arena,
         .render_arena = render_arena,
         .graph = graph,
-        .graph_buffer = graph_buffer,
+        .graph_renderer = graph_renderer,
         .graph_texture = graph_texture,
     };
     self.getConcepts();
@@ -60,6 +62,7 @@ pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
 
 pub fn deinit(self: *Self) void {
     self.graph.deinit();
+    self.graph_renderer.deinit();
     self.arena.deinit();
     self.render_arena.deinit();
 }
@@ -203,10 +206,10 @@ fn updateGraphTexture(self: *Self) void {
     self.graph.layout("dot") catch |err| {
         return self.toastErr(@src(), err, "Failed to layout graph", .{});
     };
-    self.graph.renderToBuffer(self.graph_buffer, .{ .stride_bytes = BUFFER_STRIDE }) catch |err| {
+    self.graph_renderer.render(&self.graph) catch |err| {
         return self.toastErr(@src(), err, "Failed to render graph", .{});
     };
-    self.graph_texture.updateSubRect(self.graph_buffer.ptr, 0, 0, self.rendered_width, self.rendered_height) catch |err| {
+    self.graph_texture.updateSubRect(self.graph_renderer.buffer.ptr, 0, 0, self.rendered_width, self.rendered_height) catch |err| {
         return self.toastErr(@src(), err, "Failed to update graph texture", .{});
     };
 }
