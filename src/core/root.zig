@@ -4,4 +4,5 @@ pub const Graph = @import("Graph.zig");
 
 test {
     _ = @import("concept.zig");
+    _ = @import("Graph.zig");
 }

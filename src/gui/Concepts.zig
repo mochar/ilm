@@ -9,8 +9,9 @@ const Graph = core_mod.Graph;
 const Id = Core.Id;
 const Self = @This();
 
-const GRAPH_WIDTH = 200;
-const GRAPH_HEIGHT = 200;
+const MAX_GRAPH_WIDTH: u32 = 2048;
+const MAX_GRAPH_HEIGHT: u32 = 2048;
+const BUFFER_STRIDE: usize = MAX_GRAPH_WIDTH * 4;
 
 core: *Core,
 arena: std.heap.ArenaAllocator,
@@ -20,6 +21,9 @@ selected: ?*Concept = null,
 graph: Graph,
 graph_buffer: []u8,
 graph_texture: dvui.Texture,
+rendered_width: u32 = 0,
+rendered_height: u32 = 0,
+needs_rebuild: bool = true,
 
 pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
     var arena = std.heap.ArenaAllocator.init(gpa);
@@ -27,14 +31,18 @@ pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
 
     const render_arena = std.heap.ArenaAllocator.init(gpa);
     errdefer render_arena.deinit();
-    
-    const graph_buffer = try arena.allocator().alloc(u8, GRAPH_WIDTH * GRAPH_HEIGHT * 4);
-    // @memset(graph_buffer, 100);
+
+    const graph_buffer = try arena.allocator().alloc(u8, MAX_GRAPH_WIDTH * MAX_GRAPH_HEIGHT * 4);
+    @memset(graph_buffer, 0);
+
     const graph_texture = try dvui.Texture.create(@ptrCast(graph_buffer), .{
-        .width = GRAPH_WIDTH,
-        .height = GRAPH_HEIGHT,
+        .width = MAX_GRAPH_WIDTH,
+        .height = MAX_GRAPH_HEIGHT,
     });
-    const graph = try Graph.init(.{ .width = GRAPH_WIDTH, .height = GRAPH_HEIGHT });
+    const graph = try Graph.init(gpa, .{
+        .width = MAX_GRAPH_WIDTH,
+        .height = MAX_GRAPH_HEIGHT,
+    });
 
     var self: Self = .{
         .core = core,
@@ -45,7 +53,10 @@ pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
         .graph_texture = graph_texture,
     };
     self.getConcepts();
-    if (self.concepts.len > 0) self.selected = &self.concepts[0];
+    if (self.concepts.len > 0) {
+        self.selected = &self.concepts[0];
+        self.needs_rebuild = true;
+    }
     return self;
 }
 
@@ -121,19 +132,44 @@ pub fn render(self: *Self) void {
         dvui.label(@src(), "{s}", .{concept.name}, .{});
 
         var tex_box = dvui.box(@src(), .{}, .{
-            .min_size_content = .{ .w = GRAPH_WIDTH, .h = GRAPH_HEIGHT },
+            .expand = .both,
+            .min_size_content = .{ .w = 100, .h = 100 },
         });
         defer tex_box.deinit();
 
-        dvui.renderTexture(self.graph_texture, tex_box.data().contentRectScale(), .{}) catch |err| {
-            return self.toastErr(@src(), err, "Failed to render graph texture", .{});
-        };
+        const rs = tex_box.data().contentRectScale();
+        const target_w = std.math.clamp(@as(u32, @intFromFloat(@max(100.0, rs.r.w))), 100, MAX_GRAPH_WIDTH);
+        const target_h = std.math.clamp(@as(u32, @intFromFloat(@max(100.0, rs.r.h))), 100, MAX_GRAPH_HEIGHT);
+
+        if (self.needs_rebuild or target_w != self.rendered_width or target_h != self.rendered_height) {
+            self.updateGraph(concept, target_w, target_h);
+        }
+
+        if (self.rendered_width > 0 and self.rendered_height > 0) {
+            const u_scale = @as(f32, @floatFromInt(self.rendered_width)) / @as(f32, @floatFromInt(MAX_GRAPH_WIDTH));
+            const v_scale = @as(f32, @floatFromInt(self.rendered_height)) / @as(f32, @floatFromInt(MAX_GRAPH_HEIGHT));
+
+            dvui.renderTexture(self.graph_texture, rs, .{
+                .uv = .{ .x = 0, .y = 0, .w = u_scale, .h = v_scale },
+            }) catch |err| {
+                return self.toastErr(@src(), err, "Failed to render graph texture", .{});
+            };
+        }
     }
 }
 
 fn selectConcept(self: *Self, concept: *Concept) void {
-    self.selected = concept;
+    if (self.selected != concept) {
+        self.selected = concept;
+        self.needs_rebuild = true;
+    }
+}
+
+fn updateGraph(self: *Self, concept: *Concept, width: u32, height: u32) void {
     self.graph.clear();
+    self.graph.setDimensions(width, height, 96.0) catch |err| {
+        return self.toastErr(@src(), err, "Failed to set graph dimensions", .{});
+    };
 
     var diags: sqlite.Diagnostics = .{};
     const ids: [1]Id = .{concept.id};
@@ -156,13 +192,14 @@ fn selectConcept(self: *Self, concept: *Concept) void {
     self.graph.layout("dot") catch |err| {
         return self.toastErr(@src(), err, "Failed to layout graph", .{});
     };
-    self.graph.renderToFile("png", "/tmp/graph.png") catch |err| {
+    self.graph.renderToBuffer(self.graph_buffer, .{ .stride_bytes = BUFFER_STRIDE }) catch |err| {
         return self.toastErr(@src(), err, "Failed to render graph", .{});
     };
-    self.graph.renderToBuffer(self.graph_buffer) catch |err| {
-        return self.toastErr(@src(), err, "Failed to render graph", .{});
-    };
-    self.graph_texture.update(@ptrCast(self.graph_buffer)) catch |err| {
+    self.graph_texture.updateSubRect(self.graph_buffer.ptr, 0, 0, width, height) catch |err| {
         return self.toastErr(@src(), err, "Failed to update graph texture", .{});
     };
+
+    self.rendered_width = width;
+    self.rendered_height = height;
+    self.needs_rebuild = false;
 }
