@@ -23,7 +23,6 @@ graph_buffer: []u8,
 graph_texture: dvui.Texture,
 rendered_width: u32 = 0,
 rendered_height: u32 = 0,
-needs_rebuild: bool = true,
 
 pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
     var arena = std.heap.ArenaAllocator.init(gpa);
@@ -54,8 +53,7 @@ pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
     };
     self.getConcepts();
     if (self.concepts.len > 0) {
-        self.selected = &self.concepts[0];
-        self.needs_rebuild = true;
+        self.selectConcept(&self.concepts[0]);
     }
     return self;
 }
@@ -107,7 +105,7 @@ pub fn render(self: *Self) void {
     var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .both });
     defer hbox.deinit();
 
-    // Left sidebar scrolls independently:
+    // Left sidebar scroll area
     {
         var scroll = dvui.scrollArea(@src(), .{}, .{
             .expand = .vertical,
@@ -124,27 +122,33 @@ pub fn render(self: *Self) void {
         }
     }
 
-    // 3. Right pane: Expands to fill the rest of the window
+    // Right pane: Expands to fill the rest of the window
     if (self.selected) |concept| {
         var vbox = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .both });
         defer vbox.deinit();
 
         dvui.label(@src(), "{s}", .{concept.name}, .{});
 
-        var tex_box = dvui.box(@src(), .{}, .{
+        var texture_box = dvui.box(@src(), .{}, .{
             .expand = .both,
             .min_size_content = .{ .w = 100, .h = 100 },
         });
-        defer tex_box.deinit();
+        defer texture_box.deinit();
 
-        const rs = tex_box.data().contentRectScale();
+        // Get available width and height and clamp it to max graph dimensions
+        const rs = texture_box.data().contentRectScale();
         const target_w = std.math.clamp(@as(u32, @intFromFloat(@max(100.0, rs.r.w))), 100, MAX_GRAPH_WIDTH);
         const target_h = std.math.clamp(@as(u32, @intFromFloat(@max(100.0, rs.r.h))), 100, MAX_GRAPH_HEIGHT);
 
-        if (self.needs_rebuild or target_w != self.rendered_width or target_h != self.rendered_height) {
-            self.updateGraph(concept, target_w, target_h);
+        // Update graph renderer and texture if the available space has changed
+        if (target_w != self.rendered_width or target_h != self.rendered_height) {
+            self.rendered_width = target_w;
+            self.rendered_height = target_h;
+            self.updateGraphTexture();
         }
 
+        // Render the graph texture. Set uv to only view the rendered part of
+        // the buffer.
         if (self.rendered_width > 0 and self.rendered_height > 0) {
             const u_scale = @as(f32, @floatFromInt(self.rendered_width)) / @as(f32, @floatFromInt(MAX_GRAPH_WIDTH));
             const v_scale = @as(f32, @floatFromInt(self.rendered_height)) / @as(f32, @floatFromInt(MAX_GRAPH_HEIGHT));
@@ -159,47 +163,50 @@ pub fn render(self: *Self) void {
 }
 
 fn selectConcept(self: *Self, concept: *Concept) void {
-    if (self.selected != concept) {
-        self.selected = concept;
-        self.needs_rebuild = true;
+    if (self.selected == concept) return;
+    self.selected = concept;
+    self.updateGraphContent();
+    self.updateGraphTexture();
+}
+
+/// Replace the graph nodes and edges with that of self.selected
+fn updateGraphContent(self: *Self) void {
+    self.graph.clear();
+
+    if (self.selected) |concept| {
+        var diags: sqlite.Diagnostics = .{};
+        const ids: [1]Id = .{concept.id};
+        self.graph.addNode(concept.id.uuid, concept.name) catch |err| {
+            return self.toastErr(@src(), err, "Failed to add node", .{});
+        };
+        const ancestors = self.core.getAncestors(self.arena.allocator(), &ids, false, &diags) catch |err| {
+            return self.toastErr(@src(), err, "Failed to get ancestors", .{});
+        };
+        for (ancestors) |*ancestor| {
+            self.graph.addNode(ancestor.id.uuid, ancestor.name) catch |err| {
+                return self.toastErr(@src(), err, "Failed to add node", .{});
+            };
+        }
+        for (ancestors) |*ancestor| {
+            self.graph.addEdge(ancestor.id.uuid, ancestor.child_id.uuid) catch |err| {
+                return self.toastErr(@src(), err, "Failed to add edge", .{});
+            };
+        }
     }
 }
 
-fn updateGraph(self: *Self, concept: *Concept, width: u32, height: u32) void {
-    self.graph.clear();
-    self.graph.setDimensions(width, height, 96.0) catch |err| {
+/// Compute new layout, render to buffer, and update the texture
+fn updateGraphTexture(self: *Self) void {
+    self.graph.setDimensions(self.rendered_width, self.rendered_height, 96.0) catch |err| {
         return self.toastErr(@src(), err, "Failed to set graph dimensions", .{});
     };
-
-    var diags: sqlite.Diagnostics = .{};
-    const ids: [1]Id = .{concept.id};
-    self.graph.addNode(concept.id.uuid, concept.name) catch |err| {
-        return self.toastErr(@src(), err, "Failed to add node", .{});
-    };
-    const ancestors = self.core.getAncestors(self.arena.allocator(), &ids, false, &diags) catch |err| {
-        return self.toastErr(@src(), err, "Failed to get ancestors", .{});
-    };
-    for (ancestors) |*ancestor| {
-        self.graph.addNode(ancestor.id.uuid, ancestor.name) catch |err| {
-            return self.toastErr(@src(), err, "Failed to add node", .{});
-        };
-    }
-    for (ancestors) |*ancestor| {
-        self.graph.addEdge(ancestor.id.uuid, ancestor.child_id.uuid) catch |err| {
-            return self.toastErr(@src(), err, "Failed to add edge", .{});
-        };
-    }
     self.graph.layout("dot") catch |err| {
         return self.toastErr(@src(), err, "Failed to layout graph", .{});
     };
     self.graph.renderToBuffer(self.graph_buffer, .{ .stride_bytes = BUFFER_STRIDE }) catch |err| {
         return self.toastErr(@src(), err, "Failed to render graph", .{});
     };
-    self.graph_texture.updateSubRect(self.graph_buffer.ptr, 0, 0, width, height) catch |err| {
+    self.graph_texture.updateSubRect(self.graph_buffer.ptr, 0, 0, self.rendered_width, self.rendered_height) catch |err| {
         return self.toastErr(@src(), err, "Failed to update graph texture", .{});
     };
-
-    self.rendered_width = width;
-    self.rendered_height = height;
-    self.needs_rebuild = false;
 }
