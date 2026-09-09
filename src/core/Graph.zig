@@ -235,8 +235,8 @@ pub const Renderer = struct {
         const buffer = self.buffer;
         try ensureSize(buffer, graph);
 
-        // TODO Store this in struct and only recreate when graph size has
-        // changed.
+        // TODO Store surface and canvase in struct and only recreate when graph
+        // size has changed. This also avoids reloading the font in the canvas.
         const surface = c.plutovg_surface_create_for_data(
             buffer.ptr,
             @intCast(graph.width),
