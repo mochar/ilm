@@ -50,8 +50,8 @@ pub fn appFrame() !dvui.App.Result {
 
     if (menu()) |res| return res;
 
-    var scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both, .style = .window });
-    defer scroll.deinit();
+    var box = dvui.box(@src(), .{}, .{ .expand = .both });
+    defer box.deinit();
 
     if (content) |*c| {
         if (c.render()) |res| return res;

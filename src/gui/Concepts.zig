@@ -45,13 +45,12 @@ pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
         .graph_texture = graph_texture,
     };
     self.getConcepts();
-    if (self.concepts.len  > 0) self.selected = &self.concepts[0];
+    if (self.concepts.len > 0) self.selected = &self.concepts[0];
     return self;
 }
 
 pub fn deinit(self: *Self) void {
     self.graph.deinit();
-    // self.graph_texture.destroyLater();
     self.arena.deinit();
     self.render_arena.deinit();
 }
@@ -94,14 +93,19 @@ pub fn render(self: *Self) void {
         tl.format("Found {d} concepts", .{self.concepts.len}, .{});
     }
 
-    var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{});
+    var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .both });
     defer hbox.deinit();
 
+    // Left sidebar scrolls independently:
     {
-        var scroll = dvui.scrollArea(@src(), .{}, .{});
+        var scroll = dvui.scrollArea(@src(), .{}, .{
+            .expand = .vertical,
+            .min_size_content = .{ .w = 200 },
+        });
         defer scroll.deinit();
+
         for (self.concepts, 0..) |*concept, i| {
-            var c_box = dvui.box(@src(), .{ .dir = .horizontal }, .{ .id_extra = i });
+            var c_box = dvui.box(@src(), .{ .dir = .horizontal }, .{ .id_extra = i, .expand = .horizontal });
             defer c_box.deinit();
             if (dvui.labelClick(@src(), "{s}", .{concept.name}, .{}, .{})) {
                 self.selectConcept(concept);
@@ -109,10 +113,11 @@ pub fn render(self: *Self) void {
         }
     }
 
+    // 3. Right pane: Expands to fill the rest of the window
     if (self.selected) |concept| {
         var vbox = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .both });
         defer vbox.deinit();
-        
+
         dvui.label(@src(), "{s}", .{concept.name}, .{});
 
         var tex_box = dvui.box(@src(), .{}, .{
