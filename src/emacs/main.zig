@@ -1,7 +1,11 @@
 const std = @import("std");
 var io = std.Io.Threaded.init_single_threaded;
 
-const Core = @import("core").Core;
+const core_mod = @import("core");
+const Core = core_mod.Core;
+const Id = Core.Id;
+const IdStr = Core.IdStr;
+const Graph = core_mod.Graph;
 const sqlite = @import("sqlite");
 
 const emacs = @import("emacs.zig");
@@ -9,6 +13,7 @@ const Context = emacs.Context;
 const c = emacs.c;
 
 pub export var plugin_is_GPL_compatible: c_int = 1;
+
 /// Functions that will be available to emacs
 const Funcs = struct {
     pub fn init(ctx: *Context, data_dir: []const u8) !*Core {
@@ -30,12 +35,12 @@ const Funcs = struct {
         return core.isValid();
     }
 
-    pub fn newId(_: *Context, core: *Core) Core.IdStr {
+    pub fn newId(_: *Context, core: *Core) IdStr {
         var id = core.newId();
         return id.serialize();
     }
 
-    pub fn addConcept(ctx: *Context, core: *Core, name: []u8, parent_ids: []Core.Id) !Core.IdStr {
+    pub fn addConcept(ctx: *Context, core: *Core, name: []u8, parent_ids: []Id) !IdStr {
         var diags: sqlite.Diagnostics = .{};
         var id = core.addConcept(name, parent_ids, &diags) catch |err| {
             if (diags.err) |sqlite_err| {
@@ -48,7 +53,7 @@ const Funcs = struct {
         return id.serialize();
     }
 
-    pub fn addConceptParent(ctx: *Context, core: *Core, child_id: Core.Id, parent_id: Core.Id) !void {
+    pub fn addConceptParent(ctx: *Context, core: *Core, child_id: Id, parent_id: Id) !void {
         var diags: sqlite.Diagnostics = .{};
         core.addConceptParent(child_id, parent_id, &diags) catch |err| {
             if (diags.err) |sqlite_err| {
@@ -60,7 +65,7 @@ const Funcs = struct {
         };
     }
 
-    pub fn removeConceptParent(ctx: *Context, core: *Core, child_id: Core.Id, parent_id: Core.Id) !void {
+    pub fn removeConceptParent(ctx: *Context, core: *Core, child_id: Id, parent_id: Id) !void {
         var diags: sqlite.Diagnostics = .{};
         core.removeConceptParent(child_id, parent_id, &diags) catch |err| {
             if (diags.err) |sqlite_err| {
@@ -85,7 +90,7 @@ const Funcs = struct {
         return concepts;
     }
 
-    pub fn getConceptsById(ctx: *Context, core: *Core, ids: []Core.Id) ![]Core.Concept {
+    pub fn getConceptsById(ctx: *Context, core: *Core, ids: []const Id) ![]Core.Concept {
         var diags: sqlite.Diagnostics = .{};
         const concepts = core.getConceptsById(ctx.arena, ids, &diags) catch |err| {
             if (diags.err) |sqlite_err| {
@@ -99,7 +104,7 @@ const Funcs = struct {
         return concepts;
     }
 
-    pub fn getAncestors(ctx: *Context, core: *Core, ids: []Core.Id, direct_only: bool) ![]Core.ConceptAncestor {
+    pub fn getAncestors(ctx: *Context, core: *Core, ids: []Id, direct_only: bool) ![]Core.ConceptAncestor {
         var diags: sqlite.Diagnostics = .{};
         const ancestors = core.getAncestors(ctx.arena, ids, direct_only, &diags) catch |err| {
             if (diags.err) |sqlite_err| {
@@ -110,6 +115,80 @@ const Funcs = struct {
             return err;
         };
         return ancestors;
+    }
+
+    const ConceptGraph = struct {
+        graph: Graph,
+        renderer: Graph.Renderer,
+
+        pub fn deinit(self: *ConceptGraph) void {
+            self.renderer.deinit();
+            self.graph.deinit();
+        }
+    };
+
+    // TODO Add way to pass finalizer to ctx.
+    // This leaks memory as we have no way currently to free the pointer data
+    // itself (we only have finalizer calling deinit() on the pointer data struct).
+    pub fn makeGraph(ctx: *Context, core: *Core, canvas_spec: c.emacs_value) !*ConceptGraph {
+        const canvas_info: emacs.Canvas = try .fromSpec(core.allocator, ctx.env, canvas_spec);
+        const width = canvas_info.width;
+        const height = canvas_info.height;
+
+        emacs.message(ctx.env, "Found width '{d}' and height '{d}'", .{width, height});
+
+        const canvas_buf: [*]u8 = @ptrCast(ctx.env.canvas_data.?(ctx.env, canvas_spec));
+        const g = core.allocator.create(ConceptGraph) catch |err| {
+            ctx.setError("Failed to allocate ConceptGraph: {t}", .{err});
+            return err;
+        };
+        g.graph = Graph.init(core.allocator, .{
+            .width = width,
+            .height = height,
+        }) catch |err| {
+            ctx.setError("Failed to initialize Graph: {t}", .{err});
+            return err;
+        };
+        g.renderer = Graph.Renderer.init(.{
+            .gpa = core.allocator,
+            .graph = &g.graph,
+            .buffer = canvas_buf[0..width*height*4],
+            .buffer_stride = width,
+            .buffer_height = height,
+        }) catch |err| {
+            ctx.setError("Failed to initialize Graph renderer: {t}", .{err});
+            return err;
+        };
+        return g;
+    }
+
+    pub fn updateGraph(ctx: *Context, core: *Core, g: *ConceptGraph, concept_id: Id) !void {
+        const ids: [1]Id = .{concept_id};
+        const concept = (try Funcs.getConceptsById(ctx, core, &ids))[0];
+        var diags: sqlite.Diagnostics = .{};
+        g.graph.addNode(concept.id.uuid, concept.name) catch |err| {
+            return ctx.setError("Failed to add node: {t}", .{err});
+        };
+        const ancestors = core.getAncestors(ctx.arena, &ids, false, &diags) catch |err| {
+            return ctx.setError("Failed to get ancestors: {t}", .{err});
+        };
+        for (ancestors) |*ancestor| {
+            g.graph.addNode(ancestor.id.uuid, ancestor.name) catch |err| {
+                return ctx.setError("Failed to add node: {t}", .{err});
+            };
+        }
+        for (ancestors) |*ancestor| {
+            g.graph.addEdge(ancestor.id.uuid, ancestor.child_id.uuid) catch |err| {
+                return ctx.setError("Failed to add edge: {t}", .{err});
+            };
+        }
+        
+        g.graph.layout("dot") catch |err| {
+            return ctx.setError("Failed to layout graph: {t}", .{err});
+        };
+        g.renderer.render(&g.graph) catch |err| {
+            return ctx.setError("Failed to render graph: {t}", .{err});
+        };
     }
 };
 
@@ -125,6 +204,8 @@ export fn emacs_module_init(rt: [*c]c.emacs_runtime) c_int {
     emacs.registerFunc(env, "ilm--core-all-concepts", Funcs.getAllConcepts, "Get all concepts");
     emacs.registerFunc(env, "ilm--core-concepts-by-id", Funcs.getConceptsById, "Get concepts by IDs");
     emacs.registerFunc(env, "ilm--core-ancestors", Funcs.getAncestors, "Get ancestory of concepts");
+    emacs.registerFunc(env, "ilm--core-make-graph", Funcs.makeGraph, "");
+    emacs.registerFunc(env, "ilm--core-update-graph", Funcs.updateGraph, "");
 
     return 0;
 }

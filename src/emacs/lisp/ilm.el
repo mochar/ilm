@@ -10,7 +10,6 @@
 
 (require 'cl-lib)
 (require 'map)
-(require 'dag-draw)
 
 ;;;; Module
 
@@ -111,6 +110,21 @@ Otherwise return the full hierarchy with :is_direct and :depth properties."
     (dag-draw-render-graph g 'ascii (intern (map-elt concept :id)))))
 
 (defvar ilm-concept-graph-buffer "*ilm concept graph*")
+(defvar ilm-concept-graph-buffer-data
+  (list
+   :graph-ptr nil
+   :canvas `(image
+            :type canvas
+            :id ilm-concept-graph-buf
+            :data-width 100
+            :data-height 100)))
+
+(defun ilm--insert-concept-graph (concept)
+  (map-let (:graph-ptr :canvas) ilm-concept-graph-buffer-data
+    (unless graph-ptr
+      (map-let (:data-width :data-height) canvas
+        (setf (map-elt ilm-concept-graph-buffer-data :graph-ptr)
+              (ilm--core-make-graph ilm--core data-width data-height canvas))))))
 
 (defun ilm--concept-consult-state (action concept)
   "State function for previewing concepts in consult."
@@ -122,6 +136,7 @@ Otherwise return the full hierarchy with :is_direct and :depth properties."
     ('preview
      (if concept
          (ilm-with-special-buffer ilm-concept-graph-buffer
+           (ilm--insert-concept-graph concept)
            (princ (ilm-draw-concept-graph concept)))
        (when-let* ((win (get-buffer-window ilm-concept-graph-buffer)))
          (quit-window nil win))))))

@@ -1,7 +1,7 @@
 
 #+name: initt
 #+begin_src emacs-lisp :eval no
-(setq default-directory (expand-file-name "lisp"))
+(setq default-directory (expand-file-name "src/emacs/lisp"))
 (load-file "./ilm.el")
 (ilm--reload-module)
 (let ((data-dir "/home/mochar/tmp/ilm/"))
@@ -14,7 +14,16 @@
 ;;   (message "A: %s" (ilm-concept-ancestors a))
 ;;   (message "B: %s" (ilm-concept-ancestors b))
 ;;   (message "C: %s" (ilm-concept-ancestors c)))
-(message "%s" (ilm--all-concepts))
+;; (message "%s" (ilm--all-concepts))
+;; (setq ilm-graph-canvas (map-elt ilm-concept-graph-buffer-data :canvas))
+(setq ilm-graph-canvas (quote (image
+            :type canvas
+            :id ilm-concept-graph-buf
+            :data-width 500
+            :data-height 500)))
+(insert (propertize "#" (quote display) ilm-graph-canvas))
+(setq ilm-graph (ilm--core-make-graph ilm--core ilm-graph-canvas))
+(ilm--core-update-graph ilm--core ilm-graph (map-elt (nth 5 (ilm--all-concepts)) :id))
 #+end_src
 
 

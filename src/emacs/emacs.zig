@@ -99,6 +99,12 @@ pub fn copyStringAlloc(env: *c.emacs_env, emacs_str: c.emacs_value, allocator: s
     return buf;
 }
 
+/// Test if an emacs_value symbol has the given name.
+pub fn symbol_eq(env: *c.emacs_env, a_symbol: c.emacs_value, b_name: [:0]const u8) bool {
+    const b_symbol = env.*.intern.?(env, b_name.ptr);
+    return env.*.eq.?(env, a_symbol, b_symbol);
+}
+
 /// Make a function available from emacs
 pub fn registerEmacsFunc(
     env: *c.emacs_env,
@@ -121,32 +127,36 @@ pub fn registerEmacsFunc(
 pub fn convertFrom(comptime T: type, env: *c.emacs_env, val: c.emacs_value, allocator: std.mem.Allocator) !T {
     switch (@typeInfo(T)) {
         .pointer => |pointer| {
-            if (pointer.size == .one and pointer.child == Core) {
+            // If single item pointer, assume this is as user_ptr that we passed to emacs.
+            if (pointer.size == .one) {
                 const ptr = env.*.get_user_ptr.?(env, val) orelse return error.NullUserPtr;
                 return @ptrCast(@alignCast(ptr));
-            } else if (pointer.size == .slice and pointer.child == u8) {
-                return copyStringAlloc(env, val, allocator);
-            } else {
-                // Convert Emacs list to Zig slice []T
-                const q_car = env.*.intern.?(env, "car");
-                const q_cdr = env.*.intern.?(env, "cdr");
-
-                // TODO memory managed right here?
-                var list: std.ArrayList(pointer.child) = .empty;
-                errdefer list.deinit(allocator);
-
-                var current = val;
-                while (env.*.is_not_nil.?(env, current)) {
-                    var args = [_]c.emacs_value{current};
-                    const head = env.*.funcall.?(env, q_car, 1, &args);
-                    current = env.*.funcall.?(env, q_cdr, 1, &args);
-
-                    const item = try convertFrom(pointer.child, env, head, allocator);
-                    try list.append(allocator, item);
-                }
-
-                return try list.toOwnedSlice(allocator);
             }
+
+            // Strings
+            if (pointer.size == .slice and pointer.child == u8) {
+                return copyStringAlloc(env, val, allocator);
+            }
+            
+            // Convert Emacs list to Zig slice []T
+            const q_car = env.*.intern.?(env, "car");
+            const q_cdr = env.*.intern.?(env, "cdr");
+
+            // TODO memory managed right here?
+            var list: std.ArrayList(pointer.child) = .empty;
+            errdefer list.deinit(allocator);
+
+            var current = val;
+            while (env.*.is_not_nil.?(env, current)) {
+                var args = [_]c.emacs_value{current};
+                const head = env.*.funcall.?(env, q_car, 1, &args);
+                current = env.*.funcall.?(env, q_cdr, 1, &args);
+                
+                const item = try convertFrom(pointer.child, env, head, allocator);
+                try list.append(allocator, item);
+            }
+
+            return try list.toOwnedSlice(allocator);
         },
         .@"struct" => |s| {
             // Custom deserializer
@@ -289,6 +299,8 @@ pub fn wrapFunc(comptime func: anytype) EmacsFunc {
             inline for (func_info.params, 0..) |param, i| {
                 if (i == 0) {
                     args_tuple[0] = &ctx;
+                } else if (param.type.? == c.emacs_value) {
+                    args_tuple[i] = args[i - 1];
                 } else {
                     args_tuple[i] = convertFrom(param.type.?, env, args[i - 1], allocator) catch |err| {
                         ctx.setError("Error building emacs function: {t}", .{err});
@@ -335,3 +347,76 @@ pub fn registerFunc(
     const param_count = @typeInfo(@TypeOf(func)).@"fn".params.len - 1;
     registerEmacsFunc(env, name, param_count, param_count, emacs_func, doc);
 }
+
+/// Parses a list iteratively through car and cdr and storing the current cons.
+///
+/// The current cons is nil, we have finished traversing the list. Note that if
+/// last element is nil, this is not the same as the cons being nil (it is (cons
+/// nil nil)).
+pub const ListConverter = struct {
+    env: *c.emacs_env,
+    q_car: c.emacs_value,
+    q_cdr: c.emacs_value,
+    /// Current cons, null means finished traversing the list.
+    cons: ?c.emacs_value,
+
+    pub fn init(env: *c.emacs_env, list: c.emacs_value) ListConverter {
+        return .{
+            .env = env,
+            .q_car = env.*.intern.?(env, "car"),
+            .q_cdr = env.*.intern.?(env, "cdr"),
+            .cons = if (env.*.is_not_nil.?(env, list)) list else null,
+        };
+    }
+
+    pub fn next(self: *ListConverter) !c.emacs_value {
+        if (self.cons == null) return error.Done;
+        var args = [_]c.emacs_value{self.cons.?};
+        const car = self.env.*.funcall.?(self.env, self.q_car, 1, &args);
+        const cdr = self.env.*.funcall.?(self.env, self.q_cdr, 1, &args);
+        self.cons = if (self.env.*.is_not_nil.?(self.env, cdr)) cdr else null;
+        return car;
+    }
+
+    /// Note that if T is null, this can return null, so an empty list raises an
+    /// error instead to avoid ambiguity.
+    pub fn nextType(self: *ListConverter, comptime T: type, allocator: std.mem.Allocator) !T {
+        const value = try self.next();
+        return try convertFrom(T, self.env, value, allocator);
+    }
+};
+
+pub const Canvas = struct {
+    width: u32,
+    height: u32,
+
+    pub fn fromSpec(gpa: std.mem.Allocator, env: *c.emacs_env, canvas_spec: c.emacs_value) !Canvas {
+        var arena: std.heap.ArenaAllocator = .init(gpa);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+
+        var converter = ListConverter.init(env, canvas_spec);
+
+        var cur = try converter.next();
+        if (!symbol_eq(env, cur, "image")) return error.Invalid;
+
+        var type_correct = false;
+        var width: ?u32 = null;
+        var height: ?u32 = null;
+        while (converter.cons != null) {
+            cur = try converter.next();
+            if (symbol_eq(env, cur, ":type")) {
+                cur = try converter.next();
+                if (!symbol_eq(env, cur, "canvas")) return error.NotCanvasType;
+                type_correct = true;
+            } else if (symbol_eq(env, cur, ":data-width")) {
+                width = try convertFrom(u32, env, try converter.next(), allocator);
+            } else if (symbol_eq(env, cur, ":data-height")) {
+                height = try convertFrom(u32, env, try converter.next(), allocator);
+            }
+        }
+
+        if (!type_correct or width == null or height == null) return error.Incomplete;
+        return .{ .width = width.?, .height = height.? };
+    }
+};

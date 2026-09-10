@@ -322,7 +322,7 @@ pub const Renderer = struct {
 
                 const font_size: f32 = 12.0;
                 c.plutovg_canvas_set_font(canvas, font, font_size);
-
+                
                 var extents: c.plutovg_rect_t = undefined;
                 const adv = c.plutovg_font_face_text_extents(
                     font,
