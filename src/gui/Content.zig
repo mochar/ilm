@@ -1,7 +1,8 @@
 const std = @import("std");
 const dvui = @import("dvui");
 
-const Core = @import("core").Core;
+const ilm = @import("ilm");
+const Core = ilm.Core;
 const Self = @This();
 const Concepts = @import("Concepts.zig");
 

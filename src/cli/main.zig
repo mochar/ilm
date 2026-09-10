@@ -1,10 +1,10 @@
 const std = @import("std");
 const known_folders = @import("known-folders");
-const Core = @import("core").Core;
+const Core = @import("ilm").Core;
 
 pub fn main(init: std.process.Init) !void {
     const data_path = (try known_folders.getPath(init.io, init.gpa, init.environ_map, .data)) orelse return error.FolderNotFound;
-    const core = try Core.init(init.gpa, init.io, .{ .data_dir = data_path });
+    const core = try Core.init(init.gpa, init.io, data_path, .{});
     defer core.deinit();
 
     var read_buf: [1024]u8 = undefined;

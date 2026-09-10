@@ -2,11 +2,11 @@ const std = @import("std");
 const dvui = @import("dvui");
 const sqlite = @import("sqlite");
 
-const core_mod = @import("core");
-const Core = core_mod.Core;
-const Concept = Core.Concept;
-const Graph = core_mod.Graph;
-const Id = Core.Id;
+const ilm = @import("ilm");
+const Core = ilm.Core;
+const Concept = ilm.concept.Concept;
+const Graph = ilm.Graph;
+const Id = ilm.Id;
 const Self = @This();
 
 const MAX_GRAPH_WIDTH: u32 = 2048;
@@ -79,7 +79,7 @@ fn getConcepts(self: *Self) void {
     defer arena_instance.deinit();
 
     var diags: sqlite.Diagnostics = .{};
-    if (self.core.getAllConcepts(arena, &diags)) |concepts| {
+    if (ilm.concept.getAll(self.core, arena, .{ .diags = &diags })) |concepts| {
         if (self.arena.allocator().dupe(Concept, concepts)) |cs| {
             self.concepts = cs;
         } else |_| {
@@ -182,7 +182,7 @@ fn updateGraphContent(self: *Self) void {
         self.graph.addNode(concept.id.uuid, concept.name) catch |err| {
             return self.toastErr(@src(), err, "Failed to add node", .{});
         };
-        const ancestors = self.core.getAncestors(self.arena.allocator(), &ids, false, &diags) catch |err| {
+        const ancestors = ilm.concept.getAncestors(self.core, self.arena.allocator(), &ids, false, .{ .diags = &diags }) catch |err| {
             return self.toastErr(@src(), err, "Failed to get ancestors", .{});
         };
         for (ancestors) |*ancestor| {

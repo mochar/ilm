@@ -93,7 +93,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "core", .module = core_mod },
+                .{ .name = "ilm", .module = core_mod },
                 .{ .name = "known-folders", .module = known_folders_dep.module("known-folders") },
             },
         }),
@@ -120,7 +120,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
         .imports = &.{
-            .{ .name = "core", .module = core_mod },
+            .{ .name = "ilm", .module = core_mod },
             .{ .name = "sqlite", .module = sqlite_dep.module("sqlite") },
         },
     });
@@ -149,7 +149,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "core", .module = core_mod },
+                .{ .name = "ilm", .module = core_mod },
                 .{ .name = "known-folders", .module = known_folders_dep.module("known-folders") },
                 .{ .name = "sqlite", .module = sqlite_dep.module("sqlite") },
             },

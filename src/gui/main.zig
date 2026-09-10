@@ -3,7 +3,7 @@ const builtin = @import("builtin");
 const dvui = @import("dvui");
 const sqlite = @import("sqlite");
 
-const Core = @import("core").Core;
+const Core = @import("ilm").Core;
 const Content = @import("Content.zig");
 
 pub const dvui_app: dvui.App = .{
@@ -94,8 +94,8 @@ fn connect() void {
     if (core) |c| c.deinit();
 
     var diags: sqlite.Diagnostics = .{};
-    const options: Core.Options = .{ .data_dir = "/home/mochar/tmp/ilm/", .sqlite_diagnostics = &diags };
-    if (Core.init(gpa, dvui.io, options)) |c| {
+    const data_dir = "/home/mochar/tmp/ilm/";
+    if (Core.init(gpa, dvui.io, data_dir, .{ .sqlite_diagnostics = &diags })) |c| {
         core = c;
         if (Content.init(gpa, c)) |con| {
             content = con;

@@ -1,11 +1,12 @@
 const std = @import("std");
 var io = std.Io.Threaded.init_single_threaded;
 
-const core_mod = @import("core");
-const Core = core_mod.Core;
-const Id = Core.Id;
-const IdStr = Core.IdStr;
-const Graph = core_mod.Graph;
+const ilm = @import("ilm");
+const Core = ilm.Core;
+const Id = ilm.Id;
+const Concept = ilm.concept.Concept;
+const ConceptAncestor = ilm.concept.ConceptAncestor;
+const Graph = ilm.Graph;
 const sqlite = @import("sqlite");
 
 const emacs = @import("emacs.zig");
@@ -18,9 +19,8 @@ pub export var plugin_is_GPL_compatible: c_int = 1;
 const Funcs = struct {
     pub fn init(ctx: *Context, data_dir: []const u8) !*Core {
         var diags: sqlite.Diagnostics = .{};
-        const options: Core.Options = .{ .data_dir = data_dir, .sqlite_diagnostics = &diags };
         const allocator = std.heap.c_allocator;
-        const core = Core.init(allocator, io.io(), options) catch |err| {
+        const core = Core.init(allocator, io.io(), data_dir, .{ .sqlite_diagnostics = &diags }) catch |err| {
             if (diags.err) |sqlite_err| {
                 ctx.setError("Failed to init: {t}: {s}", .{ err, sqlite_err.message });
             } else {
@@ -35,16 +35,16 @@ const Funcs = struct {
         return core.isValid();
     }
 
-    pub fn newId(_: *Context, core: *Core) IdStr {
+    pub fn newId(_: *Context, core: *Core) Id.StrT {
         var id = core.newId();
         return id.serialize();
     }
 
-    pub fn addConcept(ctx: *Context, core: *Core, name: []u8, parent_ids: []Id) !IdStr {
+    pub fn addConcept(ctx: *Context, core: *Core, name: []u8, parent_ids: []Id) !Id.StrT {
         var diags: sqlite.Diagnostics = .{};
-        var id = core.addConcept(name, parent_ids, &diags) catch |err| {
+        var id = ilm.concept.add(core, name, parent_ids, .{ .diags = &diags }) catch |err| {
             if (diags.err) |sqlite_err| {
-                ctx.setError("Sqlite error: {s}", .{ sqlite_err.message });
+                ctx.setError("Sqlite error: {s}", .{sqlite_err.message});
             } else {
                 ctx.setError("Failed to add concept: {t}", .{err});
             }
@@ -55,9 +55,9 @@ const Funcs = struct {
 
     pub fn addConceptParent(ctx: *Context, core: *Core, child_id: Id, parent_id: Id) !void {
         var diags: sqlite.Diagnostics = .{};
-        core.addConceptParent(child_id, parent_id, &diags) catch |err| {
+        ilm.concept.addParent(core, child_id, parent_id, .{ .diags = &diags }) catch |err| {
             if (diags.err) |sqlite_err| {
-                ctx.setError("Sqlite error: {s}", .{ sqlite_err.message });
+                ctx.setError("Sqlite error: {s}", .{sqlite_err.message});
             } else {
                 ctx.setError("Failed to add concept parent: {t}", .{err});
             }
@@ -67,9 +67,9 @@ const Funcs = struct {
 
     pub fn removeConceptParent(ctx: *Context, core: *Core, child_id: Id, parent_id: Id) !void {
         var diags: sqlite.Diagnostics = .{};
-        core.removeConceptParent(child_id, parent_id, &diags) catch |err| {
+        ilm.concept.removeParent(core, child_id, parent_id, .{ .diags = &diags }) catch |err| {
             if (diags.err) |sqlite_err| {
-                ctx.setError("Sqlite error: {s}", .{ sqlite_err.message });
+                ctx.setError("Sqlite error: {s}", .{sqlite_err.message});
             } else {
                 ctx.setError("Failed to remove concept parent: {t}", .{err});
             }
@@ -77,11 +77,11 @@ const Funcs = struct {
         };
     }
 
-    pub fn getAllConcepts(ctx: *Context, core: *Core) ![]Core.Concept {
+    pub fn getAllConcepts(ctx: *Context, core: *Core) ![]Concept {
         var diags: sqlite.Diagnostics = .{};
-        const concepts = core.getAllConcepts(ctx.arena, &diags) catch |err| {
+        const concepts = ilm.concept.getAll(core, ctx.arena, .{ .diags = &diags }) catch |err| {
             if (diags.err) |sqlite_err| {
-                ctx.setError("Sqlite error: {s}", .{ sqlite_err.message });
+                ctx.setError("Sqlite error: {s}", .{sqlite_err.message});
             } else {
                 ctx.setError("Failed to get concepts: {t}", .{err});
             }
@@ -90,11 +90,11 @@ const Funcs = struct {
         return concepts;
     }
 
-    pub fn getConceptsById(ctx: *Context, core: *Core, ids: []const Id) ![]Core.Concept {
+    pub fn getConceptsById(ctx: *Context, core: *Core, ids: []const Id) ![]Concept {
         var diags: sqlite.Diagnostics = .{};
-        const concepts = core.getConceptsById(ctx.arena, ids, &diags) catch |err| {
+        const concepts = ilm.concept.getById(core, ctx.arena, ids, .{ .diags = &diags }) catch |err| {
             if (diags.err) |sqlite_err| {
-                ctx.setError("Sqlite error: {s}", .{ sqlite_err.message });
+                ctx.setError("Sqlite error: {s}", .{sqlite_err.message});
             } else {
                 ctx.setError("Failed to get concepts: {t}", .{err});
             }
@@ -104,11 +104,11 @@ const Funcs = struct {
         return concepts;
     }
 
-    pub fn getAncestors(ctx: *Context, core: *Core, ids: []Id, direct_only: bool) ![]Core.ConceptAncestor {
+    pub fn getAncestors(ctx: *Context, core: *Core, ids: []Id, direct_only: bool) ![]ConceptAncestor {
         var diags: sqlite.Diagnostics = .{};
-        const ancestors = core.getAncestors(ctx.arena, ids, direct_only, &diags) catch |err| {
+        const ancestors = ilm.concept.getAncestors(core, ctx.arena, ids, direct_only, .{ .diags = &diags }) catch |err| {
             if (diags.err) |sqlite_err| {
-                ctx.setError("Sqlite error: {s}", .{ sqlite_err.message });
+                ctx.setError("Sqlite error: {s}", .{sqlite_err.message});
             } else {
                 ctx.setError("Failed to get ancestors: {t}", .{err});
             }
@@ -131,18 +131,18 @@ const Funcs = struct {
     // This leaks memory as we have no way currently to free the pointer data
     // itself (we only have finalizer calling deinit() on the pointer data struct).
     pub fn makeGraph(ctx: *Context, core: *Core, canvas_spec: c.emacs_value) !*ConceptGraph {
-        const canvas_info: emacs.Canvas = try .fromSpec(core.allocator, ctx.env, canvas_spec);
+        const canvas_info: emacs.Canvas = try .fromSpec(core.gpa, ctx.env, canvas_spec);
         const width = canvas_info.width;
         const height = canvas_info.height;
 
-        emacs.message(ctx.env, "Found width '{d}' and height '{d}'", .{width, height});
+        emacs.message(ctx.env, "Found width '{d}' and height '{d}'", .{ width, height });
 
         const canvas_buf: [*]u8 = @ptrCast(ctx.env.canvas_data.?(ctx.env, canvas_spec));
-        const g = core.allocator.create(ConceptGraph) catch |err| {
+        const g = core.gpa.create(ConceptGraph) catch |err| {
             ctx.setError("Failed to allocate ConceptGraph: {t}", .{err});
             return err;
         };
-        g.graph = Graph.init(core.allocator, .{
+        g.graph = Graph.init(core.gpa, .{
             .width = width,
             .height = height,
         }) catch |err| {
@@ -150,9 +150,9 @@ const Funcs = struct {
             return err;
         };
         g.renderer = Graph.Renderer.init(.{
-            .gpa = core.allocator,
+            .gpa = core.gpa,
             .graph = &g.graph,
-            .buffer = canvas_buf[0..width*height*4],
+            .buffer = canvas_buf[0 .. width * height * 4],
             .buffer_stride = width,
             .buffer_height = height,
         }) catch |err| {
@@ -169,7 +169,7 @@ const Funcs = struct {
         g.graph.addNode(concept.id.uuid, concept.name) catch |err| {
             return ctx.setError("Failed to add node: {t}", .{err});
         };
-        const ancestors = core.getAncestors(ctx.arena, &ids, false, &diags) catch |err| {
+        const ancestors = ilm.concept.getAncestors(core, ctx.arena, &ids, false, .{ .diags = &diags }) catch |err| {
             return ctx.setError("Failed to get ancestors: {t}", .{err});
         };
         for (ancestors) |*ancestor| {
@@ -182,7 +182,7 @@ const Funcs = struct {
                 return ctx.setError("Failed to add edge: {t}", .{err});
             };
         }
-        
+
         g.graph.layout("dot") catch |err| {
             return ctx.setError("Failed to layout graph: {t}", .{err});
         };
