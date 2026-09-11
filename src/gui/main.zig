@@ -41,7 +41,10 @@ pub fn appInit(win: *dvui.Window) !void {
 pub fn appDeinit(win: *dvui.Window) void {
     _ = win;
     if (content) |*c| c.deinit();
-    if (core) |c| c.deinit();
+    if (core) |c| {
+        c.deinit();
+        gpa.destroy(c);
+    }
 }
 
 pub fn appFrame() !dvui.App.Result {
@@ -95,9 +98,12 @@ fn connect() void {
 
     var diags: sqlite.Diagnostics = .{};
     const data_dir = "/home/mochar/tmp/ilm/";
+    core = gpa.create(Core) catch {
+        return dvui.toast(@src(), .{ .message = "Failed to allocate Core" });
+    };
     if (Core.init(gpa, dvui.io, data_dir, .{ .sqlite_diagnostics = &diags })) |c| {
-        core = c;
-        if (Content.init(gpa, c)) |con| {
+        core.?.* = c;
+        if (Content.init(gpa, core.?)) |con| {
             content = con;
             dvui.toast(@src(), .{ .message = "Connected!" });
         } else |_| {

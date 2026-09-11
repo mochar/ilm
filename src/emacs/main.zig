@@ -1,6 +1,4 @@
 const std = @import("std");
-var io = std.Io.Threaded.init_single_threaded;
-
 const ilm = @import("ilm");
 const Core = ilm.Core;
 const Id = ilm.Id;
@@ -13,14 +11,18 @@ const emacs = @import("emacs.zig");
 const Context = emacs.Context;
 const c = emacs.c;
 
+var gpa_instance = std.heap.DebugAllocator(.{}){};
+const gpa = gpa_instance.allocator();
+var io = std.Io.Threaded.init_single_threaded;
+
 pub export var plugin_is_GPL_compatible: c_int = 1;
 
 /// Functions that will be available to emacs
 const Funcs = struct {
     pub fn init(ctx: *Context, data_dir: []const u8) !*Core {
         var diags: sqlite.Diagnostics = .{};
-        const allocator = std.heap.c_allocator;
-        const core = Core.init(allocator, io.io(), data_dir, .{ .sqlite_diagnostics = &diags }) catch |err| {
+        const core = try std.heap.c_allocator.create(Core);
+        core.* = Core.init(gpa, io.io(), data_dir, .{ .sqlite_diagnostics = &diags }) catch |err| {
             if (diags.err) |sqlite_err| {
                 ctx.setError("Failed to init: {t}: {s}", .{ err, sqlite_err.message });
             } else {

@@ -229,6 +229,7 @@ pub fn convertTo(comptime T: type, env: *c.emacs_env, val: T) !c.emacs_value {
                         if (p) |raw| {
                             const typed: T = @ptrCast(@alignCast(raw));
                             if (@hasDecl(pointer.child, "deinit")) typed.deinit();
+                            std.heap.c_allocator.destroy(typed);
                         }
                     }
                 }.f;
