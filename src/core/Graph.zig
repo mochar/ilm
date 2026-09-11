@@ -8,7 +8,8 @@ const c = @cImport({
 
 const Graph = @This();
 
-gpa: std.mem.Allocator,
+/// Allocates when building the graph and resets when cleared.
+arena: std.heap.ArenaAllocator,
 gvc: *c.GVC_t,
 g: *c.Agraph_t,
 width: u32,
@@ -22,12 +23,12 @@ pub const GraphOptions = struct {
     dpi: f32 = 96.0,
 };
 
-pub fn init(gpa: std.mem.Allocator, options: GraphOptions) !Graph {
+pub fn init(allocator: std.mem.Allocator, options: GraphOptions) !Graph {
     const gvc = c.gvContext() orelse return error.GVCFailed;
     const g = agopen(@constCast("graph"), Agdirected, null) orelse return error.OpenFailed;
     _ = c.agsafeset(g, @constCast("bgcolor"), @constCast("transparent"), @constCast(""));
     var graph: Graph = .{
-        .gpa = gpa,
+        .arena = .init(allocator),
         .gvc = gvc,
         .g = g,
         .width = options.width,
@@ -44,6 +45,7 @@ pub fn deinit(graph: *const Graph) void {
     }
     _ = c.agclose(graph.g);
     _ = c.gvFreeContext(graph.gvc);
+    graph.arena.deinit();
 }
 
 /// Set the graph dimensions given pixel width and height, and dpi.
@@ -67,6 +69,7 @@ pub fn setDimensions(graph: *Graph, width_px: u32, height_px: u32, dpi: f32) !vo
 
 /// Remove all nodes and edges, and clear the layout.
 pub fn clear(graph: *Graph) void {
+    defer _ = graph.arena.reset(.retain_capacity);
     if (graph.has_layout) {
         _ = c.gvFreeLayout(graph.gvc, graph.g);
         graph.has_layout = false;
@@ -88,12 +91,13 @@ pub fn idToName(id: u128, buf: *[33]u8) [:0]const u8 {
     return std.fmt.bufPrintZ(buf, "{x:0>32}", .{id}) catch unreachable;
 }
 
-pub fn addNode(graph: *const Graph, id: u128, label: []const u8) !void {
+pub fn addNode(graph: *Graph, id: u128, label: []const u8) !void {
     var buf: [33]u8 = undefined;
     const name = idToName(id, &buf);
 
-    const label_z = try graph.gpa.dupeZ(u8, label);
-    defer graph.gpa.free(label_z);
+    var arena = graph.arena.allocator();
+    const label_z = try arena.dupeZ(u8, label);
+    defer arena.free(label_z);
 
     const node = c.agnode(graph.g, @constCast(name), 1) orelse return error.NodeFailed;
     _ = c.agsafeset(node, @constCast("label"), @ptrCast(@constCast(label_z)), @constCast(""));
@@ -146,7 +150,7 @@ pub fn renderToFile(graph: *const Graph, format: []const u8, filename: []const u
 
 pub const RendererOptions = struct {
     gpa: std.mem.Allocator,
-    graph: *const Graph,
+    graph_options: GraphOptions,
     /// Buffer stride in pixels
     buffer_stride: usize,
     /// Number of rows in the buffer
@@ -164,6 +168,7 @@ pub const RendererOptions = struct {
 /// the size (width*height) fits within the buffer.
 pub const Renderer = struct {
     gpa: std.mem.Allocator,
+    graph: Graph,
     /// ARGB32 pixel buffer.
     buffer: []u8,
     /// Buffer stride in pixels
@@ -188,7 +193,7 @@ pub const Renderer = struct {
 
     pub fn init(options: RendererOptions) !Renderer {
         const gpa = options.gpa;
-        const graph = options.graph;
+        const graph = try Graph.init(gpa, options.graph_options);
         
         const stride = options.buffer_stride;
         const height = options.buffer_height;
@@ -201,7 +206,7 @@ pub const Renderer = struct {
             @memset(buffer, 0);
         }
 
-        try ensureSize(buffer, graph);
+        try ensureSize(buffer, &graph);
 
         if (plutovg_font == null) {
             if (c.plutovg_font_face_load_from_data(
@@ -217,6 +222,7 @@ pub const Renderer = struct {
 
         return .{
             .gpa = gpa,
+            .graph = graph,
             .buffer = buffer,
             .stride = stride,
             .height = height,
@@ -225,14 +231,16 @@ pub const Renderer = struct {
     }
 
     pub fn deinit(self: *Renderer) void {
+        self.graph.deinit();
         if (self.managed) {
             self.gpa.free(self.buffer);
         }
     }
 
     /// Render the graph in the pixel buffer.
-    pub fn render(self: *Renderer, graph: *Graph) !void {
+    pub fn render(self: *Renderer) !void {
         const buffer = self.buffer;
+        const graph = &self.graph;
         try ensureSize(buffer, graph);
 
         // TODO Store surface and canvase in struct and only recreate when graph

@@ -17,7 +17,6 @@ arena: std.heap.ArenaAllocator,
 render_arena: std.heap.ArenaAllocator,
 concepts: []Concept = &.{},
 selected: ?*Concept = null,
-graph: Graph,
 graph_renderer: Graph.Renderer,
 graph_texture: dvui.Texture,
 rendered_width: u32 = 0,
@@ -30,13 +29,12 @@ pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
     const render_arena = std.heap.ArenaAllocator.init(gpa);
     errdefer render_arena.deinit();
 
-    const graph = try Graph.init(gpa, .{
-        .width = MAX_GRAPH_WIDTH,
-        .height = MAX_GRAPH_HEIGHT,
-    });
     const graph_renderer = try Graph.Renderer.init(.{
         .gpa = gpa,
-        .graph = &graph,
+        .graph_options = .{
+            .width = MAX_GRAPH_WIDTH,
+            .height = MAX_GRAPH_HEIGHT,
+        },
         .buffer_stride = MAX_GRAPH_WIDTH,
         .buffer_height = MAX_GRAPH_HEIGHT,
     });
@@ -49,7 +47,6 @@ pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
         .core = core,
         .arena = arena,
         .render_arena = render_arena,
-        .graph = graph,
         .graph_renderer = graph_renderer,
         .graph_texture = graph_texture,
     };
@@ -61,7 +58,6 @@ pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
 }
 
 pub fn deinit(self: *Self) void {
-    self.graph.deinit();
     self.graph_renderer.deinit();
     self.arena.deinit();
     self.render_arena.deinit();
@@ -174,24 +170,25 @@ fn selectConcept(self: *Self, concept: *Concept) void {
 
 /// Replace the graph nodes and edges with that of self.selected
 fn updateGraphContent(self: *Self) void {
-    self.graph.clear();
+    var graph = &self.graph_renderer.graph;
+    graph.clear();
 
     if (self.selected) |concept| {
         var diags: sqlite.Diagnostics = .{};
         const ids: [1]Id = .{concept.id};
-        self.graph.addNode(concept.id.uuid, concept.name) catch |err| {
+        graph.addNode(concept.id.uuid, concept.name) catch |err| {
             return self.toastErr(@src(), err, "Failed to add node", .{});
         };
         const ancestors = ilm.concept.getAncestors(self.core, self.arena.allocator(), &ids, false, .{ .diags = &diags }) catch |err| {
             return self.toastErr(@src(), err, "Failed to get ancestors", .{});
         };
         for (ancestors) |*ancestor| {
-            self.graph.addNode(ancestor.id.uuid, ancestor.name) catch |err| {
+            graph.addNode(ancestor.id.uuid, ancestor.name) catch |err| {
                 return self.toastErr(@src(), err, "Failed to add node", .{});
             };
         }
         for (ancestors) |*ancestor| {
-            self.graph.addEdge(ancestor.id.uuid, ancestor.child_id.uuid) catch |err| {
+            graph.addEdge(ancestor.id.uuid, ancestor.child_id.uuid) catch |err| {
                 return self.toastErr(@src(), err, "Failed to add edge", .{});
             };
         }
@@ -200,13 +197,14 @@ fn updateGraphContent(self: *Self) void {
 
 /// Compute new layout, render to buffer, and update the texture
 fn updateGraphTexture(self: *Self) void {
-    self.graph.setDimensions(self.rendered_width, self.rendered_height, 96.0) catch |err| {
+    var graph = &self.graph_renderer.graph;
+    graph.setDimensions(self.rendered_width, self.rendered_height, 96.0) catch |err| {
         return self.toastErr(@src(), err, "Failed to set graph dimensions", .{});
     };
-    self.graph.layout("dot") catch |err| {
+    graph.layout("dot") catch |err| {
         return self.toastErr(@src(), err, "Failed to layout graph", .{});
     };
-    self.graph_renderer.render(&self.graph) catch |err| {
+    self.graph_renderer.render() catch |err| {
         return self.toastErr(@src(), err, "Failed to render graph", .{});
     };
     self.graph_texture.updateSubRect(self.graph_renderer.buffer.ptr, 0, 0, self.rendered_width, self.rendered_height) catch |err| {

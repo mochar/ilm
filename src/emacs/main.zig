@@ -13,6 +13,7 @@ const c = emacs.c;
 
 var gpa_instance = std.heap.DebugAllocator(.{}){};
 const gpa = gpa_instance.allocator();
+const c_allocator = std.heap.c_allocator;
 var io = std.Io.Threaded.init_single_threaded;
 
 pub export var plugin_is_GPL_compatible: c_int = 1;
@@ -21,7 +22,7 @@ pub export var plugin_is_GPL_compatible: c_int = 1;
 const Funcs = struct {
     pub fn init(ctx: *Context, data_dir: []const u8) !*Core {
         var diags: sqlite.Diagnostics = .{};
-        const core = try std.heap.c_allocator.create(Core);
+        const core = try c_allocator.create(Core);
         core.* = Core.init(gpa, io.io(), data_dir, .{ .sqlite_diagnostics = &diags }) catch |err| {
             if (diags.err) |sqlite_err| {
                 ctx.setError("Failed to init: {t}: {s}", .{ err, sqlite_err.message });
@@ -119,52 +120,35 @@ const Funcs = struct {
         return ancestors;
     }
 
-    const ConceptGraph = struct {
-        graph: Graph,
-        renderer: Graph.Renderer,
-
-        pub fn deinit(self: *ConceptGraph) void {
-            self.renderer.deinit();
-            self.graph.deinit();
-        }
-    };
-
-    // TODO Add way to pass finalizer to ctx.
-    // This leaks memory as we have no way currently to free the pointer data
-    // itself (we only have finalizer calling deinit() on the pointer data struct).
-    pub fn makeGraph(ctx: *Context, core: *Core, canvas_spec: c.emacs_value) !*ConceptGraph {
+    pub fn makeGraph(ctx: *Context, core: *Core, canvas_spec: c.emacs_value) !*Graph.Renderer {
         const canvas_info: emacs.Canvas = try .fromSpec(core.gpa, ctx.env, canvas_spec);
         const width = canvas_info.width;
         const height = canvas_info.height;
 
-        emacs.message(ctx.env, "Found width '{d}' and height '{d}'", .{ width, height });
-
         const canvas_buf: [*]u8 = @ptrCast(ctx.env.canvas_data.?(ctx.env, canvas_spec));
-        const g = core.gpa.create(ConceptGraph) catch |err| {
-            ctx.setError("Failed to allocate ConceptGraph: {t}", .{err});
+        const graph_renderer = c_allocator.create(Graph.Renderer) catch |err| {
+            ctx.setError("Failed to allocate Graph.Renderer: {t}", .{err});
             return err;
         };
-        g.graph = Graph.init(core.gpa, .{
-            .width = width,
-            .height = height,
-        }) catch |err| {
-            ctx.setError("Failed to initialize Graph: {t}", .{err});
-            return err;
-        };
-        g.renderer = Graph.Renderer.init(.{
+        errdefer c_allocator.destroy(graph_renderer);
+        
+        graph_renderer.* = Graph.Renderer.init(.{
             .gpa = core.gpa,
-            .graph = &g.graph,
+            .graph_options = .{
+                .width = width,
+                .height = height,
+            },
             .buffer = canvas_buf[0 .. width * height * 4],
             .buffer_stride = width,
             .buffer_height = height,
         }) catch |err| {
-            ctx.setError("Failed to initialize Graph renderer: {t}", .{err});
+            ctx.setError("Failed to initialize Graph Renderer: {t}", .{err});
             return err;
         };
-        return g;
+        return graph_renderer;
     }
 
-    pub fn updateGraph(ctx: *Context, core: *Core, g: *ConceptGraph, concept_id: Id) !void {
+    pub fn updateGraph(ctx: *Context, core: *Core, g: *Graph.Renderer, concept_id: Id) !void {
         const ids: [1]Id = .{concept_id};
         const concept = (try Funcs.getConceptsById(ctx, core, &ids))[0];
         var diags: sqlite.Diagnostics = .{};
@@ -188,7 +172,7 @@ const Funcs = struct {
         g.graph.layout("dot") catch |err| {
             return ctx.setError("Failed to layout graph: {t}", .{err});
         };
-        g.renderer.render(&g.graph) catch |err| {
+        g.render() catch |err| {
             return ctx.setError("Failed to render graph: {t}", .{err});
         };
     }

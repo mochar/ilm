@@ -110,6 +110,8 @@ fn connect() void {
             dvui.toast(@src(), .{ .message = "Content init failed" });
         }
     } else |err| {
+        gpa.destroy(core.?);
+        core = null;
         var err_buf: [1024]u8 = undefined;
         const err_msg = if (diags.err) |sqlite_err| blk: {
             break :blk std.fmt.bufPrint(&err_buf, "Failed to init: {t}: {s}", .{ err, sqlite_err.message }) catch "Failed to init";
