@@ -198,9 +198,7 @@ fn updateGraphContent(self: *Self) void {
 /// Compute new layout, render to buffer, and update the texture
 fn updateGraphTexture(self: *Self) void {
     var graph = &self.graph_renderer.graph;
-    graph.setDimensions(self.rendered_width, self.rendered_height, 96.0) catch |err| {
-        return self.toastErr(@src(), err, "Failed to set graph dimensions", .{});
-    };
+    graph.setDimensions(self.rendered_width, self.rendered_height);
     graph.layout("dot") catch |err| {
         return self.toastErr(@src(), err, "Failed to layout graph", .{});
     };

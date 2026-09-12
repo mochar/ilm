@@ -173,9 +173,7 @@ const Funcs = struct {
         emacs.message(ctx.env, "Size: {d}x{d}", .{canvas.view_width orelse 0, canvas.view_height orelse 0});
 
         graph.clear();
-        graph.setDimensions(view_width, view_height, graph.dpi) catch |err| {
-            return ctx.setError("Failed to update graph size: {t}", .{err});
-        };
+        graph.setDimensions(view_width, view_height);
 
         const ids: [1]Id = .{concept_id};
         const concept = blk: {

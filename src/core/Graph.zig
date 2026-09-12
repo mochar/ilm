@@ -8,36 +8,43 @@ const c = @cImport({
 
 const Graph = @This();
 
+/// Resolution of graph in pixels per inch. Explanation:
+/// https://stackoverflow.com/a/20536144
+/// No point in making this variable.
+const GRAPHVIZ_DPI: f32 = 100.0;
+const GRAPHVIZ_DPI_STR = "100.0";
+
 /// Allocates when building the graph and resets when cleared.
 arena: std.heap.ArenaAllocator,
 gvc: *c.GVC_t,
 g: *c.Agraph_t,
 width: u32,
 height: u32,
-dpi: f32 = 96.0,
 has_layout: bool = false,
 
 pub const GraphOptions = struct {
     width: u32,
     height: u32,
-    /// Resolution in pixels per inch
-    dpi: f32 = 96.0,
 };
 
 pub fn init(allocator: std.mem.Allocator, options: GraphOptions) !Graph {
-    const gvc = c.gvContext() orelse return error.GVCFailed;
     const g = agopen(@constCast("graph"), Agdirected, null) orelse return error.OpenFailed;
     _ = c.agsafeset(g, @constCast("bgcolor"), @constCast("transparent"), @constCast(""));
+    _ = c.agsafeset(g, @constCast("dpi"), @constCast(GRAPHVIZ_DPI_STR), @constCast(""));
+    // Without this, graphviz will scale the image until one of the dimensions matches.
+    _ = c.agsafeset(g, @constCast("ratio"), @constCast("fill"), @constCast(""));
+
+    const gvc = c.gvContext() orelse return error.GVCFailed;
     var graph: Graph = .{
         .arena = .init(allocator),
         .gvc = gvc,
         .g = g,
         .width = options.width,
         .height = options.height,
-        .dpi = options.dpi,
         .has_layout = false,
     };
-    try setDimensions(&graph, options.width, options.height, options.dpi);
+    graph.setDimensions(options.width, options.height);
+
     return graph;
 }
 
@@ -50,24 +57,21 @@ pub fn deinit(graph: *const Graph) void {
     graph.arena.deinit();
 }
 
-/// Set the graph dimensions given pixel width and height, and dpi.
-pub fn setDimensions(graph: *Graph, width_px: u32, height_px: u32, dpi: f32) !void {
-    const w_in = @as(f32, @floatFromInt(width_px)) / dpi;
-    const h_in = @as(f32, @floatFromInt(height_px)) / dpi;
+/// Set the graph dimensions given pixel width and height.
+pub fn setDimensions(graph: *Graph, width_px: u32, height_px: u32) void {
+    // Convert to inches.
+    const w_in = @as(f32, @floatFromInt(width_px)) / GRAPHVIZ_DPI;
+    const h_in = @as(f32, @floatFromInt(height_px)) / GRAPHVIZ_DPI;
 
+    // Without the exclamation mark, graphviz will interpret the size attribute
+    // as a maximum. That is, if the actual required size fits within the given
+    // size, it will not scale it.
     var size_buf: [64]u8 = undefined;
-    const size_str = try std.fmt.bufPrintZ(&size_buf, "{d:.3},{d:.3}!", .{ w_in, h_in });
-
-    var dpi_buf: [32]u8 = undefined;
-    const dpi_str = try std.fmt.bufPrintZ(&dpi_buf, "{d:.1}", .{dpi});
-
+    const size_str = std.fmt.bufPrintZ(&size_buf, "{d:.3},{d:.3}!", .{ w_in, h_in }) catch unreachable;
     _ = c.agsafeset(graph.g, @constCast("size"), @constCast(size_str.ptr), @constCast(""));
-    _ = c.agsafeset(graph.g, @constCast("dpi"), @constCast(dpi_str.ptr), @constCast(""));
-    _ = c.agsafeset(graph.g, @constCast("ratio"), @constCast("fill"), @constCast(""));
 
     graph.width = width_px;
     graph.height = height_px;
-    graph.dpi = dpi;
 }
 
 /// Remove all nodes and edges, and clear the layout.
@@ -197,7 +201,7 @@ pub const Renderer = struct {
     pub fn init(options: RendererOptions) !Renderer {
         const gpa = options.gpa;
         const graph = try Graph.init(gpa, options.graph_options);
-        
+
         const stride = options.buffer_stride;
         const height = options.buffer_height;
         var buffer: []u8 = undefined;
@@ -333,7 +337,7 @@ pub const Renderer = struct {
 
                 const font_size: f32 = 12.0;
                 c.plutovg_canvas_set_font(canvas, font, font_size);
-                
+
                 var extents: c.plutovg_rect_t = undefined;
                 const adv = c.plutovg_font_face_text_extents(
                     font,
