@@ -145,8 +145,8 @@ const Funcs = struct {
                 .height = view_height,
             },
             .buffer = canvas.buffer,
-            .buffer_stride = canvas.buffer_width,
-            .buffer_height = canvas.buffer_height,
+            .buffer_stride = canvas.width,
+            .buffer_height = canvas.height,
         }) catch |err| {
             ctx.setError("Failed to initialize Graph Renderer: {t}", .{err});
             return err;
@@ -169,8 +169,6 @@ const Funcs = struct {
             ctx.setError("Canvas buffer does not match graph buffer (resized?)", .{});
             return error.DifferentBuffers;
         }
-
-        emacs.message(ctx.env, "Size: {d}x{d}", .{canvas.view_width orelse 0, canvas.view_height orelse 0});
 
         graph.clear();
         graph.setDimensions(view_width, view_height);
