@@ -47,17 +47,27 @@ pub fn build(b: *std.Build) void {
         .root_module = plutovg_mod,
     });
 
+    // Core C Translation (Graphviz + PlutoVG)
+    const core_c = b.addTranslateC(.{
+        .root_source_file = b.path("src/core/c.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    core_c.addIncludePath(b.path("vendor/plutovg/include"));
+
     // Core
     const core_mod = b.addModule("core", .{
         .root_source_file = b.path("src/core/root.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "c", .module = core_c.createModule() },
+        },
     });
 
     core_mod.linkSystemLibrary("cgraph", .{});
     core_mod.linkSystemLibrary("gvc", .{});
     core_mod.linkLibrary(plutovg_lib);
-    core_mod.addIncludePath(b.path("vendor/plutovg/include"));
 
     const core_tests = b.addTest(.{
         .root_module = core_mod,
@@ -113,6 +123,13 @@ pub fn build(b: *std.Build) void {
     });
     const run_cli_tests = b.addRunArtifact(cli_tests);
 
+    // Emacs C Translation 
+    const emacs_c = b.addTranslateC(.{
+        .root_source_file = b.path("src/emacs/emacs-module.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Emacs
     const emacs_mod = b.createModule(.{
         .root_source_file = b.path("src/emacs/main.zig"),
@@ -122,9 +139,9 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "ilm", .module = core_mod },
             .{ .name = "sqlite", .module = sqlite_dep.module("sqlite") },
+            .{ .name = "emacs_c", .module = emacs_c.createModule() },
         },
     });
-    emacs_mod.addIncludePath(b.path("src/emacs/"));
     const emacs_lib = b.addLibrary(.{
         .linkage = .dynamic,
         .name = "ilm",

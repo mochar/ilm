@@ -1,11 +1,6 @@
 //! Wrapper for the Graphviz library
 const std = @import("std");
-const c = @cImport({
-    @cInclude("graphviz/cgraph.h");
-    @cInclude("graphviz/gvc.h");
-    @cInclude("plutovg.h");
-});
-
+const c = @import("c");
 const Graph = @This();
 
 /// Resolution of graph in pixels per inch. Explanation:

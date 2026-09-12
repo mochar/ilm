@@ -3,10 +3,7 @@ const std = @import("std");
 const ilm = @import("ilm");
 const Core = ilm.Core;
 const Graph = ilm.Graph;
-
-pub const c = @cImport({
-    @cInclude("emacs-module.h");
-});
+pub const c = @import("emacs_c");
 
 pub const Context = struct {
     env: *c.emacs_env,
