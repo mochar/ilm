@@ -1,7 +1,8 @@
 
-#+name: initt
+#+name: scratch
 #+begin_src emacs-lisp :eval no
 (setq default-directory (expand-file-name "src/emacs/lisp"))
+(load-file "~/.config/emacs/elpa/consult-20260805.1130/consult.el")
 (load-file "./ilm.el")
 (ilm--reload-module)
 (let ((data-dir "/home/mochar/tmp/ilm/"))
@@ -23,12 +24,12 @@
             :data-height 500)))
 (insert (propertize "#" (quote display) ilm-graph-canvas))
 (setq ilm-graph (ilm--core-make-graph ilm--core ilm-graph-canvas))
-(ilm--core-update-graph ilm--core ilm-graph (map-elt (nth 5 (ilm--all-concepts)) :id))
+(ilm--core-update-graph ilm--core ilm-graph ilm-graph-canvas (map-elt (nth 5 (ilm--all-concepts)) :id))
 #+end_src
 
 
 #+begin_src sh :noweb yes :noweb-prefix no :var bg=(face-attribute 'default :background) fg=(face-attribute 'default :foreground)
-emacs -Q --eval '(progn (set-face-attribute (quote default) nil :height 160 :background "'"$bg"'" :foreground  "'"$fg"'") <<initt>> (view-echo-area-messages))'
+emacs -Q --eval '(progn (set-face-attribute (quote default) nil :height 160 :background "'"$bg"'" :foreground  "'"$fg"'") <<scratch>> (view-echo-area-messages))'
 #+end_src
 
 #+RESULTS:

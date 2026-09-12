@@ -1,5 +1,9 @@
 const std = @import("std");
-const Core = @import("core").Core;
+
+const ilm = @import("ilm");
+const Core = ilm.Core;
+const Graph = ilm.Graph;
+
 pub const c = @cImport({
     @cInclude("emacs-module.h");
 });
@@ -137,7 +141,7 @@ pub fn convertFrom(comptime T: type, env: *c.emacs_env, val: c.emacs_value, allo
             if (pointer.size == .slice and pointer.child == u8) {
                 return copyStringAlloc(env, val, allocator);
             }
-            
+
             // Convert Emacs list to Zig slice []T
             const q_car = env.*.intern.?(env, "car");
             const q_cdr = env.*.intern.?(env, "cdr");
@@ -151,7 +155,7 @@ pub fn convertFrom(comptime T: type, env: *c.emacs_env, val: c.emacs_value, allo
                 var args = [_]c.emacs_value{current};
                 const head = env.*.funcall.?(env, q_car, 1, &args);
                 current = env.*.funcall.?(env, q_cdr, 1, &args);
-                
+
                 const item = try convertFrom(pointer.child, env, head, allocator);
                 try list.append(allocator, item);
             }
@@ -387,15 +391,25 @@ pub const ListConverter = struct {
     }
 };
 
+// Emacs canvas buffer and attributes.
+//
+// Note that the pixel buffer is only valid as long as the canvas object is
+// alive and its dimensions (:data-width and :data-height) have not been
+// changed.  If it has changed, Emacs will create a new pixel buffer and
+// automatically resize the canvas. View dimensions (:width and :height)
+// preserve the pixel buffer.
 pub const Canvas = struct {
-    width: u32,
-    height: u32,
+    buffer: []u8,
+    /// In pixels.
+    buffer_width: u32,
+    /// In pixels.
+    buffer_height: u32,
+    view_width: ?u32,
+    view_height: ?u32,
 
-    pub fn fromSpec(gpa: std.mem.Allocator, env: *c.emacs_env, canvas_spec: c.emacs_value) !Canvas {
-        var arena: std.heap.ArenaAllocator = .init(gpa);
-        defer arena.deinit();
-        const allocator = arena.allocator();
-
+    /// Get buffer and properties from spec.
+    pub fn fromSpec(arena: std.mem.Allocator, env: *c.emacs_env, canvas_spec: c.emacs_value) !Canvas {
+        // TODO Replace with plist_get function
         var converter = ListConverter.init(env, canvas_spec);
 
         var cur = try converter.next();
@@ -404,6 +418,8 @@ pub const Canvas = struct {
         var type_correct = false;
         var width: ?u32 = null;
         var height: ?u32 = null;
+        var view_width: ?u32 = null;
+        var view_height: ?u32 = null;
         while (converter.cons != null) {
             cur = try converter.next();
             if (symbol_eq(env, cur, ":type")) {
@@ -411,13 +427,37 @@ pub const Canvas = struct {
                 if (!symbol_eq(env, cur, "canvas")) return error.NotCanvasType;
                 type_correct = true;
             } else if (symbol_eq(env, cur, ":data-width")) {
-                width = try convertFrom(u32, env, try converter.next(), allocator);
+                width = try convertFrom(u32, env, try converter.next(), arena);
             } else if (symbol_eq(env, cur, ":data-height")) {
-                height = try convertFrom(u32, env, try converter.next(), allocator);
+                height = try convertFrom(u32, env, try converter.next(), arena);
+            } else if (symbol_eq(env, cur, ":width")) {
+                view_width = try convertFrom(u32, env, try converter.next(), arena);
+            } else if (symbol_eq(env, cur, ":height")) {
+                view_height = try convertFrom(u32, env, try converter.next(), arena);
             }
         }
 
-        if (!type_correct or width == null or height == null) return error.Incomplete;
-        return .{ .width = width.?, .height = height.? };
+        if (!type_correct) return error.Incomplete;
+        const w = width orelse return error.Incomplete;
+        const h = height orelse return error.Incomplete;
+        const buf: [*]u8 = @ptrCast(env.canvas_data.?(env, canvas_spec));
+
+        return .{
+            .buffer = buf[0 .. w * h * 4],
+            .buffer_width = w,
+            .buffer_height = h,
+            .view_width = view_width,
+            .view_height = view_height,
+        };
     }
 };
+
+pub fn plist_get(allocator: std.mem.Allocator, comptime T: type, comptime property: []const u8, env: *c.emacs_env, plist: c.emacs_value) !T {
+    const q_plist_get = env.*.intern.?(env, "plist-get");
+    const kw_name = ":" ++ property;
+    const q_key = env.*.intern.?(env, kw_name.ptr);
+    var get_args = [_]c.emacs_value{ plist, q_key };
+    const val = env.*.funcall.?(env, q_plist_get, 2, &get_args);
+    if (T == c.emacs_value) return val;
+    return try convertFrom(T, env, val, allocator);
+}

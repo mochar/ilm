@@ -10,6 +10,7 @@
 
 (require 'cl-lib)
 (require 'map)
+(require 'consult)
 
 ;;;; Module
 
@@ -99,32 +100,60 @@ Otherwise return the full hierarchy with :is_direct and :depth properties."
   (let* ((concept (ilm--select-concept)))
     (ilm-concept-ancestors (map-elt concept :id))))
 
-(defun ilm-draw-concept-graph (concept)
-  (let* ((as (ilm-concept-ancestors (map-elt concept :id)))
-         (g (dag-draw-create-graph)))
-    (dag-draw-add-node g (intern (map-elt concept :id)) (map-elt concept :name))
-    (dolist (a as)
-      (dag-draw-add-node g (intern (map-elt a :id)) (map-elt a :name))
-      (dag-draw-add-edge g (intern (map-elt a :child_id)) (intern (map-elt a :id))))
-    (dag-draw-layout-graph g)
-    (dag-draw-render-graph g 'ascii (intern (map-elt concept :id)))))
-
 (defvar ilm-concept-graph-buffer "*ilm concept graph*")
 (defvar ilm-concept-graph-buffer-data
   (list
    :graph-ptr nil
+   :width 500
+   :height 300
    :canvas `(image
             :type canvas
             :id ilm-concept-graph-buf
-            :data-width 100
-            :data-height 100)))
+            :data-width 1000
+            :data-height 1000
+            )))
 
-(defun ilm--insert-concept-graph (concept)
-  (map-let (:graph-ptr :canvas) ilm-concept-graph-buffer-data
-    (unless graph-ptr
-      (map-let (:data-width :data-height) canvas
-        (setf (map-elt ilm-concept-graph-buffer-data :graph-ptr)
-              (ilm--core-make-graph ilm--core data-width data-height canvas))))))
+(defun ilm--create-concept-graph ()
+  (let* ((data (list
+                :width 500
+                :height 300
+                :canvas `(image
+                          :type canvas
+                          :id ilm-concept-graph-buf
+                          :data-width 1000
+                          :data-height 1000
+                          )))
+         (graph-ptr (ilm--core-make-graph ilm--core data)))
+    (setf (map-elt data :graph-ptr) graph-ptr)
+    data))
+
+(defvar-keymap ilm-graph-map
+  "l" (lambda ()
+        (interactive)
+        (let* ((display (get-text-property (point) 'display))
+               (canvas (cadr display))
+               (data (get-text-property (point) 'ilm-graph-data))
+               (concept-id (get-text-property (point) 'concept-id))
+               (new-w (+ 30 (map-elt data :width))))
+          (setf (nth 3 (car display)) new-w)
+          (setf (map-elt data :width) new-w)
+          (ilm--core-update-graph ilm--core (map-elt data :graph-ptr) data concept-id)
+           ;; For some reason needed, otherwise the image size doesnt update
+           ;; correctly. (redisplay) doesn't work.
+          (force-mode-line-update)
+        )))
+          
+(defun ilm-insert-concept-graph (concept)
+  (let* ((data (ilm--create-concept-graph)))
+    (map-let (:graph-ptr :width :height :canvas) data
+      (ilm--core-update-graph ilm--core graph-ptr data (map-elt concept :id))
+      (canvas-refresh canvas)
+      (insert "\n"
+              (propertize "#"
+                          'display `((slice 0 0 ,width ,height) ,canvas)
+                          'keymap ilm-graph-map
+                          'ilm-graph-data data
+                          'concept-id (map-elt concept :id))))))
 
 (defun ilm--concept-consult-state (action concept)
   "State function for previewing concepts in consult."
@@ -136,8 +165,7 @@ Otherwise return the full hierarchy with :is_direct and :depth properties."
     ('preview
      (if concept
          (ilm-with-special-buffer ilm-concept-graph-buffer
-           (ilm--insert-concept-graph concept)
-           (princ (ilm-draw-concept-graph concept)))
+           (ilm-insert-concept-graph concept))
        (when-let* ((win (get-buffer-window ilm-concept-graph-buffer)))
          (quit-window nil win))))))
 

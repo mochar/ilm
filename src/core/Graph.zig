@@ -14,6 +14,7 @@ gvc: *c.GVC_t,
 g: *c.Agraph_t,
 width: u32,
 height: u32,
+dpi: f32 = 96.0,
 has_layout: bool = false,
 
 pub const GraphOptions = struct {
@@ -33,6 +34,7 @@ pub fn init(allocator: std.mem.Allocator, options: GraphOptions) !Graph {
         .g = g,
         .width = options.width,
         .height = options.height,
+        .dpi = options.dpi,
         .has_layout = false,
     };
     try setDimensions(&graph, options.width, options.height, options.dpi);
@@ -65,6 +67,7 @@ pub fn setDimensions(graph: *Graph, width_px: u32, height_px: u32, dpi: f32) !vo
 
     graph.width = width_px;
     graph.height = height_px;
+    graph.dpi = dpi;
 }
 
 /// Remove all nodes and edges, and clear the layout.

@@ -120,27 +120,33 @@ const Funcs = struct {
         return ancestors;
     }
 
-    pub fn makeGraph(ctx: *Context, core: *Core, canvas_spec: c.emacs_value) !*Graph.Renderer {
-        const canvas_info: emacs.Canvas = try .fromSpec(core.gpa, ctx.env, canvas_spec);
-        const width = canvas_info.width;
-        const height = canvas_info.height;
+    // TODO Make CanvasData struct that parses plist with width, height, canvas
+    // spec. Set the :ptr property with the zig renderer/canvas struct (rather
+    // than returning it). In functions that update the graph or render, :ptr
+    // should already be set. We can't set these properties directly on canvas
+    // spec object because emacs tests for eq to see if canvas is the same (thus
+    // we wrap it).
+    pub fn makeGraph(ctx: *Context, core: *Core, canvas_data: c.emacs_value) !*Graph.Renderer {
+        const view_width = try emacs.plist_get(ctx.arena, u32, "width", ctx.env, canvas_data);
+        const view_height = try emacs.plist_get(ctx.arena, u32, "height", ctx.env, canvas_data);
+        const canvas_spec = try emacs.plist_get(ctx.arena, c.emacs_value, "canvas", ctx.env, canvas_data);
+        const canvas: emacs.Canvas = try .fromSpec(ctx.arena, ctx.env, canvas_spec);
 
-        const canvas_buf: [*]u8 = @ptrCast(ctx.env.canvas_data.?(ctx.env, canvas_spec));
         const graph_renderer = c_allocator.create(Graph.Renderer) catch |err| {
             ctx.setError("Failed to allocate Graph.Renderer: {t}", .{err});
             return err;
         };
         errdefer c_allocator.destroy(graph_renderer);
-        
+
         graph_renderer.* = Graph.Renderer.init(.{
             .gpa = core.gpa,
             .graph_options = .{
-                .width = width,
-                .height = height,
+                .width = view_width,
+                .height = view_height,
             },
-            .buffer = canvas_buf[0 .. width * height * 4],
-            .buffer_stride = width,
-            .buffer_height = height,
+            .buffer = canvas.buffer,
+            .buffer_stride = canvas.buffer_width,
+            .buffer_height = canvas.buffer_height,
         }) catch |err| {
             ctx.setError("Failed to initialize Graph Renderer: {t}", .{err});
             return err;
@@ -148,33 +154,63 @@ const Funcs = struct {
         return graph_renderer;
     }
 
-    pub fn updateGraph(ctx: *Context, core: *Core, g: *Graph.Renderer, concept_id: Id) !void {
+    pub fn updateGraph(ctx: *Context, core: *Core, g: *Graph.Renderer, canvas_data: c.emacs_value, concept_id: Id) !void {
+        const graph = &g.graph;
+        
+        const view_width = try emacs.plist_get(ctx.arena, u32, "width", ctx.env, canvas_data);
+        const view_height = try emacs.plist_get(ctx.arena, u32, "height", ctx.env, canvas_data);
+        const canvas_spec = try emacs.plist_get(ctx.arena, c.emacs_value, "canvas", ctx.env, canvas_data);
+        const canvas: emacs.Canvas = try .fromSpec(ctx.arena, ctx.env, canvas_spec);
+        if (canvas.buffer.ptr != g.buffer.ptr) {
+            // If we decide to no longer parse the buffer from canvas_spec, we
+            // can alternatively check if the buffer width and height matches,
+            // since emacs creates a new buffer if :data-width or :data-height
+            // changed.
+            ctx.setError("Canvas buffer does not match graph buffer (resized?)", .{});
+            return error.DifferentBuffers;
+        }
+
+        emacs.message(ctx.env, "Size: {d}x{d}", .{canvas.view_width orelse 0, canvas.view_height orelse 0});
+
+        graph.clear();
+        graph.setDimensions(view_width, view_height, graph.dpi) catch |err| {
+            return ctx.setError("Failed to update graph size: {t}", .{err});
+        };
+
         const ids: [1]Id = .{concept_id};
-        const concept = (try Funcs.getConceptsById(ctx, core, &ids))[0];
-        var diags: sqlite.Diagnostics = .{};
-        g.graph.addNode(concept.id.uuid, concept.name) catch |err| {
+        const concept = blk: {
+            const concepts = try Funcs.getConceptsById(ctx, core, &ids);
+            if (concepts.len == 0) {
+                ctx.setError("Failed to get concept with id: {s}", .{concept_id.serialize()});
+                return error.NotFound;
+            }
+            break :blk concepts[0];
+        };
+
+        graph.addNode(concept.id.uuid, concept.name) catch |err| {
             return ctx.setError("Failed to add node: {t}", .{err});
         };
+
+        var diags: sqlite.Diagnostics = .{};
         const ancestors = ilm.concept.getAncestors(core, ctx.arena, &ids, false, .{ .diags = &diags }) catch |err| {
             return ctx.setError("Failed to get ancestors: {t}", .{err});
         };
         for (ancestors) |*ancestor| {
-            g.graph.addNode(ancestor.id.uuid, ancestor.name) catch |err| {
+            graph.addNode(ancestor.id.uuid, ancestor.name) catch |err| {
                 return ctx.setError("Failed to add node: {t}", .{err});
             };
         }
         for (ancestors) |*ancestor| {
-            g.graph.addEdge(ancestor.id.uuid, ancestor.child_id.uuid) catch |err| {
+            graph.addEdge(ancestor.id.uuid, ancestor.child_id.uuid) catch |err| {
                 return ctx.setError("Failed to add edge: {t}", .{err});
             };
         }
 
-        g.graph.layout("dot") catch |err| {
-            return ctx.setError("Failed to layout graph: {t}", .{err});
-        };
-        g.render() catch |err| {
-            return ctx.setError("Failed to render graph: {t}", .{err});
-        };
+        graph.layout("dot") catch |err| return ctx.setError("Failed to layout graph: {t}", .{err});
+        g.render() catch |err| return ctx.setError("Failed to render graph: {t}", .{err});
+
+        var args = [_]c.emacs_value{ canvas_spec };
+        _ = ctx.env.funcall.?(ctx.env, ctx.env.intern.?(ctx.env, "canvas-refresh"), 2, &args);
     }
 };
 
