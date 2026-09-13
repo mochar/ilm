@@ -1,12 +1,392 @@
+//! Zig bindings and utilities for emacs_module.h.
 const std = @import("std");
-
-const ilm = @import("ilm");
-const Core = ilm.Core;
-const Graph = ilm.Graph;
 pub const c = @import("emacs_c");
 
+pub const EmacsValue = c.emacs_value;
+pub const FuncallExit = c.emacs_funcall_exit;
+pub const EmacsFunc = *const fn (
+    env: [*c]c.emacs_env,
+    nargs: c.ptrdiff_t,
+    args: [*c]c.emacs_value,
+    data: ?*anyopaque,
+) callconv(.c) c.emacs_value;
+
+/// Wrapper around Emacs runtime pointer
+pub const Runtime = struct {
+    raw: *c.emacs_runtime,
+
+    pub fn fromRaw(raw: ?*c.emacs_runtime) ?Runtime {
+        const ptr = raw orelse return null;
+        return .{ .raw = ptr };
+    }
+
+    pub fn getEnvironment(self: Runtime) ?Env {
+        const raw_env = self.raw.get_environment.?(self.raw);
+        return Env.fromRaw(raw_env);
+    }
+};
+
+/// Wrapper around Emacs environment pointer (`emacs_env`)
+pub const Env = struct {
+    raw: *c.emacs_env,
+
+    pub fn fromRaw(raw: ?*c.emacs_env) ?Env {
+        const ptr = raw orelse return null;
+        return .{ .raw = ptr };
+    }
+
+    pub fn nil(self: Env) EmacsValue {
+        return self.raw.intern.?(self.raw, "nil");
+    }
+
+    pub fn t(self: Env) EmacsValue {
+        return self.raw.intern.?(self.raw, "t");
+    }
+
+    pub fn intern(self: Env, name: [:0]const u8) EmacsValue {
+        return self.raw.intern.?(self.raw, name.ptr);
+    }
+
+    pub fn isNotNil(self: Env, val: EmacsValue) bool {
+        return self.raw.is_not_nil.?(self.raw, val);
+    }
+
+    pub fn isNil(self: Env, val: EmacsValue) bool {
+        return !self.isNotNil(val);
+    }
+
+    pub fn eq(self: Env, a: EmacsValue, b: EmacsValue) bool {
+        return self.raw.eq.?(self.raw, a, b);
+    }
+
+    pub fn symbolEq(self: Env, sym: EmacsValue, name: [:0]const u8) bool {
+        const target = self.intern(name);
+        return self.eq(sym, target);
+    }
+
+    pub fn typeOf(self: Env, val: EmacsValue) EmacsValue {
+        return self.raw.type_of.?(self.raw, val);
+    }
+
+    pub fn nonLocalExitCheck(self: Env) FuncallExit {
+        return self.raw.non_local_exit_check.?(self.raw);
+    }
+
+    pub fn nonLocalExitClear(self: Env) void {
+        self.raw.non_local_exit_clear.?(self.raw);
+    }
+
+    pub fn nonLocalExitSignal(self: Env, symbol: EmacsValue, data: EmacsValue) void {
+        self.raw.non_local_exit_signal.?(self.raw, symbol, data);
+    }
+
+    pub fn nonLocalExitThrow(self: Env, tag: EmacsValue, value: EmacsValue) void {
+        self.raw.non_local_exit_throw.?(self.raw, tag, value);
+    }
+
+    /// Check if a non-local exit occurred. If so, clears it and returns error.EmacsError.
+    pub fn checkExit(self: Env) !void {
+        if (self.nonLocalExitCheck() != c.emacs_funcall_exit_return) {
+            self.nonLocalExitClear();
+            return error.EmacsError;
+        }
+    }
+
+    pub fn funcall(self: Env, function: EmacsValue, args: []const EmacsValue) !EmacsValue {
+        const raw_args: [*c]c.emacs_value = if (args.len > 0) @constCast(args.ptr) else null;
+        const res = self.raw.funcall.?(
+            self.raw,
+            function,
+            @intCast(args.len),
+            raw_args,
+        );
+        try self.checkExit();
+        return res;
+    }
+
+    pub fn funcall0(self: Env, function: EmacsValue) !EmacsValue {
+        return self.funcall(function, &.{});
+    }
+
+    pub fn funcall1(self: Env, function: EmacsValue, arg1: EmacsValue) !EmacsValue {
+        const args = [_]EmacsValue{arg1};
+        return self.funcall(function, &args);
+    }
+
+    pub fn funcall2(self: Env, function: EmacsValue, arg1: EmacsValue, arg2: EmacsValue) !EmacsValue {
+        const args = [_]EmacsValue{ arg1, arg2 };
+        return self.funcall(function, &args);
+    }
+
+    pub fn makeInteger(self: Env, n: i64) EmacsValue {
+        return self.raw.make_integer.?(self.raw, n);
+    }
+
+    pub fn extractInteger(self: Env, val: EmacsValue) !i64 {
+        const res = self.raw.extract_integer.?(self.raw, val);
+        try self.checkExit();
+        return res;
+    }
+
+    pub fn makeFloat(self: Env, d: f64) EmacsValue {
+        return self.raw.make_float.?(self.raw, d);
+    }
+
+    pub fn extractFloat(self: Env, val: EmacsValue) !f64 {
+        const res = self.raw.extract_float.?(self.raw, val);
+        try self.checkExit();
+        return res;
+    }
+
+    pub fn makeString(self: Env, str: []const u8) !EmacsValue {
+        const res = self.raw.make_string.?(self.raw, str.ptr, @intCast(str.len));
+        try self.checkExit();
+        return res;
+    }
+
+    pub fn copyStringBuf(self: Env, val: EmacsValue, buf: []u8) ?[:0]const u8 {
+        var len: c.ptrdiff_t = @intCast(buf.len);
+        if (!self.raw.copy_string_contents.?(self.raw, val, buf.ptr, &len)) {
+            return null;
+        }
+        return buf[0..@intCast(len - 1) :0];
+    }
+
+    pub fn copyStringAlloc(self: Env, val: EmacsValue, allocator: std.mem.Allocator) ![:0]u8 {
+        // The argument BUF can be a ‘NULL’ pointer, in which case the function
+        // store the contents of ARG, and returns ‘true’.  This is how you can
+        // determine the size of BUF needed to store a particular string: first
+        // call ‘copy_string_contents’ with ‘NULL’ as BUF, then allocate enough
+        // memory to hold the number of bytes stored by the function in ‘*LEN’,
+        // and call the function again with non-‘NULL’ BUF to actually perform
+        // the text copying.
+        var len: c.ptrdiff_t = 0;
+        if (!self.raw.copy_string_contents.?(self.raw, val, null, &len)) {
+            try self.checkExit();
+            return error.EmacsStringCopyFailed;
+        }
+
+        const str_len: usize = @intCast(len - 1);
+        const buf = try allocator.allocSentinel(u8, str_len, 0);
+        errdefer allocator.free(buf);
+
+        if (!self.raw.copy_string_contents.?(self.raw, val, buf.ptr, &len)) {
+            try self.checkExit();
+            return error.EmacsStringCopyFailed;
+        }
+
+        return buf;
+    }
+
+    pub fn makeUserPtr(self: Env, comptime T: type, ptr: *T) EmacsValue {
+        const finalizer = struct {
+            fn f(p: ?*anyopaque) callconv(.c) void {
+                if (p) |raw| {
+                    const typed: *T = @ptrCast(@alignCast(raw));
+                    if (@hasDecl(T, "deinit")) typed.deinit();
+                    std.heap.c_allocator.destroy(typed);
+                }
+            }
+        }.f;
+        return self.raw.make_user_ptr.?(self.raw, finalizer, ptr);
+    }
+
+    pub fn getUserPtr(self: Env, comptime T: type, val: EmacsValue) !*T {
+        const raw_ptr = self.raw.get_user_ptr.?(self.raw, val) orelse {
+            try self.checkExit();
+            return error.NullUserPtr;
+        };
+        return @ptrCast(@alignCast(raw_ptr));
+    }
+
+    pub fn canvasData(self: Env, canvas: EmacsValue) ![*]u8 {
+        const raw_buf = self.raw.canvas_data.?(self.raw, canvas) orelse {
+            try self.checkExit();
+            return error.CanvasDataNull;
+        };
+        return @ptrCast(raw_buf);
+    }
+
+    pub fn makeFunction(
+        self: Env,
+        min_args: isize,
+        max_args: isize,
+        func: EmacsFunc,
+        doc: [:0]const u8,
+        data: ?*anyopaque,
+    ) EmacsValue {
+        return self.raw.make_function.?(self.raw, min_args, max_args, func, doc.ptr, data);
+    }
+
+    /// Register a native Zig function directly into Emacs with type conversions.
+    /// The function must have `*Context` as the first argument.
+    pub fn registerFunc(
+        self: Env,
+        name: [:0]const u8,
+        min_args: isize,
+        max_args: isize,
+        func: EmacsFunc,
+        doc: [:0]const u8,
+    ) void {
+        const fn_val = self.makeFunction(min_args, max_args, func, doc, null);
+        const sym_val = self.intern(name);
+        const fset = self.intern("fset");
+        _ = self.funcall2(fset, sym_val, fn_val) catch return;
+    }
+
+    pub fn message(self: Env, comptime fmt: []const u8, args: anytype) void {
+        var buf: [1024]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, fmt, args) catch |err| switch (err) {
+            error.NoSpaceLeft => std.fmt.allocPrint(std.heap.c_allocator, fmt, args) catch return,
+        };
+        defer if (msg.ptr != &buf) std.heap.c_allocator.free(msg);
+
+        const q_msg = self.makeString(msg) catch return;
+        const q_message = self.intern("message");
+        _ = self.funcall1(q_message, q_msg) catch return;
+    }
+
+    pub fn plistGet(
+        self: Env,
+        plist: EmacsValue,
+        comptime property: []const u8,
+        allocator: std.mem.Allocator,
+        comptime T: type,
+    ) !T {
+        const q_plist_get = self.intern("plist-get");
+        const kw_name = ":" ++ property;
+        const q_key = self.intern(kw_name);
+        const val = try self.funcall2(q_plist_get, plist, q_key);
+        if (T == EmacsValue) return val;
+        return try self.convertFrom(T, val, allocator);
+    }
+
+    /// Convert a EmacsValue to a native Zig type T.
+    /// Can allocate, so make sure to deallocate when type is: []T.
+    /// Raises compile-time error unsupported types.
+    pub fn convertFrom(self: Env, comptime T: type, val: EmacsValue, allocator: std.mem.Allocator) !T {
+        switch (@typeInfo(T)) {
+            .pointer => |pointer| {
+                if (pointer.size == .one) {
+                    return try self.getUserPtr(pointer.child, val);
+                }
+
+                if (pointer.size == .slice and pointer.child == u8) {
+                    return self.copyStringAlloc(val, allocator);
+                }
+
+                // Convert Emacs list to Zig slice []T
+                var list: std.ArrayList(pointer.child) = .empty;
+                errdefer list.deinit(allocator);
+
+                const q_car = self.intern("car");
+                const q_cdr = self.intern("cdr");
+
+                var current = val;
+                while (self.isNotNil(current)) {
+                    const head = try self.funcall1(q_car, current);
+                    current = try self.funcall1(q_cdr, current);
+
+                    const item = try self.convertFrom(pointer.child, head, allocator);
+                    try list.append(allocator, item);
+                }
+
+                return try list.toOwnedSlice(allocator);
+            },
+            .@"struct" => |s| {
+                if (@hasDecl(T, "fromEmacsRepr")) {
+                    const fn_info = @typeInfo(@TypeOf(T.fromEmacsRepr)).@"fn";
+                    const repr_type = fn_info.params[0].type.?;
+                    const repr = try self.convertFrom(repr_type, val, allocator);
+                    return try T.fromEmacsRepr(repr);
+                }
+
+                var result: T = undefined;
+                inline for (s.fields) |field| {
+                    @field(result, field.name) = try self.plistGet(
+                        val,
+                        field.name,
+                        allocator,
+                        field.type,
+                    );
+                }
+                return result;
+            },
+            .int => {
+                const i = try self.extractInteger(val);
+                return @intCast(i);
+            },
+            .float => {
+                const f = try self.extractFloat(val);
+                return @floatCast(f);
+            },
+            .bool => return self.isNotNil(val),
+            else => {},
+        }
+        @compileError("Cannot convert Emacs value for unsupported type: " ++ @typeName(T));
+    }
+
+    /// Convert value of type T to EmacsValue.
+    /// For structs, if "emacsRepr" function exists, will use that.
+    /// Raises compile-time error unsupported types.
+    pub fn convertTo(self: Env, comptime T: type, val: T) !EmacsValue {
+        switch (@typeInfo(T)) {
+            .void => return self.nil(),
+            .int => return self.makeInteger(@intCast(val)),
+            .float => return self.makeFloat(@floatCast(val)),
+            .bool => return if (val) self.t() else self.nil(),
+            .@"struct" => |s| {
+                if (@hasDecl(T, "toEmacsRepr")) {
+                    const repr = val.toEmacsRepr();
+                    return self.convertTo(@TypeOf(repr), repr);
+                }
+
+                // Convert struct into plist: (:field1 val1 :field2 val2 ...)
+                const q_list = self.intern("list");
+                var plist_items: [s.fields.len * 2]EmacsValue = undefined;
+
+                inline for (s.fields, 0..) |field, idx| {
+                    const kw_name = ":" ++ field.name;
+                    plist_items[idx * 2] = self.intern(kw_name);
+                    plist_items[idx * 2 + 1] = try self.convertTo(field.type, @field(val, field.name));
+                }
+
+                return self.funcall(q_list, &plist_items);
+            },
+            .pointer => |pointer| {
+                if (pointer.size == .one) {
+                    return self.makeUserPtr(pointer.child, val);
+                } else if (pointer.size == .slice) {
+                    if (pointer.child == u8) {
+                        return self.makeString(val);
+                    } else {
+                        // Convert []T into Emacs list backwards with cons
+                        const q_cons = self.intern("cons");
+                        var list = self.nil();
+
+                        var i: usize = val.len;
+                        while (i > 0) {
+                            i -= 1;
+                            const elem = try self.convertTo(pointer.child, val[i]);
+                            list = try self.funcall2(q_cons, elem, list);
+                        }
+                        return list;
+                    }
+                }
+            },
+            .array => |array| {
+                if (array.child == u8) {
+                    return self.makeString(&val);
+                }
+            },
+            else => {},
+        }
+        @compileError("Cannot convert to Emacs value for unsupported type: " ++ @typeName(T));
+    }
+};
+
 pub const Context = struct {
-    env: *c.emacs_env,
+    env: Env,
     arena: std.mem.Allocator,
     err_msg_buf: [1024]u8 = undefined,
     err_msg: ?[]const u8 = null,
@@ -15,12 +395,11 @@ pub const Context = struct {
         var buf: [512]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, fmt, args) catch return;
 
-        const q_msg = self.env.*.make_string.?(self.env, msg.ptr, @intCast(msg.len));
-        const q_type = self.env.*.intern.?(self.env, "ilm");
-        const q_display_warning = self.env.*.intern.?(self.env, "display-warning");
+        const q_msg = self.env.makeString(msg) catch return;
+        const q_type = self.env.intern("ilm");
+        const q_display_warning = self.env.intern("display-warning");
 
-        var warn_args = [_]c.emacs_value{ q_type, q_msg };
-        _ = self.env.*.funcall.?(self.env, q_display_warning, 2, &warn_args);
+        _ = self.env.funcall2(q_display_warning, q_type, q_msg) catch return;
     }
 
     /// Set a custom human-readable error message to be signaled to Emacs
@@ -32,7 +411,7 @@ pub const Context = struct {
         }
     }
 
-    const SignalOptions = struct {
+    pub const SignalOptions = struct {
         symbol: [:0]const u8 = "error",
         message: ?[]const u8 = null,
     };
@@ -40,233 +419,86 @@ pub const Context = struct {
     /// Signal a native Emacs error (stops execution in Elisp)
     pub fn signalError(self: *Context, options: SignalOptions) void {
         const msg = options.message orelse self.err_msg orelse "Unknown error";
-        var q_msg = self.env.*.make_string.?(self.env, msg.ptr, @intCast(msg.len));
-
-        const q_sym = self.env.*.intern.?(self.env, options.symbol.ptr);
-        const q_list = self.env.*.intern.?(self.env, "list");
-        const q_data = self.env.*.funcall.?(self.env, q_list, 1, &q_msg);
-        self.env.*.non_local_exit_signal.?(self.env, q_sym, q_data);
+        const q_msg = self.env.makeString(msg) catch return;
+        const q_sym = self.env.intern(options.symbol);
+        const q_list = self.env.intern("list");
+        const q_data = self.env.funcall1(q_list, q_msg) catch return;
+        self.env.nonLocalExitSignal(q_sym, q_data);
     }
 };
 
-/// Function Type that emacs expect
-pub const EmacsFunc = *const fn (env: [*c]c.emacs_env, nargs: c.ptrdiff_t, args: [*c]c.emacs_value, data: ?*anyopaque) callconv(.c) c.emacs_value;
+/// Emacs canvas buffer.
+///
+/// Note that the pixel buffer is only valid as long as the canvas object is
+/// alive and its dimensions (:data-width and :data-height) have not been
+/// changed. If it has changed, Emacs will create a new pixel buffer and
+/// automatically resize the canvas. View dimensions (:width and :height)
+/// preserve the pixel buffer, though these are not relevant for us.
+pub const Canvas = struct {
+    buffer: []u8,
+    /// In pixels.
+    width: u32,
+    /// In pixels.
+    height: u32,
 
-/// Print a message to the emacs message buffer
-pub fn message(env: *c.emacs_env, comptime fmt: []const u8, args: anytype) void {
-    var buf: [1024]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, fmt, args) catch |err| switch (err) {
-        error.NoSpaceLeft => std.fmt.allocPrint(std.heap.c_allocator, fmt, args) catch return,
-    };
-    defer if (msg.ptr != &buf) std.heap.c_allocator.free(msg);
+    /// Get buffer and properties from canvas image spec.
+    pub fn fromSpec(arena: std.mem.Allocator, env: Env, canvas_spec: EmacsValue) !Canvas {
+        const q_car = env.intern("car");
+        const q_img = try env.funcall1(q_car, canvas_spec);
+        if (!env.symbolEq(q_img, "image")) return error.Invalid;
 
-    const q_message = env.intern.?(env, "message");
-    const q_str = env.make_string.?(env, msg.ptr, @intCast(msg.len));
-    var emacs_args = [_]c.emacs_value{q_str};
-    _ = env.funcall.?(env, q_message, 1, &emacs_args);
-}
+        const q_cdr = env.intern("cdr");
+        const attrs = try env.funcall1(q_cdr, canvas_spec);
 
-/// Copy an emacs string to a buffer
-pub fn copyStringBuf(env: *c.emacs_env, emacs_str: c.emacs_value, buf: []u8) ?[:0]const u8 {
-    var len: c.ptrdiff_t = @intCast(buf.len);
-    if (!env.*.copy_string_contents.?(env, emacs_str, buf.ptr, &len)) {
-        return null;
+        const c_type = env.plistGet(attrs, "type", arena, EmacsValue) catch return error.InvalidType;
+        if (!env.symbolEq(c_type, "canvas")) return error.NotCanvasType;
+
+        const width = env.plistGet(attrs, "data-width", arena, u32) catch return error.InvalidWidth;
+        const height = env.plistGet(attrs, "data-height", arena, u32) catch return error.InvalidHeight;
+
+        const buf = try env.canvasData(canvas_spec);
+
+        return .{
+            .buffer = buf[0 .. width * height * 4],
+            .width = width,
+            .height = height,
+        };
     }
-    return buf[0..@intCast(len - 1) :0];
-}
+};
 
-/// Copy a emacs string to a zero terminated string
-pub fn copyStringAlloc(env: *c.emacs_env, emacs_str: c.emacs_value, allocator: std.mem.Allocator) ![:0]u8 {
-    // The argument BUF can be a ‘NULL’ pointer, in which case the function
-    // store the contents of ARG, and returns ‘true’.  This is how you can
-    // determine the size of BUF needed to store a particular string: first
-    // call ‘copy_string_contents’ with ‘NULL’ as BUF, then allocate enough
-    // memory to hold the number of bytes stored by the function in ‘*LEN’,
-    // and call the function again with non-‘NULL’ BUF to actually perform
-    // the text copying.
-    var len: c.ptrdiff_t = 0;
-    if (!env.*.copy_string_contents.?(env, emacs_str, null, &len)) {
-        return error.EmacsStringCopyFailed;
+/// Parses a list iteratively through car and cdr.
+///
+/// The current cons is nil, we have finished traversing the list. Note that if
+/// last element is nil, this is not the same as the cons being nil (it is (cons
+/// nil nil)).
+pub const ListConverter = struct {
+    env: Env,
+    cons: ?EmacsValue,
+
+    pub fn init(env: Env, list: EmacsValue) ListConverter {
+        return .{
+            .env = env,
+            .cons = if (env.isNotNil(list)) list else null,
+        };
     }
 
-    const str_len: usize = @intCast(len - 1);
-    const buf = try allocator.allocSentinel(u8, str_len, 0);
-    errdefer allocator.free(buf);
-
-    if (!env.*.copy_string_contents.?(env, emacs_str, buf.ptr, &len)) {
-        return error.EmacsStringCopyFailed;
+    pub fn next(self: *ListConverter) !EmacsValue {
+        const current = self.cons orelse return error.Done;
+        const car = try self.env.funcall1(self.env.intern("car"), current);
+        const cdr = try self.env.funcall1(self.env.intern("cdr"), current);
+        self.cons = if (self.env.isNotNil(cdr)) cdr else null;
+        return car;
     }
 
-    return buf;
-}
-
-/// Test if an emacs_value symbol has the given name.
-pub fn symbol_eq(env: *c.emacs_env, a_symbol: c.emacs_value, b_name: [:0]const u8) bool {
-    const b_symbol = env.*.intern.?(env, b_name.ptr);
-    return env.*.eq.?(env, a_symbol, b_symbol);
-}
-
-/// Make a function available from emacs
-pub fn registerEmacsFunc(
-    env: *c.emacs_env,
-    name: [:0]const u8,
-    min_args: isize,
-    max_args: isize,
-    func: EmacsFunc,
-    doc: [:0]const u8,
-) void {
-    const fn_val = env.make_function.?(env, min_args, max_args, func, doc.ptr, null);
-    const sym_val = env.intern.?(env, name.ptr);
-    const fset = env.intern.?(env, "fset");
-    var fset_args = [_]c.emacs_value{ sym_val, fn_val };
-    _ = env.funcall.?(env, fset, 2, &fset_args);
-}
-
-/// Convert a c.emacs_value to a native type T.
-/// Can allocate, so make sure to deallocate when type is: []T.
-/// Raises compile-time error unsupported types.
-pub fn convertFrom(comptime T: type, env: *c.emacs_env, val: c.emacs_value, allocator: std.mem.Allocator) !T {
-    switch (@typeInfo(T)) {
-        .pointer => |pointer| {
-            // If single item pointer, assume this is as user_ptr that we passed to emacs.
-            if (pointer.size == .one) {
-                const ptr = env.*.get_user_ptr.?(env, val) orelse return error.NullUserPtr;
-                return @ptrCast(@alignCast(ptr));
-            }
-
-            // Strings
-            if (pointer.size == .slice and pointer.child == u8) {
-                return copyStringAlloc(env, val, allocator);
-            }
-
-            // Convert Emacs list to Zig slice []T
-            const q_car = env.*.intern.?(env, "car");
-            const q_cdr = env.*.intern.?(env, "cdr");
-
-            // TODO memory managed right here?
-            var list: std.ArrayList(pointer.child) = .empty;
-            errdefer list.deinit(allocator);
-
-            var current = val;
-            while (env.*.is_not_nil.?(env, current)) {
-                var args = [_]c.emacs_value{current};
-                const head = env.*.funcall.?(env, q_car, 1, &args);
-                current = env.*.funcall.?(env, q_cdr, 1, &args);
-
-                const item = try convertFrom(pointer.child, env, head, allocator);
-                try list.append(allocator, item);
-            }
-
-            return try list.toOwnedSlice(allocator);
-        },
-        .@"struct" => |s| {
-            // Custom deserializer
-            if (@hasDecl(T, "fromEmacsRepr")) {
-                const fn_info = @typeInfo(@TypeOf(T.fromEmacsRepr)).@"fn";
-                const repr_type = fn_info.params[0].type.?;
-                const repr = try convertFrom(repr_type, env, val, allocator);
-                return try T.fromEmacsRepr(repr);
-            }
-
-            // Convert Elisp plist into Zig struct
-            const q_plist_get = env.*.intern.?(env, "plist-get");
-            var result: T = undefined;
-
-            inline for (s.fields) |field| {
-                const kw_name = ":" ++ field.name;
-                const q_key = env.*.intern.?(env, kw_name.ptr);
-                var get_args = [_]c.emacs_value{ val, q_key };
-                const field_emacs_val = env.*.funcall.?(env, q_plist_get, 2, &get_args);
-
-                @field(result, field.name) = try convertFrom(
-                    field.type,
-                    env,
-                    field_emacs_val,
-                    allocator,
-                );
-            }
-
-            return result;
-        },
-        .int => return @intCast(env.*.extract_integer.?(env, val)),
-        .bool => return env.*.is_not_nil.?(env, val),
-        else => {},
+    /// Note that if T is null, this can return null, so an empty list raises an
+    /// error instead to avoid ambiguity.
+    pub fn nextType(self: *ListConverter, comptime T: type, allocator: std.mem.Allocator) !T {
+        const value = try self.next();
+        return try self.env.convertFrom(T, value, allocator);
     }
-    @compileError("Cannot convert Emacs value for unsupported type: " ++ @typeName(T));
-}
+};
 
-/// Convert value of type T to c.emacs_value.
-/// For structs, if "emacsRepr" function exists, will use that.
-/// Raises compile-time error unsupported types.
-pub fn convertTo(comptime T: type, env: *c.emacs_env, val: T) !c.emacs_value {
-    switch (@typeInfo(T)) {
-        .void => return env.*.intern.?(env, "nil"),
-        .int => return env.*.make_integer.?(env, @intCast(val)),
-        .bool => return env.*.intern.?(env, if (val) "t" else "nil"),
-        .@"struct" => |s| {
-            // First check if it has a "toEmacsRepr" method
-            if (@hasDecl(T, "toEmacsRepr")) {
-                const repr = val.toEmacsRepr();
-                return convertTo(@TypeOf(repr), env, repr);
-            }
-
-            // Convert struct into plist: (:field1 val1 :field2 val2 ...)
-            const q_list = env.*.intern.?(env, "list");
-            var plist_items: [s.fields.len * 2]c.emacs_value = undefined;
-
-            inline for (s.fields, 0..) |field, idx| {
-                const kw_name = ":" ++ field.name;
-                plist_items[idx * 2] = env.*.intern.?(env, kw_name.ptr);
-                plist_items[idx * 2 + 1] = try convertTo(field.type, env, @field(val, field.name));
-            }
-
-            return env.*.funcall.?(env, q_list, @intCast(plist_items.len), &plist_items);
-        },
-        .pointer => |pointer| {
-            if (pointer.size == .one) {
-                // Automatically create user_ptr with type-specific finalizer
-                const finalizer = struct {
-                    fn f(p: ?*anyopaque) callconv(.c) void {
-                        if (p) |raw| {
-                            const typed: T = @ptrCast(@alignCast(raw));
-                            if (@hasDecl(pointer.child, "deinit")) typed.deinit();
-                            std.heap.c_allocator.destroy(typed);
-                        }
-                    }
-                }.f;
-                return env.*.make_user_ptr.?(env, finalizer, val);
-            } else if (pointer.size == .slice) {
-                if (pointer.child == u8) {
-                    return env.*.make_string.?(env, val.ptr, @intCast(val.len));
-                } else {
-                    // Convert []T into Emacs list: (elem1 elem2 ...)
-                    const q_cons = env.*.intern.?(env, "cons");
-                    var list = env.*.intern.?(env, "nil");
-
-                    // Build list backwards with cons.
-                    // This prevents needing to allocate using an ArrayList
-                    var i: usize = val.len;
-                    while (i > 0) {
-                        i -= 1;
-                        const elem = try convertTo(pointer.child, env, val[i]);
-                        var cons_args = [_]c.emacs_value{ elem, list };
-                        list = env.*.funcall.?(env, q_cons, 2, &cons_args);
-                    }
-                    return list;
-                }
-            }
-        },
-        .array => |array| {
-            if (array.child == u8) {
-                return env.*.make_string.?(env, &val, array.len);
-            }
-        },
-        else => {},
-    }
-    @compileError("Cannot convert to Emacs value for unsupported type: " ++ @typeName(T));
-}
-
-/// Wrap zig func as a Emacs function
+/// Wrap a native Zig function as an Emacs C module function
 pub fn wrapFunc(comptime func: anytype) EmacsFunc {
     const func_info = @typeInfo(@TypeOf(func)).@"fn";
     const return_type = func_info.return_type orelse void;
@@ -281,15 +513,15 @@ pub fn wrapFunc(comptime func: anytype) EmacsFunc {
 
     return struct {
         pub fn f(
-            env_opt: ?*c.emacs_env,
+            raw_env: [*c]c.emacs_env,
             nargs: isize,
             args: [*c]c.emacs_value,
             data: ?*anyopaque,
         ) callconv(.c) c.emacs_value {
             _ = nargs;
             _ = data;
-            const env = env_opt orelse unreachable;
-            const q_nil = env.intern.?(env, "nil");
+            const env = Env.fromRaw(raw_env) orelse unreachable;
+            const q_nil = env.nil();
 
             var arena = std.heap.ArenaAllocator.init(std.heap.c_allocator);
             defer arena.deinit();
@@ -301,11 +533,11 @@ pub fn wrapFunc(comptime func: anytype) EmacsFunc {
             inline for (func_info.params, 0..) |param, i| {
                 if (i == 0) {
                     args_tuple[0] = &ctx;
-                } else if (param.type.? == c.emacs_value) {
+                } else if (param.type.? == EmacsValue) {
                     args_tuple[i] = args[i - 1];
                 } else {
-                    args_tuple[i] = convertFrom(param.type.?, env, args[i - 1], allocator) catch |err| {
-                        ctx.setError("Error building emacs function: {t}", .{err});
+                    args_tuple[i] = env.convertFrom(param.type.?, args[i - 1], allocator) catch |err| {
+                        ctx.setError("Error converting emacs argument: {t}", .{err});
                         ctx.signalError(.{});
                         return q_nil;
                     };
@@ -328,8 +560,8 @@ pub fn wrapFunc(comptime func: anytype) EmacsFunc {
             };
 
             // Convert return type to emacs type
-            return convertTo(r_type, env, r_val) catch |err| {
-                ctx.setError("Error building emacs function: {t}", .{err});
+            return env.convertTo(r_type, r_val) catch |err| {
+                ctx.setError("Error converting return value: {t}", .{err});
                 ctx.signalError(.{});
                 return q_nil;
             };
@@ -337,110 +569,15 @@ pub fn wrapFunc(comptime func: anytype) EmacsFunc {
     }.f;
 }
 
-/// Register a standard Zig function directly into Emacs.
+/// Register a native Zig function directly into Emacs with type conversions.
 /// The function must have `*Context` as the first argument.
 pub fn registerFunc(
-    env: *c.emacs_env,
+    env: Env,
     name: [:0]const u8,
     comptime func: anytype,
     doc: [:0]const u8,
 ) void {
     const emacs_func = wrapFunc(func);
     const param_count = @typeInfo(@TypeOf(func)).@"fn".params.len - 1;
-    registerEmacsFunc(env, name, param_count, param_count, emacs_func, doc);
+    env.registerFunc(name, param_count, param_count, emacs_func, doc);
 }
-
-/// Parses a list iteratively through car and cdr and storing the current cons.
-///
-/// The current cons is nil, we have finished traversing the list. Note that if
-/// last element is nil, this is not the same as the cons being nil (it is (cons
-/// nil nil)).
-pub const ListConverter = struct {
-    env: *c.emacs_env,
-    q_car: c.emacs_value,
-    q_cdr: c.emacs_value,
-    /// Current cons, null means finished traversing the list.
-    cons: ?c.emacs_value,
-
-    pub fn init(env: *c.emacs_env, list: c.emacs_value) ListConverter {
-        return .{
-            .env = env,
-            .q_car = env.*.intern.?(env, "car"),
-            .q_cdr = env.*.intern.?(env, "cdr"),
-            .cons = if (env.*.is_not_nil.?(env, list)) list else null,
-        };
-    }
-
-    pub fn next(self: *ListConverter) !c.emacs_value {
-        if (self.cons == null) return error.Done;
-        var args = [_]c.emacs_value{self.cons.?};
-        const car = self.env.*.funcall.?(self.env, self.q_car, 1, &args);
-        const cdr = self.env.*.funcall.?(self.env, self.q_cdr, 1, &args);
-        self.cons = if (self.env.*.is_not_nil.?(self.env, cdr)) cdr else null;
-        return car;
-    }
-
-    /// Note that if T is null, this can return null, so an empty list raises an
-    /// error instead to avoid ambiguity.
-    pub fn nextType(self: *ListConverter, comptime T: type, allocator: std.mem.Allocator) !T {
-        const value = try self.next();
-        return try convertFrom(T, self.env, value, allocator);
-    }
-};
-
-pub fn plist_get(allocator: std.mem.Allocator, comptime T: type, comptime property: []const u8, env: *c.emacs_env, plist: c.emacs_value) !T {
-    const q_plist_get = env.*.intern.?(env, "plist-get");
-    const kw_name = ":" ++ property;
-    const q_key = env.*.intern.?(env, kw_name.ptr);
-    var get_args = [_]c.emacs_value{ plist, q_key };
-    const val = env.*.funcall.?(env, q_plist_get, 2, &get_args);
-    if (env.*.non_local_exit_check.?(env) != c.emacs_funcall_exit_return) {
-        env.*.non_local_exit_clear.?(env);
-        return error.EmacsError;
-    }
-    if (T == c.emacs_value) return val;
-    return try convertFrom(T, env, val, allocator);
-}
-
-// Emacs canvas buffer.
-//
-// Note that the pixel buffer is only valid as long as the canvas object is
-// alive and its dimensions (:data-width and :data-height) have not been
-// changed. If it has changed, Emacs will create a new pixel buffer and
-// automatically resize the canvas. View dimensions (:width and :height)
-// preserve the pixel buffer, though these are not relevant for us.
-pub const Canvas = struct {
-    buffer: []u8,
-    /// In pixels.
-    width: u32,
-    /// In pixels.
-    height: u32,
-
-    /// Get buffer and properties from spec.
-    pub fn fromSpec(arena: std.mem.Allocator, env: *c.emacs_env, canvas_spec: c.emacs_value) !Canvas {
-        const q_car = env.*.intern.?(env, "car");
-        var car_args = [_]c.emacs_value{ canvas_spec };
-        const q_img = env.*.funcall.?(env, q_car, 1, &car_args);
-        
-        if (!symbol_eq(env, q_img, "image")) return error.Invalid;
-
-        const q_cdr = env.*.intern.?(env, "cdr");
-        var cdr_args = [_]c.emacs_value{ canvas_spec };
-        const attrs = env.*.funcall.?(env, q_cdr, 1, &cdr_args);
-
-        const c_type = plist_get(arena, c.emacs_value, "type", env, attrs) catch return error.InvalidType;
-        if (!symbol_eq(env, c_type, "canvas")) return error.NotCanvasType;
-
-        const width = plist_get(arena, u32, "data-width", env, attrs) catch return error.InvalidWidth;
-        const height = plist_get(arena, u32, "data-height", env, attrs) catch return error.InvalidHeight;
-
-        const raw_buf = env.*.canvas_data.?(env, canvas_spec) orelse return error.CanvasDataNull;
-        const buf: [*]u8 = @ptrCast(raw_buf);
-
-        return .{
-            .buffer = buf[0 .. width * height * 4],
-            .width = width,
-            .height = height,
-        };
-    }
-};

@@ -9,6 +9,7 @@ const sqlite = @import("sqlite");
 
 const emacs = @import("emacs.zig");
 const Context = emacs.Context;
+const EmacsValue = emacs.EmacsValue;
 const c = emacs.c;
 
 var gpa_instance = std.heap.DebugAllocator(.{}){};
@@ -103,7 +104,7 @@ const Funcs = struct {
             }
             return err;
         };
-        emacs.message(ctx.env, "Found {d} ids and {d} concepts", .{ ids.len, concepts.len });
+        ctx.env.message("Found {d} ids and {d} concepts", .{ ids.len, concepts.len });
         return concepts;
     }
 
@@ -120,16 +121,11 @@ const Funcs = struct {
         return ancestors;
     }
 
-    // TODO Make CanvasData struct that parses plist with width, height, canvas
-    // spec. Set the :ptr property with the zig renderer/canvas struct (rather
-    // than returning it). In functions that update the graph or render, :ptr
-    // should already be set. We can't set these properties directly on canvas
-    // spec object because emacs tests for eq to see if canvas is the same (thus
-    // we wrap it).
-    pub fn makeGraph(ctx: *Context, core: *Core, canvas_data: c.emacs_value) !*Graph.Renderer {
-        const view_width = try emacs.plist_get(ctx.arena, u32, "width", ctx.env, canvas_data);
-        const view_height = try emacs.plist_get(ctx.arena, u32, "height", ctx.env, canvas_data);
-        const canvas_spec = try emacs.plist_get(ctx.arena, c.emacs_value, "canvas", ctx.env, canvas_data);
+    // TODO Make the entire plist  here and return it.
+    pub fn makeGraph(ctx: *Context, core: *Core, canvas_data: EmacsValue) !*Graph.Renderer {
+        const view_width = try ctx.env.plistGet(canvas_data, "width", ctx.arena, u32);
+        const view_height = try ctx.env.plistGet(canvas_data, "height", ctx.arena, u32);
+        const canvas_spec = try ctx.env.plistGet(canvas_data, "canvas", ctx.arena, EmacsValue);
         const canvas: emacs.Canvas = try .fromSpec(ctx.arena, ctx.env, canvas_spec);
 
         const graph_renderer = c_allocator.create(Graph.Renderer) catch |err| {
@@ -154,12 +150,12 @@ const Funcs = struct {
         return graph_renderer;
     }
 
-    pub fn updateGraph(ctx: *Context, core: *Core, g: *Graph.Renderer, canvas_data: c.emacs_value, concept_id: Id) !void {
+    pub fn updateGraph(ctx: *Context, core: *Core, g: *Graph.Renderer, canvas_data: EmacsValue, concept_id: Id) !void {
         const graph = &g.graph;
         
-        const view_width = try emacs.plist_get(ctx.arena, u32, "width", ctx.env, canvas_data);
-        const view_height = try emacs.plist_get(ctx.arena, u32, "height", ctx.env, canvas_data);
-        const canvas_spec = try emacs.plist_get(ctx.arena, c.emacs_value, "canvas", ctx.env, canvas_data);
+        const view_width = try ctx.env.plistGet(canvas_data, "width", ctx.arena, u32);
+        const view_height = try ctx.env.plistGet(canvas_data, "height", ctx.arena, u32);
+        const canvas_spec = try ctx.env.plistGet(canvas_data, "canvas", ctx.arena, EmacsValue);
         const canvas: emacs.Canvas = try .fromSpec(ctx.arena, ctx.env, canvas_spec);
         if (canvas.buffer.ptr != g.buffer.ptr) {
             // If we decide to no longer parse the buffer from canvas_spec, we
@@ -205,13 +201,14 @@ const Funcs = struct {
         graph.layout("dot") catch |err| return ctx.setError("Failed to layout graph: {t}", .{err});
         g.render() catch |err| return ctx.setError("Failed to render graph: {t}", .{err});
 
-        var args = [_]c.emacs_value{ canvas_spec };
-        _ = ctx.env.funcall.?(ctx.env, ctx.env.intern.?(ctx.env, "canvas-refresh"), 2, &args);
+        const refresh_sym = ctx.env.intern("canvas-refresh");
+        _ = try ctx.env.funcall1(refresh_sym, canvas_spec);
     }
 };
 
-export fn emacs_module_init(rt: [*c]c.emacs_runtime) c_int {
-    const env = rt.*.get_environment.?(rt);
+export fn emacs_module_init(raw_rt: [*c]c.emacs_runtime) c_int {
+    const rt = emacs.Runtime.fromRaw(raw_rt) orelse return 1;
+    const env = rt.getEnvironment() orelse return 1;
 
     emacs.registerFunc(env, "ilm--core-init", Funcs.init, "Initialize ilm core and return state");
     emacs.registerFunc(env, "ilm--core-is-valid", Funcs.isValid, "Return t if core in valid state");
