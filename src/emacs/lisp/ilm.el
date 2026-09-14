@@ -58,6 +58,39 @@ it.  After BODY executes, the buffer is put in
          (goto-char (point-min)))
        (pop-to-buffer ,buf))))
 
+;;;; Graph
+
+(defun ilm-create-graph (id width height &optional buffer-width buffer-height)
+  (ilm--core-make-graph
+   ilm--core
+   id
+   width height
+   (or buffer-width 1000) (or buffer-height 1000)))
+
+(defun ilm--resize-spec-to-value (value spec)
+  (pcase spec
+    ((pred numberp) spec)
+    (`(+ ,x) (+ value x))
+    (`(- ,x) (- value x))
+    (_ (error "Invalid resize spec"))))
+
+(ilm--resize-spec-to-value 10 '(- 3))
+
+;; TODO Need a refresh function in zig
+;; (defun ilm-resize-graph (graph-data w-spec h-spec)
+;;   (let* ((display (get-text-property (point) 'display))
+;;          (canvas (cadr display))
+;;          (data (get-text-property (point) 'ilm-graph-data))
+;;          (concept-id (get-text-property (point) 'concept-id))
+;;          (new-w (+ 30 (map-elt data :width))))
+;;     (setf (nth 3 (car display)) new-w)
+;;     (setf (map-elt data :width) new-w)
+;;     (ilm--core-update-graph ilm--core data concept-id)
+;;     ;; For some reason needed, otherwise the image size doesnt update
+;;     ;; correctly. (redisplay) doesn't work.
+;;     (force-mode-line-update)
+;;     ))
+
 ;;;; Concepts
 
 ;; TODO Concept cache, just store all concepts in a var
@@ -101,31 +134,6 @@ Otherwise return the full hierarchy with :is_direct and :depth properties."
     (ilm-concept-ancestors (map-elt concept :id))))
 
 (defvar ilm-concept-graph-buffer "*ilm concept graph*")
-(defvar ilm-concept-graph-buffer-data
-  (list
-   :graph-ptr nil
-   :width 500
-   :height 300
-   :canvas `(image
-            :type canvas
-            :id ilm-concept-graph-buf
-            :data-width 1000
-            :data-height 1000
-            )))
-
-(defun ilm--create-concept-graph ()
-  (let* ((data (list
-                :width 500
-                :height 300
-                :canvas `(image
-                          :type canvas
-                          :id ilm-concept-graph-buf
-                          :data-width 1000
-                          :data-height 1000
-                          )))
-         (graph-ptr (ilm--core-make-graph ilm--core data)))
-    (setf (map-elt data :graph-ptr) graph-ptr)
-    data))
 
 (defvar-keymap ilm-graph-map
   "l" (lambda ()
@@ -137,17 +145,17 @@ Otherwise return the full hierarchy with :is_direct and :depth properties."
                (new-w (+ 30 (map-elt data :width))))
           (setf (nth 3 (car display)) new-w)
           (setf (map-elt data :width) new-w)
-          (ilm--core-update-graph ilm--core (map-elt data :graph-ptr) data concept-id)
+          (ilm--core-update-graph ilm--core data concept-id)
            ;; For some reason needed, otherwise the image size doesnt update
            ;; correctly. (redisplay) doesn't work.
           (force-mode-line-update)
         )))
           
 (defun ilm-insert-concept-graph (concept)
-  (let* ((data (ilm--create-concept-graph)))
+  (let* ((data (ilm-create-graph 'ilm-concept-graph 500 300)))
     (map-let (:graph-ptr :width :height :canvas) data
-      (ilm--core-update-graph ilm--core graph-ptr data (map-elt concept :id))
-      (canvas-refresh canvas)
+      (ilm--core-update-graph ilm--core data (map-elt concept :id))
+      ;; (canvas-refresh canvas)
       (insert "\n"
               (propertize "#"
                           'display `((slice 0 0 ,width ,height) ,canvas)

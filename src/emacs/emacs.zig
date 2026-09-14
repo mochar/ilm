@@ -265,6 +265,7 @@ pub const Env = struct {
     /// Can allocate, so make sure to deallocate when type is: []T.
     /// Raises compile-time error unsupported types.
     pub fn convertFrom(self: Env, comptime T: type, val: EmacsValue, allocator: std.mem.Allocator) !T {
+        if (type == EmacsValue) return val;
         switch (@typeInfo(T)) {
             .pointer => |pointer| {
                 if (pointer.size == .one) {
@@ -296,9 +297,18 @@ pub const Env = struct {
             .@"struct" => |s| {
                 if (@hasDecl(T, "fromEmacsRepr")) {
                     const fn_info = @typeInfo(@TypeOf(T.fromEmacsRepr)).@"fn";
-                    const repr_type = fn_info.params[0].type.?;
+                    if (fn_info.params.len == 2 and fn_info.params[0].type.? != Env) {
+                        @compileError("if fromEmacsRepr has two params, first must be Env");
+                    }
+                    const accepts_env = fn_info.params.len == 2;
+                    const env_index = if (accepts_env) 1 else 0;
+                    const repr_type = fn_info.params[env_index].type.?;
                     const repr = try self.convertFrom(repr_type, val, allocator);
-                    return try T.fromEmacsRepr(repr);
+                    if (accepts_env) {
+                        return try T.fromEmacsRepr(self, repr);
+                    } else {
+                        return try T.fromEmacsRepr(repr);
+                    }
                 }
 
                 var result: T = undefined;
@@ -560,6 +570,7 @@ pub fn wrapFunc(comptime func: anytype) EmacsFunc {
             };
 
             // Convert return type to emacs type
+            if (r_type == EmacsValue) return r_val;
             return env.convertTo(r_type, r_val) catch |err| {
                 ctx.setError("Error converting return value: {t}", .{err});
                 ctx.signalError(.{});
