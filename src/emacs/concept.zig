@@ -93,7 +93,7 @@ pub const Funcs = struct {
     pub fn setGraph(ctx: *Context, core: *Core, graph_data: EmacsValue, concept_id: Id) !void {
         const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *Graph.Renderer);
         const graph = &gr.graph;
-        graph.clear();
+        gr.clear();
 
         const ids: [1]Id = .{concept_id};
         const concept = blk: {
@@ -107,6 +107,9 @@ pub const Funcs = struct {
 
         graph.addNode(concept.id.uuid, concept.name) catch |err| {
             return ctx.setError("Failed to add node: {t}", .{err});
+        };
+        gr.highlighted.put(concept.id.uuid, {}) catch |err| {
+            return ctx.setError("Failed to add graph highlight: {t}", .{err});
         };
 
         var diags: sqlite.Diagnostics = .{};

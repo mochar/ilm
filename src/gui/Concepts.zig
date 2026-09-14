@@ -170,14 +170,17 @@ fn selectConcept(self: *Self, concept: *Concept) void {
 
 /// Replace the graph nodes and edges with that of self.selected
 fn updateGraphContent(self: *Self) void {
+    self.graph_renderer.clear();
     var graph = &self.graph_renderer.graph;
-    graph.clear();
 
     if (self.selected) |concept| {
         var diags: sqlite.Diagnostics = .{};
         const ids: [1]Id = .{concept.id};
         graph.addNode(concept.id.uuid, concept.name) catch |err| {
             return self.toastErr(@src(), err, "Failed to add node", .{});
+        };
+        self.graph_renderer.highlighted.put(concept.id.uuid, {}) catch |err| {
+            return self.toastErr(@src(), err, "Failed to add graph highlight", .{});
         };
         const ancestors = ilm.concept.getAncestors(self.core, self.arena.allocator(), &ids, false, .{ .diags = &diags }) catch |err| {
             return self.toastErr(@src(), err, "Failed to get ancestors", .{});

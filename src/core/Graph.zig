@@ -95,6 +95,17 @@ pub fn idToName(id: u128, buf: *[33]u8) [:0]const u8 {
     return std.fmt.bufPrintZ(buf, "{x:0>32}", .{id}) catch unreachable;
 }
 
+/// Convert node hex string name back to a u128 id.
+pub fn nameToId(name: []const u8) !u128 {
+    return std.fmt.parseInt(u128, name, 16);
+}
+
+pub fn getNodeId(node: *c.Agnode_t) !u128 {
+    const name_ptr = c.agnameof(node) orelse return error.MissingNodeName;
+    const name = std.mem.span(name_ptr);
+    return std.fmt.parseInt(u128, name, 16);
+}
+
 pub fn addNode(graph: *Graph, id: u128, label: []const u8) !void {
     var buf: [33]u8 = undefined;
     const name = idToName(id, &buf);
@@ -179,6 +190,7 @@ pub const Renderer = struct {
     gpa: std.mem.Allocator,
     graph: Graph,
     padding: f32,
+    highlighted: std.AutoHashMap(u128, void),
     /// ARGB32 pixel buffer.
     buffer: []u8,
     /// Buffer stride in pixels
@@ -191,15 +203,6 @@ pub const Renderer = struct {
     // there is no need to deallocate.
     const font_data = @embedFile("assets/DejaVuSans.ttf");
     var plutovg_font: ?*c.plutovg_font_face_t = null;
-
-    fn ensureSize(buffer: []u8, graph: *const Graph) !void {
-        // TODO I dont think this needs to be strict error, we can prob just
-        // render as much as we can to fill up the buffer
-        if (buffer.len < @as(usize, graph.width) * graph.height * 4) {
-            std.log.err("Buffer too small to fit graph", .{});
-            return error.BufferTooSmol;
-        }
-    }
 
     pub fn init(options: RendererOptions) !Renderer {
         const gpa = options.gpa;
@@ -215,8 +218,6 @@ pub const Renderer = struct {
             buffer = try gpa.alloc(u8, stride * height * 4);
             @memset(buffer, 0);
         }
-
-        try ensureSize(buffer, &graph);
 
         if (plutovg_font == null) {
             if (c.plutovg_font_face_load_from_data(
@@ -234,6 +235,7 @@ pub const Renderer = struct {
             .gpa = gpa,
             .graph = graph,
             .padding = options.padding,
+            .highlighted = .init(gpa),
             .buffer = buffer,
             .stride = stride,
             .height = height,
@@ -242,24 +244,44 @@ pub const Renderer = struct {
     }
 
     pub fn deinit(self: *Renderer) void {
+        self.highlighted.deinit();
         self.graph.deinit();
         if (self.managed) {
             self.gpa.free(self.buffer);
         }
     }
 
+    pub fn clear(self: *Renderer) void {
+        self.graph.clear();
+        self.highlighted.clearRetainingCapacity();
+    }
+
     /// Render the graph in the pixel buffer.
     pub fn render(self: *Renderer) !void {
         const buffer = self.buffer;
         const graph = &self.graph;
-        try ensureSize(buffer, graph);
 
-        // TODO Store surface and canvase in struct and only recreate when graph
+        // Determine render dimensions clamped to buffer capacity while preserving aspect ratio
+        var render_w = graph.width;
+        var render_h = graph.height;
+
+        const max_w: u32 = @intCast(self.stride);
+        const max_h: u32 = @intCast(self.height);
+
+        if (render_w > max_w or render_h > max_h) {
+            const scale_w = @as(f32, @floatFromInt(max_w)) / @as(f32, @floatFromInt(render_w));
+            const scale_h = @as(f32, @floatFromInt(max_h)) / @as(f32, @floatFromInt(render_h));
+            const scale = @min(scale_w, scale_h);
+            render_w = @max(1, @min(max_w, @as(u32, @intFromFloat(@floor(@as(f32, @floatFromInt(render_w)) * scale)))));
+            render_h = @max(1, @min(max_h, @as(u32, @intFromFloat(@floor(@as(f32, @floatFromInt(render_h)) * scale)))));
+        }
+
+        // TODO Store surface and canvas in struct and only recreate when graph
         // size has changed. This also avoids reloading the font in the canvas.
         const surface = c.plutovg_surface_create_for_data(
             buffer.ptr,
-            @intCast(graph.width),
-            @intCast(graph.height),
+            @intCast(render_w),
+            @intCast(render_h),
             @intCast(self.stride * 4),
         ) orelse return error.SurfaceFailed;
         defer c.plutovg_surface_destroy(surface);
@@ -285,8 +307,8 @@ pub const Renderer = struct {
 
         const graph_w = @max(1.0, bb_urx - bb_llx);
         const graph_h = @max(1.0, bb_ury - bb_lly);
-        const canvas_w: f32 = @floatFromInt(graph.width);
-        const canvas_h: f32 = @floatFromInt(graph.height);
+        const canvas_w: f32 = @floatFromInt(render_w);
+        const canvas_h: f32 = @floatFromInt(render_h);
 
         const padding = self.padding;
         const avail_w = @max(1.0, canvas_w - padding * 2.0);
@@ -312,6 +334,7 @@ pub const Renderer = struct {
         // Draw nodes and their labels
         maybe_node = c.agfstnode(graph.g);
         while (maybe_node) |node| : (maybe_node = c.agnxtnode(graph.g, node)) {
+            const node_id = try getNodeId(node);
             const node_info = nodeInfo(node);
             const cx: f32 = @floatCast(node_info.coord.x);
             const cy: f32 = @floatCast(node_info.coord.y);
@@ -321,9 +344,13 @@ pub const Renderer = struct {
 
             // Draw node body
             // c.plutovg_canvas_round_rect(canvas, cx - w / 2.0, cy - h / 2.0, w, h, 8.0, 8.0);
-            c.plutovg_canvas_set_rgba(canvas, 0.2, 0.35, 0.65, 1.0);
-            // c.plutovg_canvas_fill_preserve(canvas);
             c.plutovg_canvas_circle(canvas, cx, cy, h / 2);
+            if (self.highlighted.contains(node_id)) {
+                c.plutovg_canvas_set_rgba(canvas, 0.8, 0.85, 1.0, 1.0);
+            } else {
+                c.plutovg_canvas_set_rgba(canvas, 0.0, 0.0, 0.0, 0.0);
+            }
+            c.plutovg_canvas_fill_preserve(canvas);
 
             // Draw node border
             c.plutovg_canvas_set_rgba(canvas, 0.8, 0.85, 1.0, 1.0);
@@ -554,5 +581,5 @@ test "Graph buffer rendering with custom stride" {
     // Verify dimensions can be updated dynamically
     try graph.setDimensions(300, 250, 96.0);
     try graph.layout("neato");
-    try graph.renderToBuffer(buf, .{ .stride_bytes = stride });
 }
+

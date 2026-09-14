@@ -3,29 +3,31 @@
 #+begin_src emacs-lisp :eval no
 (setq default-directory (expand-file-name "src/emacs/lisp"))
 (load-file "~/.config/emacs/elpa/consult-20260805.1130/consult.el")
+(load-file "~/.config/emacs/elpa/marginalia-20260724.810/marginalia.el")
+(load-file "~/.config/emacs/elpa/orderless-20260519.1029/orderless.el")
+(load-file "~/.config/emacs/elpa/vertico-20260811.1003/vertico.el")
+(vertico-mode)
+(marginalia-mode)
+(setq completion-styles (quote (orderless basic)))
+
 (load-file "./ilm.el")
 (ilm--reload-module)
 (let ((data-dir "/home/mochar/tmp/ilm/"))
   ;; (delete-directory data-dir t)
   ;; (make-directory data-dir)
   (ilm-core-init data-dir))
-;; (let* ((a (ilm-add-concept "A"))
-;;        (b (ilm-add-concept "B" (list a)))
-;;        (c (ilm-add-concept "C" (list a b))))
-;;   (message "A: %s" (ilm-concept-ancestors a))
-;;   (message "B: %s" (ilm-concept-ancestors b))
-;;   (message "C: %s" (ilm-concept-ancestors c)))
-;; (message "%s" (ilm--all-concepts))
-;; (setq ilm-graph-canvas (map-elt ilm-concept-graph-buffer-data :canvas))
+(setq ilm-concepts (ilm--all-concepts))
+(setq ilm-concept-graph (ilm-create-graph (quote ilm-concept-graph) 500 300))
 (let ((c (seq-find
            (lambda (c) (string= "Half-cauchy factorization" (map-elt c :name)))
-           (ilm--all-concepts))))
-  (ilm-insert-concept-graph c))
+           ilm-concepts)))
+  (ilm-insert-concept-graph c ilm-concept-graph))
+(insert "\n\n" "(ilm--core-set-concept-graph ilm--core ilm-concept-graph (map-elt (nth 0 ilm-concepts) :id))" "\n\n" "(view-echo-area-messages)")
 #+end_src
 
 
 #+begin_src sh :noweb yes :noweb-prefix no :var bg=(face-attribute 'default :background) fg=(face-attribute 'default :foreground)
-emacs -Q --eval '(progn (set-face-attribute (quote default) nil :height 160 :background "'"$bg"'" :foreground  "'"$fg"'") <<scratch>> (view-echo-area-messages))'
+emacs -Q --eval '(progn (set-face-attribute (quote default) nil :height 160 :background "'"$bg"'" :foreground  "'"$fg"'") <<scratch>>)'
 #+end_src
 
 #+RESULTS:

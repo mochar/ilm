@@ -65,7 +65,18 @@ it.  After BODY executes, the buffer is put in
    ilm--core
    id
    width height
-   (or buffer-width 1000) (or buffer-height 1000)))
+   (or buffer-width 1024)
+   (or buffer-height 1024)))
+
+(defun ilm-insert-graph (data &rest properties)
+  (map-let (:canvas :width :height) data
+    (insert "\n"
+            (apply
+             #'propertize "#"
+             'display `((slice 0 0 ,width ,height) ,canvas)
+             'keymap ilm-graph-map
+             'ilm-graph-data data
+             properties))))
 
 (defun ilm--resize-spec-to-value (value spec)
   (pcase spec
@@ -87,7 +98,21 @@ it.  After BODY executes, the buffer is put in
    (ilm--core-update-graph ilm--core data)
     ;; For some reason needed, otherwise the image size doesnt update
     ;; correctly. (redisplay) doesn't work.
-    (force-mode-line-update)))
+   (force-mode-line-update)))
+
+(defvar-keymap ilm-graph-map
+  "l" (lambda ()
+        (interactive)
+        (ilm-resize-graph-at-point '(+ 30) nil))
+  "h" (lambda ()
+        (interactive)
+        (ilm-resize-graph-at-point '(- 30) nil))
+  "j" (lambda ()
+        (interactive)
+        (ilm-resize-graph-at-point nil '(+ 30)))
+  "k" (lambda ()
+        (interactive)
+        (ilm-resize-graph-at-point nil '(- 30))))
 
 ;;;; Concepts
 
@@ -131,47 +156,55 @@ Otherwise return the full hierarchy with :is_direct and :depth properties."
   (let* ((concept (ilm--select-concept)))
     (ilm-concept-ancestors (map-elt concept :id))))
 
-(defvar ilm-concept-graph-buffer "*ilm concept graph*")
-
-(defvar-keymap ilm-graph-map
-  "l" (lambda ()
-        (interactive)
-        (ilm-resize-graph-at-point '(+ 30) nil))
-  "h" (lambda ()
-        (interactive)
-        (ilm-resize-graph-at-point '(- 30) nil))
-  "j" (lambda ()
-        (interactive)
-        (ilm-resize-graph-at-point nil '(+ 30)))
-  "k" (lambda ()
-        (interactive)
-        (ilm-resize-graph-at-point nil '(- 30))))
-
-(defun ilm-insert-concept-graph (concept)
-  (let* ((data (ilm-create-graph 'ilm-concept-graph 500 300))
+(defun ilm-insert-concept-graph (concept &optional graph-data)
+  (let* ((data (or graph-data (ilm-create-graph 'ilm-concept-graph 500 300)))
          (concept-id (map-elt concept :id)))
-    (map-let (:canvas :width :height) data
-      (ilm--core-set-concept-graph ilm--core data concept-id)
-      (insert "\n"
-              (propertize "#"
-                          'display `((slice 0 0 ,width ,height) ,canvas)
-                          'keymap ilm-graph-map
-                          'ilm-graph-data data
-                          'concept-id concept-id)))))
+    (ilm--core-set-concept-graph ilm--core data concept-id)
+    (ilm-insert-graph data 'concept-id concept-id)))
 
-(defun ilm--concept-consult-state (action concept)
-  "State function for previewing concepts in consult."
-  (pcase action
-    ('return)
-    ('exit
-     (when-let* ((win (get-buffer-window ilm-concept-graph-buffer)))
-       (quit-window nil win)))
-    ('preview
-     (if concept
-         (ilm-with-special-buffer ilm-concept-graph-buffer
-           (ilm-insert-concept-graph concept))
-       (when-let* ((win (get-buffer-window ilm-concept-graph-buffer)))
-         (quit-window nil win))))))
+(defvar ilm-concept-graph-buffer "*ilm concept graph*")
+(defvar ilm-concept-graph-buffer-data nil)
+
+(defun ilm--get-concept-graph-buffer ()
+  (unless ilm-concept-graph-buffer-data
+    (setq ilm-concept-graph-buffer-data (ilm-create-graph 'ilm-concept-graph-preview 500 300)))
+  (let ((buf (get-buffer-create ilm-concept-graph-buffer)))
+    (with-current-buffer buf
+      (unless (get-text-property (point-min) 'ilm-graph-data)
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (ilm-insert-graph ilm-concept-graph-buffer-data))
+        (special-mode)))
+    buf))
+
+(defun ilm--concept-consult-state ()
+  "State factory for previewing concepts in the original window."
+  (let* ((orig-win (consult--original-window))
+         (orig-buf (and (window-live-p orig-win) (window-buffer orig-win))))
+    (lambda (action concept)
+      (pcase action
+        ('preview
+         (when (window-live-p orig-win)
+           (if concept
+               (let* ((buf (ilm--get-concept-graph-buffer))
+                      (win-w (window-body-width orig-win t))
+                      (win-h (window-body-height orig-win t)))
+                 (with-current-buffer buf
+                   (when-let* ((pos (next-single-property-change (point-min) 'display)))
+                     (save-excursion
+                       (goto-char pos)
+                       (ilm-resize-graph-at-point win-w win-h)))
+                   ;; (ilm--core-update-graph ilm--core ilm-concept-graph-buffer-data)
+                   (ilm--core-set-concept-graph
+                    ilm--core ilm-concept-graph-buffer-data (map-elt concept :id)))
+                 (set-window-buffer orig-win buf))
+             ;; Restore original buffer when no candidate is selected
+             (when (buffer-live-p orig-buf)
+               (set-window-buffer orig-win orig-buf)))))
+        ('exit
+         ;; Restore original buffer when exiting the minibuffer
+         (when (and (window-live-p orig-win) (buffer-live-p orig-buf))
+           (set-window-buffer orig-win orig-buf)))))))
 
 (defun ilm--select-concept ()
   (ilm-core-ensure)
@@ -179,15 +212,13 @@ Otherwise return the full hierarchy with :is_direct and :depth properties."
          (options (mapcar (lambda (concept)
                             (map-let (:name :id) concept
                               (propertize
-                               ;; Invisible suffix ensures candidates with
-                               ;; identical names are unique strings.
                                (concat name (propertize (format " #%s" id) 'invisible t))
                                'concept concept)))
                           concepts)))
     (consult--read
      options
      :prompt "Concepts: "
-     :state #'ilm--concept-consult-state
+     :state (ilm--concept-consult-state)
      :annotate (lambda (option)
                  (let ((c (get-text-property 0 'concept option)))
                    (format " %s" (map-elt c :id))))

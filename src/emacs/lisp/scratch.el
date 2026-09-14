@@ -25,9 +25,14 @@
         (ignore-errors
             (ilm-add-concept-parents child-id (cdr concept)))))))
 
+
+(setq ilm-concepts (ilm--all-concepts))
+(setq ilm-concept-graph (ilm-create-graph 'ilm-concept-graphh 500 300))
+(setq ilm-concept-graph nil)
 (let* ((c (seq-find
            (lambda (c) (string= "Half-cauchy factorization" (map-elt c :name)))
            (ilm--all-concepts))))
-  (ilm-insert-concept-graph c))
+  (ilm-insert-concept-graph c ilm-concept-graph))
 #
 
+(ilm--core-set-concept-graph ilm--core ilm-concept-graph (map-elt (nth 2 ilm-concepts) :id))
