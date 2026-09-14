@@ -25,6 +25,8 @@ pub const GraphOptions = struct {
 pub fn init(allocator: std.mem.Allocator, options: GraphOptions) !Graph {
     const g = agopen(@constCast("graph"), Agdirected, null) orelse return error.OpenFailed;
     _ = c.agsafeset(g, @constCast("bgcolor"), @constCast("transparent"), @constCast(""));
+    _ = c.agsafeset(g, @constCast("margin"), @constCast("0.0"), @constCast(""));
+    _ = c.agsafeset(g, @constCast("pad"), @constCast("0.0"), @constCast(""));
     _ = c.agsafeset(g, @constCast("dpi"), @constCast(GRAPHVIZ_DPI_STR), @constCast(""));
     // Without this, graphviz will scale the image until one of the dimensions matches.
     _ = c.agsafeset(g, @constCast("ratio"), @constCast("fill"), @constCast(""));
@@ -103,6 +105,10 @@ pub fn addNode(graph: *Graph, id: u128, label: []const u8) !void {
 
     const node = c.agnode(graph.g, @constCast(name), 1) orelse return error.NodeFailed;
     _ = c.agsafeset(node, @constCast("label"), @ptrCast(@constCast(label_z)), @constCast(""));
+    // Specifies space left around the node's label. By default, the value is 0.11,0.055.
+    _ = c.agsafeset(node, @constCast("margin"), @constCast("0.0"), @constCast(""));
+    _ = c.agsafeset(node, @constCast("width"), @constCast("0.1"), @constCast(""));
+    _ = c.agsafeset(node, @constCast("height"), @constCast("0.1"), @constCast(""));
 }
 
 /// Get a cgraph node given the uuid
@@ -153,6 +159,7 @@ pub fn renderToFile(graph: *const Graph, format: []const u8, filename: []const u
 pub const RendererOptions = struct {
     gpa: std.mem.Allocator,
     graph_options: GraphOptions,
+    padding: f32 = 0.0,
     /// Buffer stride in pixels
     buffer_stride: usize,
     /// Number of rows in the buffer
@@ -171,6 +178,7 @@ pub const RendererOptions = struct {
 pub const Renderer = struct {
     gpa: std.mem.Allocator,
     graph: Graph,
+    padding: f32,
     /// ARGB32 pixel buffer.
     buffer: []u8,
     /// Buffer stride in pixels
@@ -225,6 +233,7 @@ pub const Renderer = struct {
         return .{
             .gpa = gpa,
             .graph = graph,
+            .padding = options.padding,
             .buffer = buffer,
             .stride = stride,
             .height = height,
@@ -279,7 +288,7 @@ pub const Renderer = struct {
         const canvas_w: f32 = @floatFromInt(graph.width);
         const canvas_h: f32 = @floatFromInt(graph.height);
 
-        const padding: f32 = @min(24.0, @min(canvas_w, canvas_h) * 0.1);
+        const padding = self.padding;
         const avail_w = @max(1.0, canvas_w - padding * 2.0);
         const avail_h = @max(1.0, canvas_h - padding * 2.0);
 
@@ -307,13 +316,14 @@ pub const Renderer = struct {
             const cx: f32 = @floatCast(node_info.coord.x);
             const cy: f32 = @floatCast(node_info.coord.y);
             // const w: f32 = @floatCast(node_info.width * 72.0);
-            const h: f32 = @floatCast(node_info.height * 72.0);
+            // const h: f32 = @floatCast(node_info.height * 72.0);
+            const h: f32 = @floatCast(node_info.height * 72.0 * 0.5);
 
             // Draw node body
             // c.plutovg_canvas_round_rect(canvas, cx - w / 2.0, cy - h / 2.0, w, h, 8.0, 8.0);
             c.plutovg_canvas_set_rgba(canvas, 0.2, 0.35, 0.65, 1.0);
             // c.plutovg_canvas_fill_preserve(canvas);
-            c.plutovg_canvas_circle(canvas, cx, cy, h / 3);
+            c.plutovg_canvas_circle(canvas, cx, cy, h / 2);
 
             // Draw node border
             c.plutovg_canvas_set_rgba(canvas, 0.8, 0.85, 1.0, 1.0);
