@@ -74,22 +74,20 @@ it.  After BODY executes, the buffer is put in
     (`(- ,x) (- value x))
     (_ (error "Invalid resize spec"))))
 
-(ilm--resize-spec-to-value 10 '(- 3))
-
-;; TODO Need a refresh function in zig
-;; (defun ilm-resize-graph (graph-data w-spec h-spec)
-;;   (let* ((display (get-text-property (point) 'display))
-;;          (canvas (cadr display))
-;;          (data (get-text-property (point) 'ilm-graph-data))
-;;          (concept-id (get-text-property (point) 'concept-id))
-;;          (new-w (+ 30 (map-elt data :width))))
-;;     (setf (nth 3 (car display)) new-w)
-;;     (setf (map-elt data :width) new-w)
-;;     (ilm--core-update-graph ilm--core data concept-id)
-;;     ;; For some reason needed, otherwise the image size doesnt update
-;;     ;; correctly. (redisplay) doesn't work.
-;;     (force-mode-line-update)
-;;     ))
+(defun ilm-resize-graph-at-point (w-spec h-spec)
+  (pcase-let* ((display (get-text-property (point) 'display))
+               (data (get-text-property (point) 'ilm-graph-data))
+               ((map :width :height) data)
+               (new-w (ilm--resize-spec-to-value width (or w-spec width)))
+               (new-h (ilm--resize-spec-to-value height (or h-spec height))))
+    (setf (nth 3 (car display)) new-w
+          (map-elt data :width) new-w
+          (nth 4 (car display)) new-h
+          (map-elt data :height) new-h)
+   (ilm--core-update-graph ilm--core data)
+    ;; For some reason needed, otherwise the image size doesnt update
+    ;; correctly. (redisplay) doesn't work.
+    (force-mode-line-update)))
 
 ;;;; Concepts
 
@@ -123,7 +121,7 @@ If DIRECT-ONLY is non-nil, only return direct parents.
 Otherwise return the full hierarchy with :is_direct and :depth properties."
   (ilm-core-ensure)
   (let ((ids-list (ensure-list ids)))
-    (ilm--core-ancestors ilm--core ids-list (if direct-only t nil))))
+    (ilm--core-concept-ancestors ilm--core ids-list (if direct-only t nil))))
 
 (defun ilm-concept-parents (ids)
   "Return only direct parents of concept IDS."
@@ -138,30 +136,28 @@ Otherwise return the full hierarchy with :is_direct and :depth properties."
 (defvar-keymap ilm-graph-map
   "l" (lambda ()
         (interactive)
-        (let* ((display (get-text-property (point) 'display))
-               (canvas (cadr display))
-               (data (get-text-property (point) 'ilm-graph-data))
-               (concept-id (get-text-property (point) 'concept-id))
-               (new-w (+ 30 (map-elt data :width))))
-          (setf (nth 3 (car display)) new-w)
-          (setf (map-elt data :width) new-w)
-          (ilm--core-update-graph ilm--core data concept-id)
-           ;; For some reason needed, otherwise the image size doesnt update
-           ;; correctly. (redisplay) doesn't work.
-          (force-mode-line-update)
-        )))
-          
+        (ilm-resize-graph-at-point '(+ 30) nil))
+  "h" (lambda ()
+        (interactive)
+        (ilm-resize-graph-at-point '(- 30) nil))
+  "j" (lambda ()
+        (interactive)
+        (ilm-resize-graph-at-point nil '(+ 30)))
+  "k" (lambda ()
+        (interactive)
+        (ilm-resize-graph-at-point nil '(- 30))))
+
 (defun ilm-insert-concept-graph (concept)
-  (let* ((data (ilm-create-graph 'ilm-concept-graph 500 300)))
-    (map-let (:graph-ptr :width :height :canvas) data
-      (ilm--core-update-graph ilm--core data (map-elt concept :id))
-      ;; (canvas-refresh canvas)
+  (let* ((data (ilm-create-graph 'ilm-concept-graph 500 300))
+         (concept-id (map-elt concept :id)))
+    (map-let (:canvas :width :height) data
+      (ilm--core-set-concept-graph ilm--core data concept-id)
       (insert "\n"
               (propertize "#"
                           'display `((slice 0 0 ,width ,height) ,canvas)
                           'keymap ilm-graph-map
                           'ilm-graph-data data
-                          'concept-id (map-elt concept :id))))))
+                          'concept-id concept-id)))))
 
 (defun ilm--concept-consult-state (action concept)
   "State function for previewing concepts in consult."
