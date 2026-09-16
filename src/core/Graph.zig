@@ -255,7 +255,29 @@ pub const Renderer = struct {
         self.graph.clear();
         self.highlighted.clearRetainingCapacity();
     }
+    
+    /// Set the graph dimensions given pixel width and height, and rerender.
+    ///
+    /// Note: This will truncate to maximum of the buffer width and height,
+    /// preserving the ratio.
+    pub fn resize(self: *Renderer, width: u32, height: u32) !void {
+        const max_w: u32 = @intCast(self.stride);
+        const max_h: u32 = @intCast(self.height);
+        var render_w = width;
+        var render_h = height;
 
+        if (render_w > max_w or render_h > max_h) {
+            const scale_w = @as(f32, @floatFromInt(max_w)) / @as(f32, @floatFromInt(render_w));
+            const scale_h = @as(f32, @floatFromInt(max_h)) / @as(f32, @floatFromInt(render_h));
+            const scale = @min(scale_w, scale_h);
+            render_w = @max(1, @min(max_w, @as(u32, @intFromFloat(@floor(@as(f32, @floatFromInt(render_w)) * scale)))));
+            render_h = @max(1, @min(max_h, @as(u32, @intFromFloat(@floor(@as(f32, @floatFromInt(render_h)) * scale)))));
+        }
+
+        self.graph.setDimensions(render_w, render_h);
+        try self.render();
+    }
+    
     /// Render the graph in the pixel buffer.
     pub fn render(self: *Renderer) !void {
         const buffer = self.buffer;
@@ -264,7 +286,6 @@ pub const Renderer = struct {
         // Determine render dimensions clamped to buffer capacity while preserving aspect ratio
         var render_w = graph.width;
         var render_h = graph.height;
-
         const max_w: u32 = @intCast(self.stride);
         const max_h: u32 = @intCast(self.height);
 

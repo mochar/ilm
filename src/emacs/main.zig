@@ -60,6 +60,7 @@ export fn emacs_module_init(raw_rt: [*c]c.emacs_runtime) c_int {
     emacs.registerFunc(env, "ilm--core-set-concept-graph", ConceptFuncs.setGraph, "");
     
     emacs.registerFunc(env, "ilm--core-make-graph", GraphFuncs.make, "");
+    emacs.registerFunc(env, "ilm--core-resize-graph", GraphFuncs.resize, "");
     emacs.registerFunc(env, "ilm--core-update-graph", GraphFuncs.update, "");
 
     return 0;

@@ -88,9 +88,20 @@ pub const Funcs = struct {
         return try ctx.env.funcall(q_list, &args);
     }
 
-    pub fn update(ctx: *Context, _: *Core, graph_data: EmacsValue) !void {
+    /// Resize graph, refresh, and update the graph data with new width and height.
+    pub fn resize(ctx: *Context, graph_data: EmacsValue, width: u32, height: u32) !void {
         const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *Graph.Renderer);
-        const graph = &gr.graph;
+        const canvas_spec = try ctx.env.plistGet(graph_data, "canvas", ctx.arena, EmacsValue);
+        try gr.resize(width, height);
+        try ctx.env.plistSet(graph_data, "width", gr.graph.width);
+        try ctx.env.plistSet(graph_data, "height", gr.graph.height);
+        _ = try ctx.env.funcall1(ctx.env.intern("canvas-refresh"), canvas_spec);
+    }
+
+    /// Update the graph to match the width and height of graph data.
+    pub fn update(ctx: *Context, graph_data: EmacsValue) !void {
+        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *Graph.Renderer);
+        // const graph = &gr.graph;
 
         const view_width = try ctx.env.plistGet(graph_data, "width", ctx.arena, u32);
         const view_height = try ctx.env.plistGet(graph_data, "height", ctx.arena, u32);
@@ -105,7 +116,6 @@ pub const Funcs = struct {
             return error.DifferentBuffers;
         }
 
-        graph.setDimensions(view_width, view_height);
-        try refreshGraph(ctx, gr, canvas_spec);
+        try gr.resize(view_width, view_height);
     }
 };

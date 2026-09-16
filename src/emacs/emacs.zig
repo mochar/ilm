@@ -117,6 +117,11 @@ pub const Env = struct {
         const args = [_]EmacsValue{ arg1, arg2 };
         return self.funcall(function, &args);
     }
+    
+    pub fn funcall3(self: Env, function: EmacsValue, arg1: EmacsValue, arg2: EmacsValue, arg3: EmacsValue) !EmacsValue {
+        const args = [_]EmacsValue{ arg1, arg2, arg3 };
+        return self.funcall(function, &args);
+    }
 
     pub fn makeInteger(self: Env, n: i64) EmacsValue {
         return self.raw.make_integer.?(self.raw, n);
@@ -260,7 +265,21 @@ pub const Env = struct {
         if (T == EmacsValue) return val;
         return try self.convertFrom(T, val, allocator);
     }
-
+    
+    pub fn plistSet(
+        self: Env,
+        plist: EmacsValue,
+        comptime property: []const u8,
+        value: anytype,
+    ) !void {
+        const q_plist_put = self.intern("plist-put");
+        const kw_name = ":" ++ property;
+        const q_key = self.intern(kw_name);
+        const val_type = @TypeOf(value);
+        const emacs_val = if (val_type == EmacsValue) value else try self.convertTo(val_type, value);
+        _ = try self.funcall3(q_plist_put, plist, q_key, emacs_val);
+    }
+    
     /// Convert a EmacsValue to a native Zig type T.
     /// Can allocate, so make sure to deallocate when type is: []T.
     /// Raises compile-time error unsupported types.

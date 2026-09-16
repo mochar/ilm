@@ -91,11 +91,10 @@ it.  After BODY executes, the buffer is put in
                ((map :width :height) data)
                (new-w (ilm--resize-spec-to-value width (or w-spec width)))
                (new-h (ilm--resize-spec-to-value height (or h-spec height))))
-    (setf (nth 3 (car display)) new-w
-          (map-elt data :width) new-w
-          (nth 4 (car display)) new-h
-          (map-elt data :height) new-h)
-   (ilm--core-update-graph ilm--core data)
+    (ilm--core-resize-graph data new-w new-h)
+    (pcase-let* (((map :width :height) data))
+      (setf (nth 3 (car display)) width
+            (nth 4 (car display)) height))
     ;; For some reason needed, otherwise the image size doesnt update
     ;; correctly. (redisplay) doesn't work.
    (force-mode-line-update)))
@@ -194,7 +193,6 @@ Otherwise return the full hierarchy with :is_direct and :depth properties."
                      (save-excursion
                        (goto-char pos)
                        (ilm-resize-graph-at-point win-w win-h)))
-                   ;; (ilm--core-update-graph ilm--core ilm-concept-graph-buffer-data)
                    (ilm--core-set-concept-graph
                     ilm--core ilm-concept-graph-buffer-data (map-elt concept :id)))
                  (set-window-buffer orig-win buf))

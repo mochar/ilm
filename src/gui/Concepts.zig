@@ -196,17 +196,18 @@ fn updateGraphContent(self: *Self) void {
             };
         }
     }
-}
-
-/// Compute new layout, render to buffer, and update the texture
-fn updateGraphTexture(self: *Self) void {
-    var graph = &self.graph_renderer.graph;
-    graph.setDimensions(self.rendered_width, self.rendered_height);
     graph.layout("dot") catch |err| {
         return self.toastErr(@src(), err, "Failed to layout graph", .{});
     };
     self.graph_renderer.render() catch |err| {
         return self.toastErr(@src(), err, "Failed to render graph", .{});
+    };
+}
+
+/// Compute new layout, render to buffer, and update the texture
+fn updateGraphTexture(self: *Self) void {
+    self.graph_renderer.resize(self.rendered_width, self.rendered_height) catch |err| {
+        return self.toastErr(@src(), err, "Failed to resize graph", .{});
     };
     self.graph_texture.updateSubRect(self.graph_renderer.buffer.ptr, 0, 0, self.rendered_width, self.rendered_height) catch |err| {
         return self.toastErr(@src(), err, "Failed to update graph texture", .{});
