@@ -11,23 +11,14 @@ const sqlite = @import("sqlite");
 const c_allocator = std.heap.c_allocator;
 
 pub fn refreshGraph(ctx: *Context, gr: *Graph.Renderer, canvas_spec: EmacsValue) !void {
-    // TODO Should be &graph ?
     gr.graph.layout("dot") catch |err| return ctx.setError("Failed to layout graph: {t}", .{err});
+    gr.fitToGraph();
     gr.render() catch |err| return ctx.setError("Failed to render graph: {t}", .{err});
     const refresh_sym = ctx.env.intern("canvas-refresh");
     _ = try ctx.env.funcall1(refresh_sym, canvas_spec);
 }
 
 pub const Funcs = struct {
-    // const GraphContainer = struct {
-    //     renderer: *Graph.Renderer,
-    //     canvas_spec: EmacsValue,
-
-    //     pub fn fromEmacsRepr(env: emacs.Env, q_container: EmacsValue) GraphContainer {
-
-    //     }
-    // };
-
     pub fn make(ctx: *Context, core: *Core, q_id: EmacsValue, view_width: u32, view_height: u32, buffer_width: u32, buffer_height: u32) !EmacsValue {
         const q_list = ctx.env.intern("list");
 
@@ -61,10 +52,9 @@ pub const Funcs = struct {
         errdefer c_allocator.destroy(graph_renderer);
         graph_renderer.* = Graph.Renderer.init(.{
             .gpa = core.gpa,
-            .graph_options = .{
-                .width = view_width,
-                .height = view_height,
-            },
+            .graph_options = .{},
+            .view_width = view_width,
+            .view_height = view_height,
             .buffer = canvas_buffer,
             .buffer_stride = buffer_width,
             .buffer_height = buffer_height,
@@ -73,7 +63,7 @@ pub const Funcs = struct {
             return err;
         };
 
-        // Construct response: a plist with
+        // Construct response: a plist
         const graph_user_ptr = ctx.env.makeUserPtr(Graph.Renderer, graph_renderer);
         const args = [_]EmacsValue{
             ctx.env.intern(":graph-ptr"),
@@ -88,34 +78,68 @@ pub const Funcs = struct {
         return try ctx.env.funcall(q_list, &args);
     }
 
-    /// Resize graph, refresh, and update the graph data with new width and height.
+    /// Resize visible viewport, refresh, and update the graph data with new width and height.
     pub fn resize(ctx: *Context, graph_data: EmacsValue, width: u32, height: u32) !void {
         const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *Graph.Renderer);
         const canvas_spec = try ctx.env.plistGet(graph_data, "canvas", ctx.arena, EmacsValue);
         try gr.resize(width, height);
-        try ctx.env.plistSet(graph_data, "width", gr.graph.width);
-        try ctx.env.plistSet(graph_data, "height", gr.graph.height);
+        try ctx.env.plistSet(graph_data, "width", gr.view_width);
+        try ctx.env.plistSet(graph_data, "height", gr.view_height);
         _ = try ctx.env.funcall1(ctx.env.intern("canvas-refresh"), canvas_spec);
     }
 
     /// Update the graph to match the width and height of graph data.
     pub fn update(ctx: *Context, graph_data: EmacsValue) !void {
         const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *Graph.Renderer);
-        // const graph = &gr.graph;
 
         const view_width = try ctx.env.plistGet(graph_data, "width", ctx.arena, u32);
         const view_height = try ctx.env.plistGet(graph_data, "height", ctx.arena, u32);
         const canvas_spec = try ctx.env.plistGet(graph_data, "canvas", ctx.arena, EmacsValue);
         const canvas: emacs.Canvas = try .fromSpec(ctx.arena, ctx.env, canvas_spec);
         if (canvas.buffer.ptr != gr.buffer.ptr) {
-            // If we decide to no longer parse the buffer from canvas_spec, we
-            // can alternatively check if the buffer width and height matches,
-            // since emacs creates a new buffer if :data-width or :data-height
-            // changed.
             ctx.setError("Canvas buffer does not match graph buffer (resized?)", .{});
             return error.DifferentBuffers;
         }
 
         try gr.resize(view_width, view_height);
+    }
+
+    /// Pan the camera by screen delta (dx, dy).
+    pub fn pan(ctx: *Context, graph_data: EmacsValue, dx: f32, dy: f32) !void {
+        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *Graph.Renderer);
+        const canvas_spec = try ctx.env.plistGet(graph_data, "canvas", ctx.arena, EmacsValue);
+        try gr.pan(dx, dy);
+        _ = try ctx.env.funcall1(ctx.env.intern("canvas-refresh"), canvas_spec);
+    }
+
+    /// Zoom the camera by factor, centered at (focus_x, focus_y).
+    /// If focus coordinates are negative, zoom is centered at current camera position.
+    pub fn zoom(ctx: *Context, graph_data: EmacsValue, factor: f32, focus_x: f32, focus_y: f32) !void {
+        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *Graph.Renderer);
+        const canvas_spec = try ctx.env.plistGet(graph_data, "canvas", ctx.arena, EmacsValue);
+        const fx: ?f32 = if (focus_x >= 0 and focus_y >= 0) focus_x else null;
+        const fy: ?f32 = if (focus_x >= 0 and focus_y >= 0) focus_y else null;
+        try gr.zoomBy(factor, fx, fy);
+        _ = try ctx.env.funcall1(ctx.env.intern("canvas-refresh"), canvas_spec);
+    }
+
+    /// Fit camera to current graph's bounding box and refresh.
+    pub fn fit(ctx: *Context, graph_data: EmacsValue) !void {
+        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *Graph.Renderer);
+        const canvas_spec = try ctx.env.plistGet(graph_data, "canvas", ctx.arena, EmacsValue);
+        gr.fitToGraph();
+        try gr.render();
+        _ = try ctx.env.funcall1(ctx.env.intern("canvas-refresh"), canvas_spec);
+    }
+
+    /// Query node id under screen coordinate (screen_x, screen_y).
+    pub fn getNodeAt(ctx: *Context, graph_data: EmacsValue, screen_x: f32, screen_y: f32) !EmacsValue {
+        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *Graph.Renderer);
+        if (gr.getNodeAt(screen_x, screen_y)) |node_id| {
+            var buf: [33]u8 = undefined;
+            const name = Graph.idToName(node_id, &buf);
+            return try ctx.env.makeString(name);
+        }
+        return ctx.env.nil();
     }
 };

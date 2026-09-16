@@ -18,8 +18,31 @@ height: u32,
 has_layout: bool = false,
 
 pub const GraphOptions = struct {
-    width: u32,
-    height: u32,
+    width: ?u32 = null,
+    height: ?u32 = null,
+};
+
+pub const BoundingBox = struct {
+    llx: f32,
+    lly: f32,
+    urx: f32,
+    ury: f32,
+
+    pub fn width(self: BoundingBox) f32 {
+        return @max(1.0, self.urx - self.llx);
+    }
+
+    pub fn height(self: BoundingBox) f32 {
+        return @max(1.0, self.ury - self.lly);
+    }
+
+    pub fn centerX(self: BoundingBox) f32 {
+        return (self.llx + self.urx) / 2.0;
+    }
+
+    pub fn centerY(self: BoundingBox) f32 {
+        return (self.lly + self.ury) / 2.0;
+    }
 };
 
 pub fn init(allocator: std.mem.Allocator, options: GraphOptions) !Graph {
@@ -28,19 +51,19 @@ pub fn init(allocator: std.mem.Allocator, options: GraphOptions) !Graph {
     _ = c.agsafeset(g, @constCast("margin"), @constCast("0.0"), @constCast(""));
     _ = c.agsafeset(g, @constCast("pad"), @constCast("0.0"), @constCast(""));
     _ = c.agsafeset(g, @constCast("dpi"), @constCast(GRAPHVIZ_DPI_STR), @constCast(""));
-    // Without this, graphviz will scale the image until one of the dimensions matches.
-    _ = c.agsafeset(g, @constCast("ratio"), @constCast("fill"), @constCast(""));
 
     const gvc = c.gvContext() orelse return error.GVCFailed;
     var graph: Graph = .{
         .arena = .init(allocator),
         .gvc = gvc,
         .g = g,
-        .width = options.width,
-        .height = options.height,
+        .width = options.width orelse 0,
+        .height = options.height orelse 0,
         .has_layout = false,
     };
-    graph.setDimensions(options.width, options.height);
+    if (options.width != null and options.height != null) {
+        graph.setDimensions(options.width.?, options.height.?);
+    }
 
     return graph;
 }
@@ -69,6 +92,17 @@ pub fn setDimensions(graph: *Graph, width_px: u32, height_px: u32) void {
 
     graph.width = width_px;
     graph.height = height_px;
+}
+
+/// Get the bounding box of the graph from its layout.
+pub fn boundingBox(graph: *const Graph) BoundingBox {
+    const info = graphInfo(graph.g);
+    return .{
+        .llx = @floatCast(info.bb.LL.x),
+        .lly = @floatCast(info.bb.LL.y),
+        .urx = @floatCast(info.bb.UR.x),
+        .ury = @floatCast(info.bb.UR.y),
+    };
 }
 
 /// Remove all nodes and edges, and clear the layout.
@@ -167,25 +201,36 @@ pub fn renderToFile(graph: *const Graph, format: []const u8, filename: []const u
 
 // ** Buffer renderer
 
+pub const Camera = struct {
+    /// Center of the camera in world coordinates
+    center_x: f32 = 0.0,
+    center_y: f32 = 0.0,
+    /// Zoom scale factor (1.0 = 100%)
+    zoom: f32 = 1.0,
+};
+
 pub const RendererOptions = struct {
     gpa: std.mem.Allocator,
-    graph_options: GraphOptions,
-    padding: f32 = 0.0,
+    graph_options: GraphOptions = .{},
+    padding: f32 = 20.0,
+    /// Viewport width in pixels. If 0, uses buffer_stride.
+    view_width: u32 = 0,
+    /// Viewport height in pixels. If 0, uses buffer_height.
+    view_height: u32 = 0,
     /// Buffer stride in pixels
     buffer_stride: usize,
     /// Number of rows in the buffer
     buffer_height: usize,
     /// ARGB32 pixel buffer. If null, buffer allocation is managed internally.
     buffer: ?[]u8 = null,
+    camera: Camera = .{},
 };
 
-/// Render a Graph to a pixel buffer.
+/// Render a Graph to a pixel buffer with a 2D camera viewport.
 ///
-/// The pixel buffer should have a relatively large size, so that the rendered
-/// graph may grow and shrink to fit in whatever viewport space is available
-/// while keeping the buffer fixed. The graph is rendered in the top-left corner
-/// of the buffer. The graph width and height are thus free to change as long as
-/// the size (width*height) fits within the buffer.
+/// The pixel buffer has a fixed capacity (buffer_stride * buffer_height). The visible
+/// viewport is defined by (view_width, view_height). Moving around or zooming the graph
+/// simply moves the camera within world space without altering graph layout coordinates.
 pub const Renderer = struct {
     gpa: std.mem.Allocator,
     graph: Graph,
@@ -196,6 +241,12 @@ pub const Renderer = struct {
     /// Buffer stride in pixels
     stride: usize,
     height: usize,
+    /// Visible viewport width in pixels (<= stride)
+    view_width: u32,
+    /// Visible viewport height in pixels (<= height)
+    view_height: u32,
+    /// Camera in world coordinates
+    camera: Camera,
     /// If true, buffer allocation is managed internally.
     managed: bool,
 
@@ -231,6 +282,16 @@ pub const Renderer = struct {
             } else std.log.warn("Graph renderer font not loaded", .{});
         }
 
+        const view_w: u32 = if (options.view_width > 0)
+            @min(options.view_width, @as(u32, @intCast(stride)))
+        else
+            @intCast(stride);
+
+        const view_h: u32 = if (options.view_height > 0)
+            @min(options.view_height, @as(u32, @intCast(height)))
+        else
+            @intCast(height);
+
         return .{
             .gpa = gpa,
             .graph = graph,
@@ -239,6 +300,9 @@ pub const Renderer = struct {
             .buffer = buffer,
             .stride = stride,
             .height = height,
+            .view_width = view_w,
+            .view_height = view_h,
+            .camera = options.camera,
             .managed = options.buffer == null,
         };
     }
@@ -255,50 +319,106 @@ pub const Renderer = struct {
         self.graph.clear();
         self.highlighted.clearRetainingCapacity();
     }
-    
-    /// Set the graph dimensions given pixel width and height, and rerender.
+
+    /// Resize the visible viewport dimensions within buffer bounds, and rerender.
     ///
-    /// Note: This will truncate to maximum of the buffer width and height,
-    /// preserving the ratio.
+    /// This changes only the visible aperture size without modifying graph coordinates
+    /// or camera position.
     pub fn resize(self: *Renderer, width: u32, height: u32) !void {
         const max_w: u32 = @intCast(self.stride);
         const max_h: u32 = @intCast(self.height);
-        var render_w = width;
-        var render_h = height;
-
-        if (render_w > max_w or render_h > max_h) {
-            const scale_w = @as(f32, @floatFromInt(max_w)) / @as(f32, @floatFromInt(render_w));
-            const scale_h = @as(f32, @floatFromInt(max_h)) / @as(f32, @floatFromInt(render_h));
-            const scale = @min(scale_w, scale_h);
-            render_w = @max(1, @min(max_w, @as(u32, @intFromFloat(@floor(@as(f32, @floatFromInt(render_w)) * scale)))));
-            render_h = @max(1, @min(max_h, @as(u32, @intFromFloat(@floor(@as(f32, @floatFromInt(render_h)) * scale)))));
-        }
-
-        self.graph.setDimensions(render_w, render_h);
+        self.view_width = @max(1, @min(width, max_w));
+        self.view_height = @max(1, @min(height, max_h));
         try self.render();
     }
-    
-    /// Render the graph in the pixel buffer.
+
+    /// Fit camera to current graph's bounding box and center it in the viewport.
+    pub fn fitToGraph(self: *Renderer) void {
+        const bb = self.graph.boundingBox();
+        const gw = bb.width();
+        const gh = bb.height();
+        const vw = @max(1.0, @as(f32, @floatFromInt(self.view_width)) - self.padding * 2.0);
+        const vh = @max(1.0, @as(f32, @floatFromInt(self.view_height)) - self.padding * 2.0);
+
+        self.camera.zoom = @min(vw / gw, vh / gh);
+        self.camera.center_x = bb.centerX();
+        self.camera.center_y = bb.centerY();
+    }
+
+    /// Move camera by a delta in screen pixels (e.g. from mouse drag).
+    pub fn pan(self: *Renderer, delta_screen_x: f32, delta_screen_y: f32) !void {
+        self.camera.center_x -= delta_screen_x / self.camera.zoom;
+        self.camera.center_y += delta_screen_y / self.camera.zoom;
+        try self.render();
+    }
+
+    /// Zoom camera by a multiplication factor, optionally centered at a screen focus coordinate.
+    pub fn zoomBy(self: *Renderer, factor: f32, screen_focus_x: ?f32, screen_focus_y: ?f32) !void {
+        const old_zoom = self.camera.zoom;
+        const new_zoom = std.math.clamp(old_zoom * factor, 0.001, 1000.0);
+        if (screen_focus_x != null and screen_focus_y != null) {
+            const focus_x = screen_focus_x.?;
+            const focus_y = screen_focus_y.?;
+            const cur_focus = self.screenToWorld(focus_x, focus_y);
+            self.camera.zoom = new_zoom;
+            const vw: f32 = @floatFromInt(self.view_width);
+            const vh: f32 = @floatFromInt(self.view_height);
+            self.camera.center_x = cur_focus.x - (focus_x - vw / 2.0) / new_zoom;
+            self.camera.center_y = cur_focus.y + (focus_y - vh / 2.0) / new_zoom;
+        } else {
+            self.camera.zoom = new_zoom;
+        }
+        try self.render();
+    }
+
+    /// Convert screen pixel coordinates (origin at top-left of viewport) to world coordinates.
+    pub fn screenToWorld(self: *const Renderer, screen_x: f32, screen_y: f32) struct { x: f32, y: f32 } {
+        const vw: f32 = @floatFromInt(self.view_width);
+        const vh: f32 = @floatFromInt(self.view_height);
+        return .{
+            .x = self.camera.center_x + (screen_x - vw / 2.0) / self.camera.zoom,
+            .y = self.camera.center_y - (screen_y - vh / 2.0) / self.camera.zoom,
+        };
+    }
+
+    /// Convert world coordinates to screen pixel coordinates.
+    pub fn worldToScreen(self: *const Renderer, world_x: f32, world_y: f32) struct { x: f32, y: f32 } {
+        const vw: f32 = @floatFromInt(self.view_width);
+        const vh: f32 = @floatFromInt(self.view_height);
+        return .{
+            .x = (world_x - self.camera.center_x) * self.camera.zoom + vw / 2.0,
+            .y = (self.camera.center_y - world_y) * self.camera.zoom + vh / 2.0,
+        };
+    }
+
+    /// Find node under the given screen coordinates, if any.
+    pub fn getNodeAt(self: *const Renderer, screen_x: f32, screen_y: f32) ?u128 {
+        const world_pt = self.screenToWorld(screen_x, screen_y);
+        var maybe_node = c.agfstnode(self.graph.g);
+        while (maybe_node) |node| : (maybe_node = c.agnxtnode(self.graph.g, node)) {
+            const node_info = nodeInfo(node);
+            const cx: f32 = @floatCast(node_info.coord.x);
+            const cy: f32 = @floatCast(node_info.coord.y);
+            const radius: f32 = @as(f32, @floatCast(node_info.height * 72.0 * 0.5)) / 2.0;
+            const dx = world_pt.x - cx;
+            const dy = world_pt.y - cy;
+            if (dx * dx + dy * dy <= radius * radius) {
+                if (getNodeId(node)) |id| {
+                    return id;
+                } else |_| {}
+            }
+        }
+        return null;
+    }
+
+    /// Render the graph in the pixel buffer using current camera transformation.
     pub fn render(self: *Renderer) !void {
         const buffer = self.buffer;
         const graph = &self.graph;
 
-        // Determine render dimensions clamped to buffer capacity while preserving aspect ratio
-        var render_w = graph.width;
-        var render_h = graph.height;
-        const max_w: u32 = @intCast(self.stride);
-        const max_h: u32 = @intCast(self.height);
+        const render_w = self.view_width;
+        const render_h = self.view_height;
 
-        if (render_w > max_w or render_h > max_h) {
-            const scale_w = @as(f32, @floatFromInt(max_w)) / @as(f32, @floatFromInt(render_w));
-            const scale_h = @as(f32, @floatFromInt(max_h)) / @as(f32, @floatFromInt(render_h));
-            const scale = @min(scale_w, scale_h);
-            render_w = @max(1, @min(max_w, @as(u32, @intFromFloat(@floor(@as(f32, @floatFromInt(render_w)) * scale)))));
-            render_h = @max(1, @min(max_h, @as(u32, @intFromFloat(@floor(@as(f32, @floatFromInt(render_h)) * scale)))));
-        }
-
-        // TODO Store surface and canvas in struct and only recreate when graph
-        // size has changed. This also avoids reloading the font in the canvas.
         const surface = c.plutovg_surface_create_for_data(
             buffer.ptr,
             @intCast(render_w),
@@ -319,29 +439,13 @@ pub const Renderer = struct {
         c.plutovg_canvas_paint(canvas);
         c.plutovg_canvas_set_operator(canvas, c.PLUTOVG_OPERATOR_SRC_OVER);
 
-        // Compute bounding box auto-fit & centering
-        const graph_info = graphInfo(graph.g);
-        const bb_llx: f32 = @floatCast(graph_info.bb.LL.x);
-        const bb_lly: f32 = @floatCast(graph_info.bb.LL.y);
-        const bb_urx: f32 = @floatCast(graph_info.bb.UR.x);
-        const bb_ury: f32 = @floatCast(graph_info.bb.UR.y);
-
-        const graph_w = @max(1.0, bb_urx - bb_llx);
-        const graph_h = @max(1.0, bb_ury - bb_lly);
-        const canvas_w: f32 = @floatFromInt(render_w);
-        const canvas_h: f32 = @floatFromInt(render_h);
-
-        const padding = self.padding;
-        const avail_w = @max(1.0, canvas_w - padding * 2.0);
-        const avail_h = @max(1.0, canvas_h - padding * 2.0);
-
-        const zoom = @min(avail_w / graph_w, avail_h / graph_h);
-        const tx = padding + (avail_w - graph_w * zoom) / 2.0 - bb_llx * zoom;
-        const ty = padding + (avail_h - graph_h * zoom) / 2.0 - bb_lly * zoom;
-
-        // Apply viewport transform (Graphviz Y-up -> PlutoVG Y-down)
-        c.plutovg_canvas_translate(canvas, tx, canvas_h - ty);
-        c.plutovg_canvas_scale(canvas, zoom, -zoom);
+        // Apply camera transformation:
+        // Viewport center -> zoom & flip Y (Graphviz Y-up -> PlutoVG Y-down) -> camera center
+        const vw: f32 = @floatFromInt(render_w);
+        const vh: f32 = @floatFromInt(render_h);
+        c.plutovg_canvas_translate(canvas, vw / 2.0, vh / 2.0);
+        c.plutovg_canvas_scale(canvas, self.camera.zoom, -self.camera.zoom);
+        c.plutovg_canvas_translate(canvas, -self.camera.center_x, -self.camera.center_y);
 
         // Draw edge splines and arrowheads
         var maybe_node = c.agfstnode(graph.g);
@@ -359,12 +463,9 @@ pub const Renderer = struct {
             const node_info = nodeInfo(node);
             const cx: f32 = @floatCast(node_info.coord.x);
             const cy: f32 = @floatCast(node_info.coord.y);
-            // const w: f32 = @floatCast(node_info.width * 72.0);
-            // const h: f32 = @floatCast(node_info.height * 72.0);
             const h: f32 = @floatCast(node_info.height * 72.0 * 0.5);
 
             // Draw node body
-            // c.plutovg_canvas_round_rect(canvas, cx - w / 2.0, cy - h / 2.0, w, h, 8.0, 8.0);
             c.plutovg_canvas_circle(canvas, cx, cy, h / 2);
             if (self.highlighted.contains(node_id)) {
                 c.plutovg_canvas_set_rgba(canvas, 0.8, 0.85, 1.0, 1.0);
@@ -384,7 +485,6 @@ pub const Renderer = struct {
             if (plutovg_font) |font| {
                 c.plutovg_canvas_save(canvas);
                 // Translate to node center and flip Y back to right-side up
-                // c.plutovg_canvas_translate(canvas, cx, cy);
                 c.plutovg_canvas_translate(canvas, cx, cy - h / 3);
                 c.plutovg_canvas_scale(canvas, 1.0, -1.0);
 
@@ -575,32 +675,44 @@ pub inline fn graphInfo(graph: *c.Agraph_t) *c.Agraphinfo_t {
 
 // ** Tests
 
-test "Graph buffer rendering with custom stride" {
+test "Graph buffer rendering, camera panning, zooming, and hit testing" {
     const allocator = std.testing.allocator;
 
-    var graph = try Graph.init(allocator, .{
-        .width = 200,
-        .height = 150,
+    var renderer = try Renderer.init(.{
+        .gpa = allocator,
+        .view_width = 400,
+        .view_height = 300,
+        .buffer_stride = 512,
+        .buffer_height = 512,
     });
-    defer graph.deinit();
+    defer renderer.deinit();
 
-    try graph.addNode(1, "Node A");
-    try graph.addNode(2, "Node B");
-    try graph.addEdge(1, 2);
+    try renderer.graph.addNode(1, "Node A");
+    try renderer.graph.addNode(2, "Node B");
+    try renderer.graph.addEdge(1, 2);
 
-    try graph.layout("neato");
+    try renderer.graph.layout("dot");
+    renderer.fitToGraph();
+    try renderer.render();
 
-    const max_w: usize = 512;
-    const max_h: usize = 512;
-    const stride: usize = max_w * 4;
-    const buf = try allocator.alloc(u8, stride * max_h);
-    defer allocator.free(buf);
-    @memset(buf, 0);
+    // Verify coordinate conversion
+    const bb = renderer.graph.boundingBox();
+    const screen_center = renderer.worldToScreen(bb.centerX(), bb.centerY());
+    try std.testing.expectApproxEqAbs(@as(f32, 200.0), screen_center.x, 1.0);
+    try std.testing.expectApproxEqAbs(@as(f32, 150.0), screen_center.y, 1.0);
 
-    try graph.renderToBuffer(buf, .{ .stride_bytes = stride });
+    // Pan camera by 50px right
+    const old_cam_x = renderer.camera.center_x;
+    try renderer.pan(50, 0);
+    try std.testing.expect(renderer.camera.center_x < old_cam_x);
 
-    // Verify dimensions can be updated dynamically
-    try graph.setDimensions(300, 250, 96.0);
-    try graph.layout("neato");
+    // Zoom camera
+    const old_zoom = renderer.camera.zoom;
+    try renderer.zoomBy(1.5, 200, 150);
+    try std.testing.expectApproxEqAbs(old_zoom * 1.5, renderer.camera.zoom, 0.001);
+
+    // Resize viewport
+    try renderer.resize(450, 350);
+    try std.testing.expectEqual(@as(u32, 450), renderer.view_width);
+    try std.testing.expectEqual(@as(u32, 350), renderer.view_height);
 }
-

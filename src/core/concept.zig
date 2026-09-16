@@ -71,81 +71,88 @@ pub fn removeParent(core: *Core, child_id: Id, parent_id: Id, opts: Options) !vo
 }
 
 pub fn getAll(core: *Core, allocator: std.mem.Allocator, opts: Options) ![]Concept {
-    var stmt = try core.db.prepareWithDiags("SELECT id, name FROM concept", .{ .diags = opts.diags });
+    var stmt = try core.db.prepareWithDiags("SELECT id, name FROM concept ORDER BY name", .{ .diags = opts.diags });
     defer stmt.deinit();
-    const concepts = try stmt.all(Concept, allocator, .{ .diags = opts.diags }, .{});
-    return concepts;
+
+    var iter = try stmt.iteratorAlloc(Concept, allocator, .{});
+    var rows: std.ArrayList(Concept) = .empty;
+    defer rows.deinit(allocator);
+    while (try iter.nextAlloc(allocator, .{ .diags = opts.diags })) |row| {
+        try rows.append(allocator, row);
+    }
+    const result = try rows.toOwnedSlice(allocator);
+
+    return result;
 }
 
 pub fn getById(core: *Core, allocator: std.mem.Allocator, ids: []const Id, opts: Options) ![]Concept {
     if (ids.len == 0) return &.{};
 
-    // Build the query
     var query_builder: std.ArrayList(u8) = .empty;
-    defer query_builder.deinit(core.gpa);
-
-    try query_builder.appendSlice(core.gpa, "SELECT id, name FROM concept WHERE id IN (");
+    defer query_builder.deinit(allocator);
+    try query_builder.appendSlice(allocator, "SELECT id, name FROM concept WHERE id IN (");
     for (0..ids.len) |i| {
-        if (i > 0) try query_builder.append(core.gpa, ',');
-        try query_builder.append(core.gpa, '?');
+        if (i > 0) try query_builder.appendSlice(allocator, ", ");
+        try query_builder.appendSlice(allocator, "?");
     }
-    try query_builder.append(core.gpa, ')');
-    const query: []const u8 = query_builder.items;
+    try query_builder.appendSlice(allocator, ")");
 
-    // Execute
+    const query: []const u8 = query_builder.items;
     var stmt = try core.db.prepareDynamicWithDiags(query, .{ .diags = opts.diags });
     defer stmt.deinit();
 
-    // TODO This gives an error because of a bug: https://github.com/vrischmann/zig-sqlite/issues/208
-    // For now just copy function inline with the fix (.empty instead of .{})
-    // const concepts = try stmt.all(Concept, allocator, .{ .diags = diags }, ids);
-
     var iter = try stmt.iteratorAlloc(Concept, allocator, ids);
     var rows: std.ArrayList(Concept) = .empty;
+    defer rows.deinit(allocator);
     while (try iter.nextAlloc(allocator, .{ .diags = opts.diags })) |row| {
         try rows.append(allocator, row);
     }
-    const concepts = rows.toOwnedSlice(allocator);
+    const result = try rows.toOwnedSlice(allocator);
 
-    return concepts;
+    return result;
 }
 
-pub fn getAncestors(
-    core: *Core,
-    allocator: std.mem.Allocator,
-    ids: []const Id,
-    direct_only: bool,
-    opts: Options,
-) ![]ConceptAncestor {
+/// Retrieve the hierarchy of ancestors for a set of concepts.
+///
+/// If `direct_only` is true, only returns immediate parents (depth = 1).
+/// Otherwise, returns the entire transitive ancestry with minimum depth and an
+/// `is_direct` flag.
+///
+/// NOTE: Direct parents (depth = 1) will be included even if marked as redundant
+/// in `concept_rel`.
+pub fn getAncestors(core: *Core, allocator: std.mem.Allocator, ids: []const Id, direct_only: bool, opts: Options) ![]ConceptAncestor {
     if (ids.len == 0) return &.{};
 
     var query_builder: std.ArrayList(u8) = .empty;
-    defer query_builder.deinit(core.gpa);
+    defer query_builder.deinit(allocator);
 
     if (direct_only) {
-        try query_builder.appendSlice(core.gpa,
+        try query_builder.appendSlice(allocator,
             \\SELECT c.id, c.name, cr.child_id, 1 AS depth, 1 AS is_direct
             \\FROM concept_rel cr
             \\JOIN concept c ON cr.parent_id = c.id
             \\WHERE cr.child_id IN (
         );
         for (0..ids.len) |i| {
-            if (i > 0) try query_builder.append(core.gpa, ',');
-            try query_builder.append(core.gpa, '?');
+            if (i > 0) try query_builder.appendSlice(allocator, ", ");
+            try query_builder.appendSlice(allocator, "?");
         }
-        try query_builder.appendSlice(core.gpa, ") ORDER BY cr.child_id, c.name");
+        try query_builder.appendSlice(allocator,
+            \\)
+            \\ORDER BY cr.child_id, c.name
+        );
     } else {
-        try query_builder.appendSlice(core.gpa,
+        try query_builder.appendSlice(allocator,
             \\WITH RECURSIVE ancestors(id, child_id, depth) AS (
-            \\    SELECT cr.parent_id, cr.child_id, 1
-            \\    FROM concept_rel cr
-            \\    WHERE cr.child_id IN (
+            \\    SELECT parent_id, child_id, 1
+            \\    FROM concept_rel
+            \\    WHERE child_id IN (
         );
         for (0..ids.len) |i| {
-            if (i > 0) try query_builder.append(core.gpa, ',');
-            try query_builder.append(core.gpa, '?');
+            if (i > 0) try query_builder.appendSlice(allocator, ", ");
+            try query_builder.appendSlice(allocator, "?");
         }
-        try query_builder.appendSlice(core.gpa,
+        try query_builder.appendSlice(allocator,
             \\    )
             \\    UNION ALL
             \\    SELECT cr.parent_id, a.child_id, a.depth + 1
@@ -166,10 +173,11 @@ pub fn getAncestors(
 
     var iter = try stmt.iteratorAlloc(ConceptAncestor, allocator, ids);
     var rows: std.ArrayList(ConceptAncestor) = .empty;
+    defer rows.deinit(allocator);
     while (try iter.nextAlloc(allocator, .{ .diags = opts.diags })) |row| {
         try rows.append(allocator, row);
     }
-    const result = rows.toOwnedSlice(allocator);
+    const result = try rows.toOwnedSlice(allocator);
 
     return result;
 }
@@ -184,14 +192,13 @@ pub fn getAncestors(
 // In Zig's test runner, logged errors are treated as test failures. To prevent false positive
 // test failures, statements in `Core.zig` reset their SQLite C statement handle before deiniting.
 
-fn createTestCore(t: *std.testing.TmpDir) !*Core {
+fn createTestCore(t: *std.testing.TmpDir) !Core {
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const len = try t.dir.realPath(std.testing.io, &path_buf);
     const real_path = path_buf[0..len];
 
     var diags: sqlite.Diagnostics = .{};
-    const core = Core.init(std.testing.allocator, std.testing.io, .{
-        .data_dir = real_path,
+    const core = Core.init(std.testing.allocator, std.testing.io, real_path, .{
         .sqlite_diagnostics = &diags,
     }) catch |err| {
         if (diags.err) |sqlite_err| {
@@ -206,7 +213,7 @@ test "concept: basic creation and retrieval" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const core = try createTestCore(&tmp);
+    var core = try createTestCore(&tmp);
     defer core.deinit();
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -214,13 +221,13 @@ test "concept: basic creation and retrieval" {
     const alloc = arena.allocator();
 
     var diags: sqlite.Diagnostics = .{};
-    const c1_id = try core.addConcept("Math", &.{}, &diags);
-    const c2_id = try core.addConcept("Physics", &.{}, &diags);
+    const c1_id = try add(&core, "Math", &.{}, .{ .diags = &diags });
+    const c2_id = try add(&core, "Physics", &.{}, .{ .diags = &diags });
 
-    const all = try core.getAllConcepts(alloc, &diags);
+    const all = try getAll(&core, alloc, .{ .diags = &diags });
     try std.testing.expectEqual(@as(usize, 2), all.len);
 
-    const fetched = try core.getConceptsById(alloc, &.{ c1_id, c2_id }, &diags);
+    const fetched = try getById(&core, alloc, &.{ c1_id, c2_id }, .{ .diags = &diags });
     try std.testing.expectEqual(@as(usize, 2), fetched.len);
 }
 
@@ -228,14 +235,14 @@ test "concept: prevent self loop" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const core = try createTestCore(&tmp);
+    var core = try createTestCore(&tmp);
     defer core.deinit();
 
     var diags: sqlite.Diagnostics = .{};
-    const c1_id = try core.addConcept("Math", &.{}, &diags);
+    const c1_id = try add(&core, "Math", &.{}, .{ .diags = &diags });
 
     // Adding self as parent should fail due to CHECK (parent_id != child_id)
-    const err = core.addConceptParent(c1_id, c1_id, &diags);
+    const err = addParent(&core, c1_id, c1_id, .{ .diags = &diags });
     try std.testing.expectError(error.SQLiteConstraint, err);
 }
 
@@ -243,15 +250,15 @@ test "concept: prevent 2-node cycle" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const core = try createTestCore(&tmp);
+    var core = try createTestCore(&tmp);
     defer core.deinit();
 
     var diags: sqlite.Diagnostics = .{};
-    const a = try core.addConcept("A", &.{}, &diags);
-    const b = try core.addConcept("B", &.{a}, &diags); // A -> B (A is parent of B)
+    const a = try add(&core, "A", &.{}, .{ .diags = &diags });
+    const b = try add(&core, "B", &.{a}, .{ .diags = &diags }); // A -> B (A is parent of B)
 
     // Attempting B -> A should fail (cycle)
-    const err = core.addConceptParent(a, b, &diags);
+    const err = addParent(&core, a, b, .{ .diags = &diags });
     try std.testing.expectError(error.SQLiteConstraint, err);
 }
 
@@ -259,16 +266,16 @@ test "concept: prevent multi-node cycle (A -> B -> C, then C -> A)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const core = try createTestCore(&tmp);
+    var core = try createTestCore(&tmp);
     defer core.deinit();
 
     var diags: sqlite.Diagnostics = .{};
-    const a = try core.addConcept("A", &.{}, &diags);
-    const b = try core.addConcept("B", &.{a}, &diags); // A -> B
-    const c = try core.addConcept("C", &.{b}, &diags); // B -> C
+    const a = try add(&core, "A", &.{}, .{ .diags = &diags });
+    const b = try add(&core, "B", &.{a}, .{ .diags = &diags }); // A -> B
+    const c = try add(&core, "C", &.{b}, .{ .diags = &diags }); // B -> C
 
     // Attempting C -> A should fail (cycle: A -> B -> C -> A)
-    const err = core.addConceptParent(a, c, &diags);
+    const err = addParent(&core, a, c, .{ .diags = &diags });
     try std.testing.expectError(error.SQLiteConstraint, err);
 }
 
@@ -276,16 +283,16 @@ test "concept: prevent redundant edge insertion (A -> B -> C, then A -> C)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const core = try createTestCore(&tmp);
+    var core = try createTestCore(&tmp);
     defer core.deinit();
 
     var diags: sqlite.Diagnostics = .{};
-    const a = try core.addConcept("A", &.{}, &diags);
-    const b = try core.addConcept("B", &.{a}, &diags); // A -> B
-    const c = try core.addConcept("C", &.{b}, &diags); // B -> C
+    const a = try add(&core, "A", &.{}, .{ .diags = &diags });
+    const b = try add(&core, "B", &.{a}, .{ .diags = &diags }); // A -> B
+    const c = try add(&core, "C", &.{b}, .{ .diags = &diags }); // B -> C
 
     // Attempting A -> C should fail because A is already an indirect ancestor of C
-    const err = core.addConceptParent(c, a, &diags);
+    const err = addParent(&core, c, a, .{ .diags = &diags });
     try std.testing.expectError(error.SQLiteConstraint, err);
 }
 
@@ -293,17 +300,17 @@ test "concept: transitive reduction prunes shortcut edge after insertion" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const core = try createTestCore(&tmp);
+    var core = try createTestCore(&tmp);
     defer core.deinit();
 
     var diags: sqlite.Diagnostics = .{};
     // 1. Create A -> C and A -> B
-    const a = try core.addConcept("A", &.{}, &diags);
-    const c = try core.addConcept("C", &.{a}, &diags); // A -> C
-    const b = try core.addConcept("B", &.{a}, &diags); // A -> B
+    const a = try add(&core, "A", &.{}, .{ .diags = &diags });
+    const c = try add(&core, "C", &.{a}, .{ .diags = &diags }); // A -> C
+    const b = try add(&core, "B", &.{a}, .{ .diags = &diags }); // A -> B
 
     // 2. Now add B -> C. This should automatically prune the direct shortcut edge A -> C
-    try core.addConceptParent(c, b, &diags);
+    try addParent(&core, c, b, .{ .diags = &diags });
 
     // Verify relations in concept_rel
     var stmt = try core.db.prepareWithDiags(
@@ -340,7 +347,7 @@ test "concept: getAncestors hierarchy and direct parents" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const core = try createTestCore(&tmp);
+    var core = try createTestCore(&tmp);
     defer core.deinit();
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -350,15 +357,15 @@ test "concept: getAncestors hierarchy and direct parents" {
     var diags: sqlite.Diagnostics = .{};
     // Hierarchy: A -> B -> C -> D
     // and        E -> C
-    const a = try core.addConcept("A", &.{}, &diags);
-    const b = try core.addConcept("B", &.{a}, &diags);
-    const e = try core.addConcept("E", &.{}, &diags);
-    const c = try core.addConcept("C", &.{ b, e }, &diags);
-    const d = try core.addConcept("D", &.{c}, &diags);
+    const a = try add(&core, "A", &.{}, .{ .diags = &diags });
+    const b = try add(&core, "B", &.{a}, .{ .diags = &diags });
+    const e = try add(&core, "E", &.{}, .{ .diags = &diags });
+    const c = try add(&core, "C", &.{ b, e }, .{ .diags = &diags });
+    const d = try add(&core, "D", &.{c}, .{ .diags = &diags });
 
     // 1. Direct parents of D: only C
     {
-        const direct_d = try core.getAncestors(alloc, &.{d}, true, &diags);
+        const direct_d = try getAncestors(&core, alloc, &.{d}, true, .{ .diags = &diags });
         try std.testing.expectEqual(@as(usize, 1), direct_d.len);
         try std.testing.expectEqual(c.uuid, direct_d[0].id.uuid);
         try std.testing.expectEqualStrings("C", direct_d[0].name);
@@ -369,14 +376,14 @@ test "concept: getAncestors hierarchy and direct parents" {
 
     // 2. Full hierarchy of D: C (direct, depth 1), B & E (depth 2), A (depth 3)
     {
-        const all_d = try core.getAncestors(alloc, &.{d}, false, &diags);
+        const all_d = try getAncestors(&core, alloc, &.{d}, false, .{ .diags = &diags });
         try std.testing.expectEqual(@as(usize, 4), all_d.len);
 
         // Find C (direct parent)
-        var found_c: ?Core.ConceptAncestor = null;
-        var found_b: ?Core.ConceptAncestor = null;
-        var found_e: ?Core.ConceptAncestor = null;
-        var found_a: ?Core.ConceptAncestor = null;
+        var found_c: ?ConceptAncestor = null;
+        var found_b: ?ConceptAncestor = null;
+        var found_e: ?ConceptAncestor = null;
+        var found_a: ?ConceptAncestor = null;
 
         for (all_d) |anc| {
             if (anc.id.uuid == c.uuid) found_c = anc;
@@ -404,7 +411,7 @@ test "concept: getAncestors hierarchy and direct parents" {
 
     // 3. Multi-concept query: ancestors of C and D simultaneously
     {
-        const multi = try core.getAncestors(alloc, &.{ c, d }, true, &diags);
+        const multi = try getAncestors(&core, alloc, &.{ c, d }, true, .{ .diags = &diags });
         // Direct parents of C are B and E (2 parents)
         // Direct parent of D is C (1 parent)
         // Total = 3

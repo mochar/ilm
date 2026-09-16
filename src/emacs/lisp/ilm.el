@@ -86,6 +86,7 @@ it.  After BODY executes, the buffer is put in
     (_ (error "Invalid resize spec"))))
 
 (defun ilm-resize-graph-at-point (w-spec h-spec)
+  "Resize the viewport dimensions of the graph at point."
   (pcase-let* ((display (get-text-property (point) 'display))
                (data (get-text-property (point) 'ilm-graph-data))
                ((map :width :height) data)
@@ -97,21 +98,90 @@ it.  After BODY executes, the buffer is put in
             (nth 4 (car display)) height))
     ;; For some reason needed, otherwise the image size doesnt update
     ;; correctly. (redisplay) doesn't work.
-   (force-mode-line-update)))
+    (force-mode-line-update)))
+
+(defun ilm-pan-graph-at-point (dx dy)
+  "Pan the graph camera at point by DX and DY screen pixels."
+  (interactive "nDX: \nnDY: ")
+  (when-let* ((data (get-text-property (point) 'ilm-graph-data)))
+    (ilm--core-pan-graph data (float dx) (float dy))
+    (force-mode-line-update)))
+
+(defun ilm-zoom-graph-at-point (factor &optional focus-x focus-y)
+  "Zoom the graph camera at point by FACTOR, optionally around (FOCUS-X, FOCUS-Y)."
+  (interactive "nFactor: ")
+  (when-let* ((data (get-text-property (point) 'ilm-graph-data)))
+    (ilm--core-zoom-graph data (float factor) (float (or focus-x -1.0)) (float (or focus-y -1.0)))
+    (force-mode-line-update)))
+
+(defun ilm-fit-graph-at-point ()
+  "Fit the graph camera at point to the graph bounding box."
+  (interactive)
+  (when-let* ((data (get-text-property (point) 'ilm-graph-data)))
+    (ilm--core-fit-graph data)
+    (force-mode-line-update)))
+
+(defun ilm-graph-mouse-drag (event)
+  "Pan the graph camera interactively by dragging the mouse."
+  (interactive "e")
+  (let* ((start-pos (event-start event))
+         (start-pt (posn-point start-pos))
+         (data (and start-pt (get-text-property start-pt 'ilm-graph-data))))
+    (when data
+      (track-mouse
+        (let ((last-x (car (posn-x-y start-pos)))
+              (last-y (cdr (posn-x-y start-pos))))
+          (while (progn
+                   (setq event (read-event))
+                   (or (mouse-movement-p event)
+                       (memq (car-safe event) '(drag-mouse-1 mouse-1 mouse-movement))))
+            (when (mouse-movement-p event)
+              (let* ((pos (event-end event))
+                     (xy (posn-x-y pos))
+                     (x (car xy))
+                     (y (cdr xy))
+                     (dx (- x last-x))
+                     (dy (- y last-y)))
+                (setq last-x x
+                      last-y y)
+                (ilm--core-pan-graph data (float dx) (float dy))
+                (force-mode-line-update)))))))))
+
+(defun ilm-graph-wheel-zoom (event)
+  "Zoom the graph camera centered at the mouse cursor position."
+  (interactive "e")
+  (let* ((pos (event-start event))
+         (pt (posn-point pos))
+         (data (and pt (get-text-property pt 'ilm-graph-data)))
+         (obj-xy (or (posn-object-x-y pos) '(-1 . -1)))
+         (factor (if (memq (car-safe event) '(wheel-up mouse-4)) 1.15 0.85)))
+    (when data
+      (ilm--core-zoom-graph data (float factor) (float (car obj-xy)) (float (cdr obj-xy)))
+      (force-mode-line-update))))
 
 (defvar-keymap ilm-graph-map
-  "l" (lambda ()
-        (interactive)
-        (ilm-resize-graph-at-point '(+ 30) nil))
-  "h" (lambda ()
-        (interactive)
-        (ilm-resize-graph-at-point '(- 30) nil))
-  "j" (lambda ()
-        (interactive)
-        (ilm-resize-graph-at-point nil '(+ 30)))
-  "k" (lambda ()
-        (interactive)
-        (ilm-resize-graph-at-point nil '(- 30))))
+  "<down-mouse-1>" #'ilm-graph-mouse-drag
+  "<mouse-4>" #'ilm-graph-wheel-zoom
+  "<mouse-5>" #'ilm-graph-wheel-zoom
+  "<wheel-up>" #'ilm-graph-wheel-zoom
+  "<wheel-down>" #'ilm-graph-wheel-zoom
+  "+" (lambda () (interactive) (ilm-zoom-graph-at-point 1.15))
+  "=" (lambda () (interactive) (ilm-zoom-graph-at-point 1.15))
+  "-" (lambda () (interactive) (ilm-zoom-graph-at-point 0.85))
+  "0" #'ilm-fit-graph-at-point
+  "f" #'ilm-fit-graph-at-point
+  "<left>" (lambda () (interactive) (ilm-pan-graph-at-point 30 0))
+  "<right>" (lambda () (interactive) (ilm-pan-graph-at-point -30 0))
+  "<up>" (lambda () (interactive) (ilm-pan-graph-at-point 0 30))
+  "<down>" (lambda () (interactive) (ilm-pan-graph-at-point 0 -30))
+  "h" (lambda () (interactive) (ilm-pan-graph-at-point 30 0))
+  "l" (lambda () (interactive) (ilm-pan-graph-at-point -30 0))
+  "k" (lambda () (interactive) (ilm-pan-graph-at-point 0 30))
+  "j" (lambda () (interactive) (ilm-pan-graph-at-point 0 -30))
+  "H" (lambda () (interactive) (ilm-resize-graph-at-point '(- 30) nil))
+  "L" (lambda () (interactive) (ilm-resize-graph-at-point '(+ 30) nil))
+  "K" (lambda () (interactive) (ilm-resize-graph-at-point nil '(- 30)))
+  "J" (lambda () (interactive) (ilm-resize-graph-at-point nil '(+ 30))))
 
 ;;;; Concepts
 

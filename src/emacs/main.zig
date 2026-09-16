@@ -62,6 +62,10 @@ export fn emacs_module_init(raw_rt: [*c]c.emacs_runtime) c_int {
     emacs.registerFunc(env, "ilm--core-make-graph", GraphFuncs.make, "");
     emacs.registerFunc(env, "ilm--core-resize-graph", GraphFuncs.resize, "");
     emacs.registerFunc(env, "ilm--core-update-graph", GraphFuncs.update, "");
+    emacs.registerFunc(env, "ilm--core-pan-graph", GraphFuncs.pan, "Pan graph camera by (dx, dy)");
+    emacs.registerFunc(env, "ilm--core-zoom-graph", GraphFuncs.zoom, "Zoom graph camera by factor at (focus_x, focus_y)");
+    emacs.registerFunc(env, "ilm--core-fit-graph", GraphFuncs.fit, "Fit graph camera to bounding box");
+    emacs.registerFunc(env, "ilm--core-get-node-at", GraphFuncs.getNodeAt, "Get node UUID under screen coordinates");
 
     return 0;
 }

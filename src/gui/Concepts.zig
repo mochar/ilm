@@ -31,10 +31,7 @@ pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
 
     const graph_renderer = try Graph.Renderer.init(.{
         .gpa = gpa,
-        .graph_options = .{
-            .width = MAX_GRAPH_WIDTH,
-            .height = MAX_GRAPH_HEIGHT,
-        },
+        .graph_options = .{},
         .buffer_stride = MAX_GRAPH_WIDTH,
         .buffer_height = MAX_GRAPH_HEIGHT,
     });
@@ -199,6 +196,7 @@ fn updateGraphContent(self: *Self) void {
     graph.layout("dot") catch |err| {
         return self.toastErr(@src(), err, "Failed to layout graph", .{});
     };
+    self.graph_renderer.fitToGraph();
     self.graph_renderer.render() catch |err| {
         return self.toastErr(@src(), err, "Failed to render graph", .{});
     };
