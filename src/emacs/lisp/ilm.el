@@ -165,29 +165,20 @@ it.  After BODY executes, the buffer is put in
   (interactive "e")
   (ilm-graph-mouse-up-event event))
 
-(defun ilm-graph-mouse-double-event (event)
-  (interactive "e")
-  (when-let* ((posn (event-start event))
-              (point (posn-point posn))
-              (data (get-text-property point 'ilm-graph-data))
-              (xy (posn-x-y posn)))
-    (ilm--core-graph-mouse-up
-     data (float (car xy)) (float (cdr xy)))
-    (ilm--core-fit-graph data)))
-    
 (defun ilm-graph-wheel-zoom (event)
   "Zoom the graph camera centered at the mouse cursor position."
   (interactive "e")
   (when-let* ((posn (event-start event))
               (point (posn-point posn))
               (data (get-text-property point 'ilm-graph-data))
-              (xy (posn-x-y posn))
-              (factor (cond
-                       ((memq (car-safe event) '(wheel-up double-wheel-up triple-wheel-up))
-                        1.05)
-                       ((memq (car-safe event) '(wheel-down double-wheel-down triple-wheel-down))
-                        0.95))))
-    (ilm--core-zoom-graph data (float factor) (float (car xy)) (float (cdr xy)))))
+              (factor (pcase (car event)
+                        ('wheel-up 1.2)
+                        ('double-wheel-up 1.3)
+                        ('triple-wheel-up 1.5)
+                        ('wheel-down 0.8)
+                        ('double-wheel-down 0.7)
+                        ('triple-wheel-down 0.5))))
+    (ilm--core-graph-mouse-scroll data (float factor))))
 
 (defvar-keymap ilm-graph-map
   "<mouse-movement>" #'ilm-graph-mouse-move-event
@@ -200,9 +191,6 @@ it.  After BODY executes, the buffer is put in
   "<mouse-1>" #'ilm-graph-mouse-event
   "<mouse-2>" #'ilm-graph-mouse-event
   "<mouse-3>" #'ilm-graph-mouse-event
-  "<double-mouse-1>" #'ilm-graph-mouse-double-event
-  "<double-mouse-2>" #'ilm-graph-mouse-double-event
-  "<double-mouse-3>" #'ilm-graph-mouse-double-event
   "<wheel-up>" #'ilm-graph-wheel-zoom
   "<wheel-down>" #'ilm-graph-wheel-zoom
   "+" (lambda () (interactive) (ilm-zoom-graph-at-point 1.15))

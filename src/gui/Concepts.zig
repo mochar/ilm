@@ -200,7 +200,8 @@ fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void {
                         }
                     },
                     .motion => {
-                        if (dvui.captured(wd.id)) {
+                        // if (dvui.captured(wd.id)) {
+                        if (true) {
                             e.handle(@src(), wd);
                             if (self.graph_renderer.mouseMove(x, y)) |rerender| {
                                 if (rerender) self.syncGraphTexture();
@@ -211,8 +212,9 @@ fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void {
                     },
                     .wheel_y => {
                         e.handle(@src(), wd);
-                        const factor: f32 = if (me.action.wheel_y > 0) 1.1 else 0.9;
-                        self.graph_renderer.zoomBy(factor, x, y) catch |err| {
+                        const factor: f32 = @exp(me.action.wheel_y / 180);
+                        self.graph_renderer.mouseScroll(factor) catch |err| {
+                        // self.graph_renderer.zoomBy(factor, x, y) catch |err| {
                             self.toastErr(@src(), err, "Failed to zoom graph", .{});
                         };
                         self.syncGraphTexture();

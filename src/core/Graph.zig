@@ -216,6 +216,10 @@ const State = struct {
         /// Which button is currently pressed
         down: ?MouseButton = null,
         last_pos: [2]f32 = .{ 0.0, 0.0 },
+        last_click: ?struct {
+            pos: [2]f32,
+            time_ns: i128,
+        } = null,
         drag: ?struct {
             // start_pos: [2]f32 = .{ 0.0, 0.0 },
             mode: union(enum) {
@@ -373,9 +377,38 @@ pub const Renderer = struct {
 
     pub fn mouseUp(self: *Renderer, screen_x: f32, screen_y: f32) !bool {
         self.state.mouse.last_pos = .{ screen_x, screen_y };
+        const was_dragging = self.state.mouse.drag != null;
         self.state.mouse.drag = null;
         self.state.mouse.down = null;
-        return true;
+
+        if (!was_dragging) {
+            // std.Io.Clock.real.now needs std.Io instance...
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
+            const now_ns = @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
+
+            if (self.state.mouse.last_click) |last_click| {
+                const dt_ns = now_ns - last_click.time_ns;
+                const dx = screen_x - last_click.pos[0];
+                const dy = screen_y - last_click.pos[1];
+                if (dt_ns <= 400 * std.time.ns_per_ms and (dx * dx + dy * dy <= 25.0)) {
+                    self.state.mouse.last_click = null;
+                    self.fitToGraph();
+                    try self.render();
+                    return true;
+                }
+            }
+            self.state.mouse.last_click = .{
+                .pos = .{ screen_x, screen_y },
+                .time_ns = now_ns,
+            };
+        }
+
+        return false;
+    }
+
+    pub fn mouseScroll(self: *Renderer, factor: f32) !void {
+        try self.zoomBy(factor, self.state.mouse.last_pos[0], self.state.mouse.last_pos[1]);
     }
 
     /// Layout graph with aspect ratio set to match current viewport.

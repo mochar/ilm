@@ -131,6 +131,13 @@ pub const Funcs = struct {
         ctx.env.message("MOVE: {}", gr.state);
     }
 
+    pub fn mouseScroll(ctx: *Context, graph_data: EmacsValue, factor: f32) !void {
+        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *Graph.Renderer);
+        try gr.mouseScroll(factor);
+        const canvas_spec = try ctx.env.plistGet(graph_data, "canvas", ctx.arena, EmacsValue);
+        _ = try ctx.env.funcall1(ctx.env.intern("canvas-refresh"), canvas_spec);
+    }
+
     /// Pan the camera by screen delta (dx, dy).
     pub fn pan(ctx: *Context, graph_data: EmacsValue, dx: f32, dy: f32) !void {
         const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *Graph.Renderer);

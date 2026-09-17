@@ -65,6 +65,7 @@ export fn emacs_module_init(raw_rt: [*c]c.emacs_runtime) c_int {
     emacs.registerFunc(env, "ilm--core-graph-mouse-up", GraphFuncs.mouseUp, "");
     emacs.registerFunc(env, "ilm--core-graph-mouse-down", GraphFuncs.mouseDown, "");
     emacs.registerFunc(env, "ilm--core-graph-mouse-move", GraphFuncs.mouseMove, "");
+    emacs.registerFunc(env, "ilm--core-graph-mouse-scroll", GraphFuncs.mouseScroll, "");
     emacs.registerFunc(env, "ilm--core-pan-graph", GraphFuncs.pan, "Pan graph camera by (dx, dy)");
     emacs.registerFunc(env, "ilm--core-zoom-graph", GraphFuncs.zoom, "Zoom graph camera by factor at (focus_x, focus_y)");
     emacs.registerFunc(env, "ilm--core-fit-graph", GraphFuncs.fit, "Fit graph camera to bounding box");
