@@ -180,7 +180,6 @@ fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void {
                         if (btn) |b| {
                             e.handle(@src(), wd);
                             dvui.captureMouse(wd, e.num);
-
                             if (self.graph_renderer.mouseDown(x, y, b)) |rerender| {
                                 if (rerender) self.syncGraphTexture();
                             } else |err| {
@@ -192,7 +191,9 @@ fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void {
                         if (dvui.captured(wd.id)) {
                             e.handle(@src(), wd);
                             dvui.captureMouse(null, e.num);
-                            if (self.graph_renderer.mouseUp(x, y)) |rerender| {
+                            if (self.graph_renderer.hovered) |concept_id| {
+                                self.selectConceptById(concept_id);
+                            } else if (self.graph_renderer.mouseUp(x, y)) |rerender| {
                                 if (rerender) self.syncGraphTexture();
                             } else |err| {
                                 self.toastErr(@src(), err, "Failed mouse up", .{});
@@ -230,6 +231,17 @@ fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void {
             else => {},
         }
     }
+}
+
+fn selectConceptById(self: *Self, id: u128) void {
+    if (self.selected) |s| if (s.id.uuid == id) return;
+    for (self.concepts) |*concept| {
+        if (concept.id.uuid == id) {
+            self.selectConcept(concept);
+            return;
+        }
+    }
+    dvui.toast(@src(), .{ .message = "Failed to find concept" });
 }
 
 fn selectConcept(self: *Self, concept: *Concept) void {

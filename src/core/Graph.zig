@@ -256,6 +256,7 @@ pub const Renderer = struct {
     gpa: std.mem.Allocator,
     graph: Graph,
     padding: f32,
+    hovered: ?u128 = null,
     highlighted: std.AutoHashMap(u128, void),
     state: State = .{},
     /// ARGB32 pixel buffer.
@@ -344,6 +345,8 @@ pub const Renderer = struct {
     pub fn clear(self: *Renderer) void {
         self.graph.clear();
         self.highlighted.clearRetainingCapacity();
+        self.hovered = null;
+        self.state = .{};
     }
 
     pub fn mouseDown(self: *Renderer, screen_x: f32, screen_y: f32, button: MouseButton) !bool {
@@ -356,7 +359,19 @@ pub const Renderer = struct {
     pub fn mouseMove(self: *Renderer, screen_x: f32, screen_y: f32) !bool {
         const last_pos = self.state.mouse.last_pos;
         defer self.state.mouse.last_pos = .{ screen_x, screen_y };
-        if (self.state.mouse.down == null) return false;
+        if (self.state.mouse.down == null) {
+            if (self.getNodeAt(screen_x, screen_y)) |node_id| {
+                self.hovered = node_id;
+                try self.render();
+                return true;
+            }
+            if (self.hovered != null) {
+                self.hovered = null;
+                try self.render();
+                return true;
+            }
+            return false;
+        }
         if (self.state.mouse.drag) |drag| {
             switch (drag.mode) {
                 .pan_camera => {
@@ -382,12 +397,16 @@ pub const Renderer = struct {
         self.state.mouse.down = null;
 
         if (!was_dragging) {
+            // Register mouse click.
+
+            // Get time in nanoseconds.
             // std.Io.Clock.real.now needs std.Io instance...
             var ts: std.c.timespec = undefined;
             _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
             const now_ns = @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
 
             if (self.state.mouse.last_click) |last_click| {
+                // Check if its a double click.
                 const dt_ns = now_ns - last_click.time_ns;
                 const dx = screen_x - last_click.pos[0];
                 const dy = screen_y - last_click.pos[1];
@@ -567,6 +586,8 @@ pub const Renderer = struct {
             c.plutovg_canvas_circle(canvas, cx, cy, h / 2);
             if (self.highlighted.contains(node_id)) {
                 c.plutovg_canvas_set_rgba(canvas, 0.8, 0.85, 1.0, 1.0);
+            } else if (node_id == self.hovered) {
+                c.plutovg_canvas_set_rgba(canvas, 0.3, 0.3, 0.0, 1.0);
             } else {
                 c.plutovg_canvas_set_rgba(canvas, 0.0, 0.0, 0.0, 0.0);
             }
