@@ -11,7 +11,7 @@ const sqlite = @import("sqlite");
 const c_allocator = std.heap.c_allocator;
 
 pub fn refreshGraph(ctx: *Context, gr: *Graph.Renderer, canvas_spec: EmacsValue) !void {
-    gr.graph.layout("dot") catch |err| return ctx.setError("Failed to layout graph: {t}", .{err});
+    gr.layout("neato") catch |err| return ctx.setError("Failed to layout graph: {t}", .{err});
     gr.fitToGraph();
     gr.render() catch |err| return ctx.setError("Failed to render graph: {t}", .{err});
     const refresh_sym = ctx.env.intern("canvas-refresh");

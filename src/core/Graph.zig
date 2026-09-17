@@ -52,15 +52,15 @@ pub fn init(allocator: std.mem.Allocator, options: GraphOptions) !Graph {
     _ = c.agsafeset(g, @constCast("pad"), @constCast("0.0"), @constCast(""));
     _ = c.agsafeset(g, @constCast("dpi"), @constCast(GRAPHVIZ_DPI_STR), @constCast(""));
 
-    const gvc = c.gvContext() orelse return error.GVCFailed;
     var graph: Graph = .{
         .arena = .init(allocator),
-        .gvc = gvc,
+        .gvc = c.gvContext() orelse return error.GVCFailed,
         .g = g,
         .width = options.width orelse 0,
         .height = options.height orelse 0,
         .has_layout = false,
     };
+
     if (options.width != null and options.height != null) {
         graph.setDimensions(options.width.?, options.height.?);
     }
@@ -77,21 +77,21 @@ pub fn deinit(graph: *const Graph) void {
     graph.arena.deinit();
 }
 
+/// Set target aspect ratio (height / width) for Graphviz layout algorithm.
+pub fn setRatio(graph: *Graph, ratio: f32) void {
+    if (ratio <= 0.0) return;
+    var buf: [32]u8 = undefined;
+    const ratio_str = std.fmt.bufPrintZ(&buf, "{d:.4}", .{ratio}) catch unreachable;
+    _ = c.agsafeset(graph.g, @constCast("ratio"), @constCast(ratio_str.ptr), @constCast(""));
+}
+
 /// Set the graph dimensions given pixel width and height.
 pub fn setDimensions(graph: *Graph, width_px: u32, height_px: u32) void {
-    // Convert to inches.
-    const w_in = @as(f32, @floatFromInt(width_px)) / GRAPHVIZ_DPI;
-    const h_in = @as(f32, @floatFromInt(height_px)) / GRAPHVIZ_DPI;
-
-    // Without the exclamation mark, graphviz will interpret the size attribute
-    // as a maximum. That is, if the actual required size fits within the given
-    // size, it will not scale it.
-    var size_buf: [64]u8 = undefined;
-    const size_str = std.fmt.bufPrintZ(&size_buf, "{d:.3},{d:.3}!", .{ w_in, h_in }) catch unreachable;
-    _ = c.agsafeset(graph.g, @constCast("size"), @constCast(size_str.ptr), @constCast(""));
+    if (width_px == 0 or height_px == 0) return;
 
     graph.width = width_px;
     graph.height = height_px;
+    graph.setRatio(@as(f32, @floatFromInt(height_px)) / @as(f32, @floatFromInt(width_px)));
 }
 
 /// Get the bounding box of the graph from its layout.
@@ -212,7 +212,7 @@ pub const Camera = struct {
 pub const RendererOptions = struct {
     gpa: std.mem.Allocator,
     graph_options: GraphOptions = .{},
-    padding: f32 = 20.0,
+    padding: f32 = 0.0, // 20.0,
     /// Viewport width in pixels. If 0, uses buffer_stride.
     view_width: u32 = 0,
     /// Viewport height in pixels. If 0, uses buffer_height.
@@ -257,7 +257,7 @@ pub const Renderer = struct {
 
     pub fn init(options: RendererOptions) !Renderer {
         const gpa = options.gpa;
-        const graph = try Graph.init(gpa, options.graph_options);
+        var graph = try Graph.init(gpa, options.graph_options);
 
         const stride = options.buffer_stride;
         const height = options.buffer_height;
@@ -292,6 +292,10 @@ pub const Renderer = struct {
         else
             @intCast(height);
 
+        if (view_w > 0 and view_h > 0) {
+            graph.setRatio(@as(f32, @floatFromInt(view_h)) / @as(f32, @floatFromInt(view_w)));
+        }
+
         return .{
             .gpa = gpa,
             .graph = graph,
@@ -320,15 +324,22 @@ pub const Renderer = struct {
         self.highlighted.clearRetainingCapacity();
     }
 
+    /// Layout graph with aspect ratio set to match current viewport.
+    pub fn layout(self: *Renderer, engine: []const u8) !void {
+        if (self.view_width > 0 and self.view_height > 0) {
+            const target_ratio = @as(f32, @floatFromInt(self.view_height)) / @as(f32, @floatFromInt(self.view_width));
+            self.graph.setRatio(target_ratio);
+        }
+        try self.graph.layout(engine);
+    }
+
     /// Resize the visible viewport dimensions within buffer bounds, and rerender.
-    ///
-    /// This changes only the visible aperture size without modifying graph coordinates
-    /// or camera position.
     pub fn resize(self: *Renderer, width: u32, height: u32) !void {
         const max_w: u32 = @intCast(self.stride);
         const max_h: u32 = @intCast(self.height);
         self.view_width = @max(1, @min(width, max_w));
         self.view_height = @max(1, @min(height, max_h));
+        self.graph.setRatio(@as(f32, @floatFromInt(self.view_height)) / @as(f32, @floatFromInt(self.view_width)));
         try self.render();
     }
 
@@ -691,7 +702,7 @@ test "Graph buffer rendering, camera panning, zooming, and hit testing" {
     try renderer.graph.addNode(2, "Node B");
     try renderer.graph.addEdge(1, 2);
 
-    try renderer.graph.layout("dot");
+    try renderer.layout("dot");
     renderer.fitToGraph();
     try renderer.render();
 

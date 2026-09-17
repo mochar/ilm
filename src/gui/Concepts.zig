@@ -193,7 +193,7 @@ fn updateGraphContent(self: *Self) void {
             };
         }
     }
-    graph.layout("dot") catch |err| {
+    self.graph_renderer.layout("neato") catch |err| {
         return self.toastErr(@src(), err, "Failed to layout graph", .{});
     };
     self.graph_renderer.fitToGraph();
