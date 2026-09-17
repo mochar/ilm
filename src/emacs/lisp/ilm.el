@@ -68,15 +68,22 @@ it.  After BODY executes, the buffer is put in
    (or buffer-width 1024)
    (or buffer-height 1024)))
 
-(defun ilm-insert-graph (data &rest properties)
+(defun ilm--propertize-graph (data &rest properties)
   (map-let (:canvas :width :height) data
-    (insert "\n"
-            (apply
-             #'propertize "#"
-             'display `((slice 0 0 ,width ,height) ,canvas)
-             'keymap ilm-graph-map
-             'ilm-graph-data data
-             properties))))
+    (apply
+     #'propertize "#"
+     'ilm-graph-data data
+     'display `((slice 0 0 ,width ,height) ,canvas)
+     'keymap ilm-graph-map
+     'pointer 'hand
+     properties)))
+
+(defun ilm-insert-graph (data &rest properties)
+  (insert "\n"
+          (apply #'ilm--propertize-graph data properties))
+  ;; This will start tracking the mouse (in this buffer), which we handle unsing
+  ;; <mouse-movement> event in ilm-graph-map.
+  (setq-local track-mouse t))
 
 (defun ilm--resize-spec-to-value (value spec)
   (pcase spec
@@ -121,48 +128,81 @@ it.  After BODY executes, the buffer is put in
     (ilm--core-fit-graph data)
     (force-mode-line-update)))
 
-(defun ilm-graph-mouse-drag (event)
-  "Pan the graph camera interactively by dragging the mouse."
-  (interactive "e")
-  (let* ((start-pos (event-start event))
-         (start-pt (posn-point start-pos))
-         (data (and start-pt (get-text-property start-pt 'ilm-graph-data))))
-    (when data
-      (track-mouse
-        (let ((last-x (car (posn-x-y start-pos)))
-              (last-y (cdr (posn-x-y start-pos))))
-          (while (progn
-                   (setq event (read-event))
-                   (or (mouse-movement-p event)
-                       (memq (car-safe event) '(drag-mouse-1 mouse-1 mouse-movement))))
-            (when (mouse-movement-p event)
-              (let* ((pos (event-end event))
-                     (xy (posn-x-y pos))
-                     (x (car xy))
-                     (y (cdr xy))
-                     (dx (- x last-x))
-                     (dy (- y last-y)))
-                (setq last-x x
-                      last-y y)
-                (ilm--core-pan-graph data (float dx) (float dy))
-                (force-mode-line-update)))))))))
+(defvar ilm-graph-mouse-move-ms (/ 1.0 60) ; 60 FPS
+  "How frequently to send mouse move events in milliseconds.")
 
+(defun ilm-graph-mouse-move-event (event)
+  (interactive "e")
+  (when-let* ((posn (event-start event))
+              (point (posn-point posn))
+              (data (get-text-property point 'ilm-graph-data))
+              (xy (posn-x-y posn)))
+    (ilm--core-graph-mouse-move data (float (car xy)) (float (cdr xy)))))
+
+(defun ilm-graph-mouse-down-event (event)
+  (interactive "e")
+  (when-let* ((posn (event-start event))
+              (point (posn-point posn))
+              (data (get-text-property point 'ilm-graph-data))
+              (btn (pcase (car event)
+                     ('down-mouse-1 0)
+                     ('down-mouse-2 1)
+                     ('down-mouse-3 2)))
+              (xy (posn-x-y posn)))
+    (ilm--core-graph-mouse-down
+     data (float (car xy)) (float (cdr xy)) btn)))
+
+(defun ilm-graph-mouse-up-event (event)
+  (interactive "e")
+  (when-let* ((posn (event-start event))
+              (point (posn-point posn))
+              (data (get-text-property point 'ilm-graph-data))
+              (xy (posn-x-y posn)))
+    (ilm--core-graph-mouse-up
+     data (float (car xy)) (float (cdr xy)))))
+
+(defun ilm-graph-mouse-event (event)
+  (interactive "e")
+  (ilm-graph-mouse-up-event event))
+
+(defun ilm-graph-mouse-double-event (event)
+  (interactive "e")
+  (when-let* ((posn (event-start event))
+              (point (posn-point posn))
+              (data (get-text-property point 'ilm-graph-data))
+              (xy (posn-x-y posn)))
+    (ilm--core-graph-mouse-up
+     data (float (car xy)) (float (cdr xy)))
+    (ilm--core-fit-graph data)))
+    
 (defun ilm-graph-wheel-zoom (event)
   "Zoom the graph camera centered at the mouse cursor position."
   (interactive "e")
-  (let* ((pos (event-start event))
-         (pt (posn-point pos))
-         (data (and pt (get-text-property pt 'ilm-graph-data)))
-         (obj-xy (or (posn-object-x-y pos) '(-1 . -1)))
-         (factor (if (memq (car-safe event) '(wheel-up mouse-4)) 1.15 0.85)))
-    (when data
-      (ilm--core-zoom-graph data (float factor) (float (car obj-xy)) (float (cdr obj-xy)))
-      (force-mode-line-update))))
+  (when-let* ((posn (event-start event))
+              (point (posn-point posn))
+              (data (get-text-property point 'ilm-graph-data))
+              (xy (posn-x-y posn))
+              (factor (cond
+                       ((memq (car-safe event) '(wheel-up double-wheel-up triple-wheel-up))
+                        1.05)
+                       ((memq (car-safe event) '(wheel-down double-wheel-down triple-wheel-down))
+                        0.95))))
+    (ilm--core-zoom-graph data (float factor) (float (car xy)) (float (cdr xy)))))
 
 (defvar-keymap ilm-graph-map
-  "<down-mouse-1>" #'ilm-graph-mouse-drag
-  "<mouse-4>" #'ilm-graph-wheel-zoom
-  "<mouse-5>" #'ilm-graph-wheel-zoom
+  "<mouse-movement>" #'ilm-graph-mouse-move-event
+  "<down-mouse-1>" #'ilm-graph-mouse-down-event
+  "<down-mouse-2>" #'ilm-graph-mouse-down-event
+  "<down-mouse-3>" #'ilm-graph-mouse-down-event
+  "<drag-mouse-1>" #'ilm-graph-mouse-up-event
+  "<drag-mouse-2>" #'ilm-graph-mouse-up-event
+  "<drag-mouse-3>" #'ilm-graph-mouse-up-event
+  "<mouse-1>" #'ilm-graph-mouse-event
+  "<mouse-2>" #'ilm-graph-mouse-event
+  "<mouse-3>" #'ilm-graph-mouse-event
+  "<double-mouse-1>" #'ilm-graph-mouse-double-event
+  "<double-mouse-2>" #'ilm-graph-mouse-double-event
+  "<double-mouse-3>" #'ilm-graph-mouse-double-event
   "<wheel-up>" #'ilm-graph-wheel-zoom
   "<wheel-down>" #'ilm-graph-wheel-zoom
   "+" (lambda () (interactive) (ilm-zoom-graph-at-point 1.15))

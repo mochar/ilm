@@ -27,7 +27,8 @@
 
 
 #+begin_src sh :noweb yes :noweb-prefix no :var bg=(face-attribute 'default :background) fg=(face-attribute 'default :foreground)
-emacs -Q --eval '(progn (set-face-attribute (quote default) nil :height 160 :background "'"$bg"'" :foreground  "'"$fg"'") <<scratch>>)'
+emacs -Q --eval '(progn (set-face-attribute (quote default) nil :height 160 :background "'"$bg"'"
+:foreground  "'"$fg"'") <<scratch>>)'
 #+end_src
 
 #+RESULTS:

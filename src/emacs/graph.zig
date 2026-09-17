@@ -104,6 +104,33 @@ pub const Funcs = struct {
         try gr.resize(view_width, view_height);
     }
 
+    pub fn mouseDown(ctx: *Context, graph_data: EmacsValue, x: f32, y: f32, button: u32) !void {
+        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *Graph.Renderer);
+        if (try gr.mouseDown(x, y, @enumFromInt(button))) {
+            const canvas_spec = try ctx.env.plistGet(graph_data, "canvas", ctx.arena, EmacsValue);
+            _ = try ctx.env.funcall1(ctx.env.intern("canvas-refresh"), canvas_spec);
+        }
+        ctx.env.message("DOWN: {}", gr.state);
+    }
+    
+    pub fn mouseUp(ctx: *Context, graph_data: EmacsValue, x: f32, y: f32) !void {
+        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *Graph.Renderer);
+        if (try gr.mouseUp(x, y)) {
+            const canvas_spec = try ctx.env.plistGet(graph_data, "canvas", ctx.arena, EmacsValue);
+            _ = try ctx.env.funcall1(ctx.env.intern("canvas-refresh"), canvas_spec);
+        }
+        ctx.env.message("UP: {}", gr.state);
+    }
+    
+    pub fn mouseMove(ctx: *Context, graph_data: EmacsValue, x: f32, y: f32) !void {
+        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *Graph.Renderer);
+        if (try gr.mouseMove(x, y)) {
+            const canvas_spec = try ctx.env.plistGet(graph_data, "canvas", ctx.arena, EmacsValue);
+            _ = try ctx.env.funcall1(ctx.env.intern("canvas-refresh"), canvas_spec);
+        }
+        ctx.env.message("MOVE: {}", gr.state);
+    }
+
     /// Pan the camera by screen delta (dx, dy).
     pub fn pan(ctx: *Context, graph_data: EmacsValue, dx: f32, dy: f32) !void {
         const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *Graph.Renderer);

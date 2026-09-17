@@ -566,7 +566,7 @@ pub fn wrapFunc(comptime func: anytype) EmacsFunc {
                     args_tuple[i] = args[i - 1];
                 } else {
                     args_tuple[i] = env.convertFrom(param.type.?, args[i - 1], allocator) catch |err| {
-                        ctx.setError("Error converting emacs argument: {t}", .{err});
+                        ctx.setError("{t}: Error converting emacs argument with index {d} ", .{err, i});
                         ctx.signalError(.{});
                         return q_nil;
                     };

@@ -201,12 +201,29 @@ pub fn renderToFile(graph: *const Graph, format: []const u8, filename: []const u
 
 // ** Buffer renderer
 
-pub const Camera = struct {
+const Camera = struct {
     /// Center of the camera in world coordinates
     center_x: f32 = 0.0,
     center_y: f32 = 0.0,
     /// Zoom scale factor (1.0 = 100%)
     zoom: f32 = 1.0,
+};
+
+pub const MouseButton = enum { left, right, middle };
+
+const State = struct {
+    mouse: struct {
+        /// Which button is currently pressed
+        down: ?MouseButton = null,
+        last_pos: [2]f32 = .{ 0.0, 0.0 },
+        drag: ?struct {
+            // start_pos: [2]f32 = .{ 0.0, 0.0 },
+            mode: union(enum) {
+                pan_camera,
+                drag_node: u128,
+            },
+        } = null,
+    } = .{},
 };
 
 pub const RendererOptions = struct {
@@ -236,6 +253,7 @@ pub const Renderer = struct {
     graph: Graph,
     padding: f32,
     highlighted: std.AutoHashMap(u128, void),
+    state: State = .{},
     /// ARGB32 pixel buffer.
     buffer: []u8,
     /// Buffer stride in pixels
@@ -322,6 +340,42 @@ pub const Renderer = struct {
     pub fn clear(self: *Renderer) void {
         self.graph.clear();
         self.highlighted.clearRetainingCapacity();
+    }
+
+    pub fn mouseDown(self: *Renderer, screen_x: f32, screen_y: f32, button: MouseButton) !bool {
+        self.state.mouse.last_pos = .{ screen_x, screen_y };
+        self.state.mouse.down = button;
+        self.state.mouse.drag = null;
+        return false;
+    }
+
+    pub fn mouseMove(self: *Renderer, screen_x: f32, screen_y: f32) !bool {
+        const last_pos = self.state.mouse.last_pos;
+        defer self.state.mouse.last_pos = .{ screen_x, screen_y };
+        if (self.state.mouse.down == null) return false;
+        if (self.state.mouse.drag) |drag| {
+            switch (drag.mode) {
+                .pan_camera => {
+                    try self.pan(screen_x - last_pos[0], screen_y - last_pos[1]);
+                },
+                .drag_node => {},
+            }
+            return true;
+        }
+
+        if (self.getNodeAt(screen_x, screen_y)) |node_id| {
+            self.state.mouse.drag = .{ .mode = .{ .drag_node = node_id } };
+        } else {
+            self.state.mouse.drag = .{ .mode = .pan_camera };
+        }
+        return true;
+    }
+
+    pub fn mouseUp(self: *Renderer, screen_x: f32, screen_y: f32) !bool {
+        self.state.mouse.last_pos = .{ screen_x, screen_y };
+        self.state.mouse.drag = null;
+        self.state.mouse.down = null;
+        return true;
     }
 
     /// Layout graph with aspect ratio set to match current viewport.
