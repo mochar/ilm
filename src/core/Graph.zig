@@ -212,7 +212,7 @@ pub const Camera = struct {
 pub const RendererOptions = struct {
     gpa: std.mem.Allocator,
     graph_options: GraphOptions = .{},
-    padding: f32 = 0.0, // 20.0,
+    padding: f32 = 20.0,
     /// Viewport width in pixels. If 0, uses buffer_stride.
     view_width: u32 = 0,
     /// Viewport height in pixels. If 0, uses buffer_height.
