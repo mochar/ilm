@@ -143,6 +143,8 @@ pub fn render(self: *Self) void {
             self.updateGraphTexture();
         }
 
+        self.handleEvents(texture_box.data(), rs);
+
         // Render the graph texture. Set uv to only view the rendered part of
         // the buffer.
         if (self.rendered_width > 0 and self.rendered_height > 0) {
@@ -154,6 +156,76 @@ pub fn render(self: *Self) void {
             }) catch |err| {
                 return self.toastErr(@src(), err, "Failed to render graph texture", .{});
             };
+        }
+    }
+}
+
+fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void {
+    for (dvui.events()) |*e| {
+        if (!dvui.eventMatchSimple(e, wd)) continue;
+
+        switch (e.evt) {
+            .mouse => |me| {
+                const x = me.p.x - rs.r.x;
+                const y = me.p.y - rs.r.y;
+
+                switch (me.action) {
+                    .press => {
+                        const btn: ?Graph.MouseButton = switch (me.button) {
+                            .left => .left,
+                            .right => .right,
+                            .middle => .middle,
+                            else => null,
+                        };
+                        if (btn) |b| {
+                            e.handle(@src(), wd);
+                            dvui.captureMouse(wd, e.num);
+
+                            if (self.graph_renderer.mouseDown(x, y, b)) |rerender| {
+                                if (rerender) self.syncGraphTexture();
+                            } else |err| {
+                                self.toastErr(@src(), err, "Failed mouse down", .{});
+                            }
+                        }
+                    },
+                    .release => {
+                        if (dvui.captured(wd.id)) {
+                            e.handle(@src(), wd);
+                            dvui.captureMouse(null, e.num);
+                            if (self.graph_renderer.mouseUp(x, y)) |rerender| {
+                                if (rerender) self.syncGraphTexture();
+                            } else |err| {
+                                self.toastErr(@src(), err, "Failed mouse up", .{});
+                            }
+                        }
+                    },
+                    .motion => {
+                        if (dvui.captured(wd.id)) {
+                            e.handle(@src(), wd);
+                            if (self.graph_renderer.mouseMove(x, y)) |rerender| {
+                                if (rerender) self.syncGraphTexture();
+                            } else |err| {
+                                self.toastErr(@src(), err, "Failed mouse move", .{});
+                            }
+                        }
+                    },
+                    .wheel_y => {
+                        e.handle(@src(), wd);
+                        const factor: f32 = if (me.action.wheel_y > 0) 1.1 else 0.9;
+                        self.graph_renderer.zoomBy(factor, x, y) catch |err| {
+                            self.toastErr(@src(), err, "Failed to zoom graph", .{});
+                        };
+                        self.syncGraphTexture();
+                    },
+                    .position => {
+                        if (self.graph_renderer.getNodeAt(x, y) != null) {
+                            dvui.cursorSet(.hand);
+                        }
+                    },
+                    else => {},
+                }
+            },
+            else => {},
         }
     }
 }
@@ -202,6 +274,13 @@ fn updateGraphContent(self: *Self) void {
     };
 }
 
+fn syncGraphTexture(self: *Self) void {
+    if (self.rendered_width == 0 or self.rendered_height == 0) return;
+    self.graph_texture.updateSubRect(self.graph_renderer.buffer.ptr, 0, 0, self.rendered_width, self.rendered_height) catch |err| {
+        return self.toastErr(@src(), err, "Failed to update graph texture", .{});
+    };
+}
+
 /// Compute new layout, render to buffer, and update the texture
 fn updateGraphTexture(self: *Self) void {
     if (self.rendered_width == 0 or self.rendered_height == 0) return;
@@ -212,7 +291,5 @@ fn updateGraphTexture(self: *Self) void {
     self.graph_renderer.render() catch |err| {
         return self.toastErr(@src(), err, "Failed to render graph", .{});
     };
-    self.graph_texture.updateSubRect(self.graph_renderer.buffer.ptr, 0, 0, self.rendered_width, self.rendered_height) catch |err| {
-        return self.toastErr(@src(), err, "Failed to update graph texture", .{});
-    };
+    self.syncGraphTexture();
 }
