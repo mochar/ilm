@@ -169,9 +169,10 @@ pub const Funcs = struct {
     /// Query node id under screen coordinate (screen_x, screen_y).
     pub fn getNodeAt(ctx: *Context, graph_data: EmacsValue, screen_x: f32, screen_y: f32) !EmacsValue {
         const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *Graph.Renderer);
-        if (gr.getNodeAt(screen_x, screen_y)) |node_id| {
+        if (gr.getNodeAt(screen_x, screen_y)) |node| {
+            const node_id = try node.getId();
             var buf: [33]u8 = undefined;
-            const name = Graph.idToName(node_id, &buf);
+            const name = Graph.Node.idToName(node_id, &buf);
             return try ctx.env.makeString(name);
         }
         return ctx.env.nil();

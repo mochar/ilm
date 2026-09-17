@@ -191,8 +191,8 @@ fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void {
                         if (dvui.captured(wd.id)) {
                             e.handle(@src(), wd);
                             dvui.captureMouse(null, e.num);
-                            if (self.graph_renderer.hovered) |concept_id| {
-                                self.selectConceptById(concept_id);
+                            if (self.graph_renderer.hovered) |node| {
+                                self.selectConceptById(node.getId() catch unreachable);
                             } else if (self.graph_renderer.mouseUp(x, y)) |rerender| {
                                 if (rerender) self.syncGraphTexture();
                             } else |err| {

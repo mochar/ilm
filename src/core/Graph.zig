@@ -17,11 +17,6 @@ width: u32,
 height: u32,
 has_layout: bool = false,
 
-pub const GraphOptions = struct {
-    width: ?u32 = null,
-    height: ?u32 = null,
-};
-
 pub const BoundingBox = struct {
     llx: f32,
     lly: f32,
@@ -44,6 +39,39 @@ pub const BoundingBox = struct {
         return (self.lly + self.ury) / 2.0;
     }
 };
+
+pub const Node = struct {
+    cnode: *c.Agnode_t,
+
+    pub fn getId(node: *const Node) !u128 {
+        return Node.getNodeId(node.cnode);
+    }
+
+    pub fn getNodeId(cnode: *c.Agnode_t)  !u128 {
+        const name_ptr = c.agnameof(cnode) orelse return error.MissingNodeName;
+        const name = std.mem.span(name_ptr);
+        return std.fmt.parseInt(u128, name, 16);
+    }
+
+    /// Convert uuid to 0-terminated name string for use in graphviz.
+    ///
+    /// Since graphviz uses u32 ids internally, we instead use the name to identify
+    /// the nodes, and use the node's label property to set the label.
+    pub fn idToName(id: u128, buf: *[33]u8) [:0]const u8 {
+        return std.fmt.bufPrintZ(buf, "{x:0>32}", .{id}) catch unreachable;
+    }
+
+    /// Convert node hex string name back to a u128 id.
+    pub fn nameToId(name: []const u8) !u128 {
+        return std.fmt.parseInt(u128, name, 16);
+    }
+};
+
+pub const GraphOptions = struct {
+    width: ?u32 = null,
+    height: ?u32 = null,
+};
+
 
 pub fn init(allocator: std.mem.Allocator, options: GraphOptions) !Graph {
     const g = agopen(@constCast("graph"), Agdirected, null) orelse return error.OpenFailed;
@@ -121,28 +149,9 @@ pub fn clear(graph: *Graph) void {
     }
 }
 
-/// Convert uuid to 0-terminated name string for use in graphviz.
-///
-/// Since graphviz uses u32 ids internally, we instead use the name to identify
-/// the nodes, and use the node's label property to set the label.
-pub fn idToName(id: u128, buf: *[33]u8) [:0]const u8 {
-    return std.fmt.bufPrintZ(buf, "{x:0>32}", .{id}) catch unreachable;
-}
-
-/// Convert node hex string name back to a u128 id.
-pub fn nameToId(name: []const u8) !u128 {
-    return std.fmt.parseInt(u128, name, 16);
-}
-
-pub fn getNodeId(node: *c.Agnode_t) !u128 {
-    const name_ptr = c.agnameof(node) orelse return error.MissingNodeName;
-    const name = std.mem.span(name_ptr);
-    return std.fmt.parseInt(u128, name, 16);
-}
-
 pub fn addNode(graph: *Graph, id: u128, label: []const u8) !void {
     var buf: [33]u8 = undefined;
-    const name = idToName(id, &buf);
+    const name = Node.idToName(id, &buf);
 
     var arena = graph.arena.allocator();
     const label_z = try arena.dupeZ(u8, label);
@@ -157,17 +166,19 @@ pub fn addNode(graph: *Graph, id: u128, label: []const u8) !void {
 }
 
 /// Get a cgraph node given the uuid
-pub fn getNode(graph: *const Graph, id: u128) ?*c.Agnode_t {
+pub fn getNode(graph: *const Graph, id: u128) ?Node {
     var buf: [33]u8 = undefined;
-    const name = idToName(id, &buf);
-    const node = c.agnode(graph.g, @constCast(name), 0);
-    return node;
+    const name = Node.idToName(id, &buf);
+    if (c.agnode(graph.g, @constCast(name), 0)) |cnode| {
+        return .{ .cnode = cnode };
+    }
+    return null;
 }
 
 pub fn addEdge(graph: *const Graph, from: u128, to: u128) !void {
     const from_node = graph.getNode(from) orelse return error.NodeNotFound;
     const to_node = graph.getNode(to) orelse return error.NodeNotFound;
-    _ = c.agedge(graph.g, from_node, to_node, null, 1) orelse return error.EdgeFailed;
+    _ = c.agedge(graph.g, from_node.cnode, to_node.cnode, null, 1) orelse return error.EdgeFailed;
 }
 
 /// Number of nodes in the graph
@@ -224,7 +235,7 @@ const State = struct {
             // start_pos: [2]f32 = .{ 0.0, 0.0 },
             mode: union(enum) {
                 pan_camera,
-                drag_node: u128,
+                drag_node: Node,
             },
         } = null,
     } = .{},
@@ -256,7 +267,7 @@ pub const Renderer = struct {
     gpa: std.mem.Allocator,
     graph: Graph,
     padding: f32,
-    hovered: ?u128 = null,
+    hovered: ?Node = null,
     highlighted: std.AutoHashMap(u128, void),
     state: State = .{},
     /// ARGB32 pixel buffer.
@@ -360,8 +371,8 @@ pub const Renderer = struct {
         const last_pos = self.state.mouse.last_pos;
         defer self.state.mouse.last_pos = .{ screen_x, screen_y };
         if (self.state.mouse.down == null) {
-            if (self.getNodeAt(screen_x, screen_y)) |node_id| {
-                self.hovered = node_id;
+            if (self.getNodeAt(screen_x, screen_y)) |node| {
+                self.hovered = node;
                 try self.render();
                 return true;
             }
@@ -382,8 +393,8 @@ pub const Renderer = struct {
             return true;
         }
 
-        if (self.getNodeAt(screen_x, screen_y)) |node_id| {
-            self.state.mouse.drag = .{ .mode = .{ .drag_node = node_id } };
+        if (self.getNodeAt(screen_x, screen_y)) |node| {
+            self.state.mouse.drag = .{ .mode = .{ .drag_node = node } };
         } else {
             self.state.mouse.drag = .{ .mode = .pan_camera };
         }
@@ -509,7 +520,7 @@ pub const Renderer = struct {
     }
 
     /// Find node under the given screen coordinates, if any.
-    pub fn getNodeAt(self: *const Renderer, screen_x: f32, screen_y: f32) ?u128 {
+    pub fn getNodeAt(self: *const Renderer, screen_x: f32, screen_y: f32) ?Node {
         const world_pt = self.screenToWorld(screen_x, screen_y);
         var maybe_node = c.agfstnode(self.graph.g);
         while (maybe_node) |node| : (maybe_node = c.agnxtnode(self.graph.g, node)) {
@@ -520,9 +531,7 @@ pub const Renderer = struct {
             const dx = world_pt.x - cx;
             const dy = world_pt.y - cy;
             if (dx * dx + dy * dy <= radius * radius) {
-                if (getNodeId(node)) |id| {
-                    return id;
-                } else |_| {}
+                return .{ .cnode = node };
             }
         }
         return null;
@@ -576,7 +585,7 @@ pub const Renderer = struct {
         // Draw nodes and their labels
         maybe_node = c.agfstnode(graph.g);
         while (maybe_node) |node| : (maybe_node = c.agnxtnode(graph.g, node)) {
-            const node_id = try getNodeId(node);
+            const node_id = try Node.getNodeId(node);
             const node_info = nodeInfo(node);
             const cx: f32 = @floatCast(node_info.coord.x);
             const cy: f32 = @floatCast(node_info.coord.y);
@@ -586,7 +595,7 @@ pub const Renderer = struct {
             c.plutovg_canvas_circle(canvas, cx, cy, h / 2);
             if (self.highlighted.contains(node_id)) {
                 c.plutovg_canvas_set_rgba(canvas, 0.8, 0.85, 1.0, 1.0);
-            } else if (node_id == self.hovered) {
+            } else if (self.hovered != null and self.hovered.?.cnode == node) {
                 c.plutovg_canvas_set_rgba(canvas, 0.3, 0.3, 0.0, 1.0);
             } else {
                 c.plutovg_canvas_set_rgba(canvas, 0.0, 0.0, 0.0, 0.0);
