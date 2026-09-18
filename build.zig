@@ -84,9 +84,11 @@ fn buildPlutoVG(
 const Iroh = struct {
     lib_path: std.Build.LazyPath,
     target: std.Build.ResolvedTarget,
+    step: *std.Build.Step,
 
     pub fn link(self: Iroh, mod: *std.Build.Module) void {
-        mod.addObjectFile(self.lib_path);
+        mod.addLibraryPath(self.lib_path);
+        mod.linkSystemLibrary("iroh_c_ffi", .{});
 
         switch (self.target.result.os.tag) {
             .linux => {
@@ -112,38 +114,21 @@ fn buildIroh(
 ) Iroh {
     const is_release = optimize != .Debug;
     const rel_target = if (is_release) "release" else "debug";
-    const release_flag = if (is_release) " --release" else "";
-
-    const sh_cmd = std.fmt.allocPrint(
-        b.allocator,
-        "cargo build --manifest-path vendor/iroh-c-ffi/Cargo.toml{s} && cp vendor/iroh-c-ffi/target/{s}/libiroh_c_ffi.a \"$1\"",
-        .{ release_flag, rel_target },
-    ) catch @panic("OOM");
 
     const cargo_build = b.addSystemCommand(&.{
-        "sh",
-        "-c",
-        sh_cmd,
-        "--",
+        "cargo", "build", "--manifest-path", "vendor/iroh-c-ffi/Cargo.toml"
     });
-
-    // Track input files for cache invalidation without passing them as CLI args
-    cargo_build.addFileInput(b.path("vendor/iroh-c-ffi/Cargo.toml"));
-    cargo_build.addFileInput(b.path("vendor/iroh-c-ffi/Cargo.lock"));
-    const rust_sources = [_][]const u8{
-        "src/lib.rs",
-        "src/addr.rs",
-        "src/endpoint.rs",
-        "src/key.rs",
-        "src/stream.rs",
-        "src/util.rs",
-        "src/bin/generate_headers.rs",
-    };
-    for (rust_sources) |src| {
-        cargo_build.addFileInput(b.path(b.pathJoin(&.{ "vendor/iroh-c-ffi", src })));
+    if (is_release) {
+        cargo_build.addArgs(&.{"--release"});
     }
+    cargo_build.setEnvironmentVariable("CARGO_PROFILE_DEV_DEBUG", "0");
 
-    const lib_path = cargo_build.addOutputFileArg("libiroh_c_ffi.a");
+    // Make cargo build run every time to let cargo handle its own caching
+    cargo_build.has_side_effects = true;
+
+    // The library is generated in the target directory
+    const lib_dir = b.pathJoin(&.{ "vendor/iroh-c-ffi/target", rel_target });
+    const lib_path = b.path(lib_dir);
 
     // Step to generate C-headers on demand
     const gen_headers = b.addSystemCommand(&.{
@@ -163,6 +148,7 @@ fn buildIroh(
     return .{
         .lib_path = lib_path,
         .target = target,
+        .step = &cargo_build.step,
     };
 }
 
@@ -183,6 +169,7 @@ fn buildCore(
     });
     core_c.addIncludePath(b.path("vendor/plutovg/include"));
     core_c.addIncludePath(b.path("vendor/iroh-c-ffi"));
+    core_c.step.dependOn(iroh.step);
 
     const core_mod = b.addModule("core", .{
         .root_source_file = b.path("src/core/root.zig"),
