@@ -27,7 +27,7 @@
 
 
 (setq ilm-concepts (ilm--all-concepts))
-(setq ilm-concept-graph (ilm-create-graph 'ilm-concept-graphh 500 300))
+(setq ilm-concept-graph (ilm-create-graph 'ilm-concept-graph 500 300))
 (setq ilm-concept-graph nil)
 (let* ((c (seq-find
            (lambda (c) (string= "Half-cauchy factorization" (map-elt c :name)))

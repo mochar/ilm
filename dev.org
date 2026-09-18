@@ -2,10 +2,10 @@
 #+name: scratch
 #+begin_src emacs-lisp :eval no
 (setq default-directory (expand-file-name "src/emacs/lisp"))
-(load-file "~/.config/emacs/elpa/consult-20260805.1130/consult.el")
-(load-file "~/.config/emacs/elpa/marginalia-20260724.810/marginalia.el")
-(load-file "~/.config/emacs/elpa/orderless-20260519.1029/orderless.el")
-(load-file "~/.config/emacs/elpa/vertico-20260811.1003/vertico.el")
+(load-file "~/.config/emacs/elpa/consult-20260913.2232/consult.el")
+(load-file "~/.config/emacs/elpa/marginalia-20260907.511/marginalia.el")
+(load-file "~/.config/emacs/elpa/orderless-20260909.1506/orderless.el")
+(load-file "~/.config/emacs/elpa/vertico-20260913.1525/vertico.el")
 (vertico-mode)
 (marginalia-mode)
 (setq completion-styles (quote (orderless basic)))
