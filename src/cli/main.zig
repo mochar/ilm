@@ -1,9 +1,11 @@
 const std = @import("std");
 const known_folders = @import("known-folders");
+const ilm = @import("ilm");
 const Core = @import("ilm").Core;
 
 pub fn main(init: std.process.Init) !void {
     const data_path = (try known_folders.getPath(init.io, init.gpa, init.environ_map, .data)) orelse return error.FolderNotFound;
+    defer init.gpa.free(data_path);
     var core = try Core.init(init.gpa, init.io, data_path, .{});
     defer core.deinit();
 
@@ -15,6 +17,10 @@ pub fn main(init: std.process.Init) !void {
 
     _ = try stdout_writer.interface.write("> ");
     try stdout_writer.flush();
+
+    const secret_key = ilm.p2p.SecretKey.generate();
+    defer secret_key.deinit();
+    std.log.info("Secret key hex:  {s}", .{secret_key.asHex()});
 
     while (try stdin_reader.interface.takeDelimiter('\n')) |input| {
         _ = input;
@@ -29,3 +35,4 @@ pub fn main(init: std.process.Init) !void {
         try stdout_writer.flush();
     }
 }
+

@@ -1,3 +1,6 @@
 [submodule "vendor/plutovg"]
 	path = vendor/plutovg
 	url = https://github.com/sammycage/plutovg
+[submodule "vendor/iroh-c-ffi"]
+	path = vendor/iroh-c-ffi
+	url = https://github.com/n0-computer/iroh-c-ffi

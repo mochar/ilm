@@ -15,7 +15,8 @@ pub fn build(b: *std.Build) void {
 
     // Libraries & Modules
     const plutovg_lib = buildPlutoVG(b, target, optimize);
-    const core_mod = buildCore(b, target, optimize, plutovg_lib, sqlite_mod, known_folders_mod, uuid_mod);
+    const iroh = buildIroh(b, target, optimize);
+    const core_mod = buildCore(b, target, optimize, plutovg_lib, sqlite_mod, known_folders_mod, uuid_mod, iroh);
 
     // Targets & Steps
     const core_test_step = addCoreTests(b, core_mod);
@@ -80,6 +81,91 @@ fn buildPlutoVG(
     });
 }
 
+const Iroh = struct {
+    lib_path: std.Build.LazyPath,
+    target: std.Build.ResolvedTarget,
+
+    pub fn link(self: Iroh, mod: *std.Build.Module) void {
+        mod.addObjectFile(self.lib_path);
+
+        switch (self.target.result.os.tag) {
+            .linux => {
+                mod.linkSystemLibrary("unwind", .{});
+                mod.linkSystemLibrary("m", .{});
+                mod.linkSystemLibrary("pthread", .{});
+                mod.linkSystemLibrary("dl", .{});
+            },
+            .macos => {
+                mod.linkSystemLibrary("System", .{});
+                mod.linkSystemLibrary("m", .{});
+                mod.linkSystemLibrary("pthread", .{});
+            },
+            else => {},
+        }
+    }
+};
+
+fn buildIroh(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) Iroh {
+    const is_release = optimize != .Debug;
+    const rel_target = if (is_release) "release" else "debug";
+    const release_flag = if (is_release) " --release" else "";
+
+    const sh_cmd = std.fmt.allocPrint(
+        b.allocator,
+        "cargo build --manifest-path vendor/iroh-c-ffi/Cargo.toml{s} && cp vendor/iroh-c-ffi/target/{s}/libiroh_c_ffi.a \"$1\"",
+        .{ release_flag, rel_target },
+    ) catch @panic("OOM");
+
+    const cargo_build = b.addSystemCommand(&.{
+        "sh",
+        "-c",
+        sh_cmd,
+        "--",
+    });
+
+    // Track input files for cache invalidation without passing them as CLI args
+    cargo_build.addFileInput(b.path("vendor/iroh-c-ffi/Cargo.toml"));
+    cargo_build.addFileInput(b.path("vendor/iroh-c-ffi/Cargo.lock"));
+    const rust_sources = [_][]const u8{
+        "src/lib.rs",
+        "src/addr.rs",
+        "src/endpoint.rs",
+        "src/key.rs",
+        "src/stream.rs",
+        "src/util.rs",
+        "src/bin/generate_headers.rs",
+    };
+    for (rust_sources) |src| {
+        cargo_build.addFileInput(b.path(b.pathJoin(&.{ "vendor/iroh-c-ffi", src })));
+    }
+
+    const lib_path = cargo_build.addOutputFileArg("libiroh_c_ffi.a");
+
+    // Step to generate C-headers on demand
+    const gen_headers = b.addSystemCommand(&.{
+        "cargo",
+        "run",
+    });
+    gen_headers.setCwd(b.path("vendor/iroh-c-ffi"));
+    gen_headers.addArgs(&.{
+        "--features",
+        "headers",
+        "--bin",
+        "generate_headers",
+    });
+    const headers_step = b.step("iroh-headers", "Generate C headers for iroh-c-ffi");
+    headers_step.dependOn(&gen_headers.step);
+
+    return .{
+        .lib_path = lib_path,
+        .target = target,
+    };
+}
+
 fn buildCore(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -88,6 +174,7 @@ fn buildCore(
     sqlite_mod: *std.Build.Module,
     known_folders_mod: *std.Build.Module,
     uuid_mod: *std.Build.Module,
+    iroh: Iroh,
 ) *std.Build.Module {
     const core_c = b.addTranslateC(.{
         .root_source_file = b.path("src/core/c.h"),
@@ -95,11 +182,13 @@ fn buildCore(
         .optimize = optimize,
     });
     core_c.addIncludePath(b.path("vendor/plutovg/include"));
+    core_c.addIncludePath(b.path("vendor/iroh-c-ffi"));
 
     const core_mod = b.addModule("core", .{
         .root_source_file = b.path("src/core/root.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
         .imports = &.{
             .{ .name = "c", .module = core_c.createModule() },
             .{ .name = "sqlite", .module = sqlite_mod },
@@ -111,6 +200,7 @@ fn buildCore(
     core_mod.linkSystemLibrary("cgraph", .{});
     core_mod.linkSystemLibrary("gvc", .{});
     core_mod.linkLibrary(plutovg_lib);
+    iroh.link(core_mod);
 
     return core_mod;
 }
