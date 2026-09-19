@@ -3,6 +3,7 @@ const ilm = @import("ilm");
 const Core = ilm.Core;
 const Id = ilm.Id;
 const Graph = ilm.Graph;
+const graphviz = @import("graphviz");
 const emacs = @import("emacs.zig");
 const Context = emacs.Context;
 const EmacsValue = emacs.EmacsValue;
@@ -172,7 +173,7 @@ pub const Funcs = struct {
         if (gr.getNodeAt(screen_x, screen_y)) |node| {
             const node_id = try node.getId();
             var buf: [33]u8 = undefined;
-            const name = Graph.Node.idToName(node_id, &buf);
+            const name = graphviz.Node.idToName(node_id, &buf);
             return try ctx.env.makeString(name);
         }
         return ctx.env.nil();

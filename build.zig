@@ -61,6 +61,7 @@ pub fn build(b: *Build) void {
     buildEmacs(b, target, optimize, &.{
         .{ .name = "ilm", .module = core_mod },
         .{ .name = "sqlite", .module = sqlite_mod },
+        .{ .name = "graphviz", .module = graphviz.module },
     });
     const gui_test_step = buildGui(b, target, optimize, &.{
         .{ .name = "ilm", .module = core_mod },
