@@ -13,10 +13,23 @@ pub fn build(b: *std.Build) void {
     const known_folders_mod = known_folders_dep.module("known-folders");
     const uuid_mod = uuid_dep.module("uuid");
 
-    // Libraries & Modules
-    const plutovg_lib = buildPlutoVG(b, target, optimize);
-    const iroh = buildIroh(b, target, optimize);
-    const core_mod = buildCore(b, target, optimize, plutovg_lib, sqlite_mod, known_folders_mod, uuid_mod, iroh);
+    // Universal C bindings
+    const c_bindings = b.addTranslateC(.{
+        .root_source_file = b.path("src/bindings/c.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const c_mod = c_bindings.createModule();
+
+    // Specific Binding Modules
+    const plutovg_mod = buildPlutoVG(b, target, optimize, c_mod, c_bindings);
+    const graphviz_mod = buildGraphviz(b, target, optimize, c_mod);
+    const iroh = buildIroh(b, target, optimize, c_mod, c_bindings);
+    
+    // Ensure cargo build runs before translate-c starts parsing
+    c_bindings.step.dependOn(iroh.step);
+
+    const core_mod = buildCore(b, target, optimize, plutovg_mod, graphviz_mod, sqlite_mod, known_folders_mod, uuid_mod, iroh.module, c_mod);
 
     // Targets & Steps
     const core_test_step = addCoreTests(b, core_mod);
@@ -35,15 +48,20 @@ fn buildPlutoVG(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
-) *std.Build.Step.Compile {
-    const plutovg_mod = b.createModule(.{
+    c_mod: *std.Build.Module,
+    c_bindings: *std.Build.Step.TranslateC,
+) *std.Build.Module {
+    // Inject headers into the universal c_bindings translation
+    c_bindings.addIncludePath(b.path("vendor/plutovg/include"));
+
+    const lib_mod = b.createModule(.{
         .link_libc = true,
         .target = target,
         .optimize = optimize,
     });
-    plutovg_mod.addIncludePath(b.path("vendor/plutovg/include"));
-    plutovg_mod.addIncludePath(b.path("vendor/plutovg/source"));
-    plutovg_mod.addCSourceFiles(.{
+    lib_mod.addIncludePath(b.path("vendor/plutovg/include"));
+    lib_mod.addIncludePath(b.path("vendor/plutovg/source"));
+    lib_mod.addCSourceFiles(.{
         .root = b.path("vendor/plutovg/source/"),
         .files = &[_][]const u8{
             "plutovg-blend.c",
@@ -68,50 +86,67 @@ fn buildPlutoVG(
     });
 
     if (target.result.os.tag == .linux) {
-        plutovg_mod.linkSystemLibrary("m", .{});
-        plutovg_mod.linkSystemLibrary("pthread", .{});
+        lib_mod.linkSystemLibrary("m", .{});
+        lib_mod.linkSystemLibrary("pthread", .{});
     } else if (target.result.os.tag == .macos) {
-        plutovg_mod.linkSystemLibrary("pthread", .{});
+        lib_mod.linkSystemLibrary("pthread", .{});
     }
 
-    return b.addLibrary(.{
+    const lib = b.addLibrary(.{
         .name = "plutovg",
         .linkage = .static,
-        .root_module = plutovg_mod,
+        .root_module = lib_mod,
     });
+
+    const plutovg_mod = b.createModule(.{
+        .root_source_file = b.path("src/bindings/plutovg.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "c", .module = c_mod },
+        },
+    });
+    plutovg_mod.linkLibrary(lib);
+
+    return plutovg_mod;
+}
+
+fn buildGraphviz(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    c_mod: *std.Build.Module,
+) *std.Build.Module {
+    const graphviz_mod = b.createModule(.{
+        .root_source_file = b.path("src/bindings/graphviz.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "c", .module = c_mod },
+        },
+    });
+    graphviz_mod.linkSystemLibrary("cgraph", .{});
+    graphviz_mod.linkSystemLibrary("gvc", .{});
+    return graphviz_mod;
 }
 
 const Iroh = struct {
-    lib_path: std.Build.LazyPath,
-    target: std.Build.ResolvedTarget,
+    module: *std.Build.Module,
     step: *std.Build.Step,
-
-    pub fn link(self: Iroh, mod: *std.Build.Module) void {
-        mod.addLibraryPath(self.lib_path);
-        mod.linkSystemLibrary("iroh_c_ffi", .{});
-
-        switch (self.target.result.os.tag) {
-            .linux => {
-                mod.linkSystemLibrary("unwind", .{});
-                mod.linkSystemLibrary("m", .{});
-                mod.linkSystemLibrary("pthread", .{});
-                mod.linkSystemLibrary("dl", .{});
-            },
-            .macos => {
-                mod.linkSystemLibrary("System", .{});
-                mod.linkSystemLibrary("m", .{});
-                mod.linkSystemLibrary("pthread", .{});
-            },
-            else => {},
-        }
-    }
 };
 
 fn buildIroh(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
+    c_mod: *std.Build.Module,
+    c_bindings: *std.Build.Step.TranslateC,
 ) Iroh {
+    // Inject headers into the universal c_bindings translation
+    c_bindings.addIncludePath(b.path("vendor/iroh-c-ffi"));
+
     const is_release = optimize != .Debug;
     const rel_target = if (is_release) "release" else "debug";
 
@@ -122,15 +157,38 @@ fn buildIroh(
         cargo_build.addArgs(&.{"--release"});
     }
     cargo_build.setEnvironmentVariable("CARGO_PROFILE_DEV_DEBUG", "0");
-
-    // Make cargo build run every time to let cargo handle its own caching
     cargo_build.has_side_effects = true;
 
-    // The library is generated in the target directory
     const lib_dir = b.pathJoin(&.{ "vendor/iroh-c-ffi/target", rel_target });
     const lib_path = b.path(lib_dir);
 
-    // Step to generate C-headers on demand
+    const iroh_mod = b.createModule(.{
+        .root_source_file = b.path("src/bindings/iroh.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "c", .module = c_mod },
+        },
+    });
+    iroh_mod.addLibraryPath(lib_path);
+    iroh_mod.linkSystemLibrary("iroh_c_ffi", .{});
+
+    switch (target.result.os.tag) {
+        .linux => {
+            iroh_mod.linkSystemLibrary("unwind", .{});
+            iroh_mod.linkSystemLibrary("m", .{});
+            iroh_mod.linkSystemLibrary("pthread", .{});
+            iroh_mod.linkSystemLibrary("dl", .{});
+        },
+        .macos => {
+            iroh_mod.linkSystemLibrary("System", .{});
+            iroh_mod.linkSystemLibrary("m", .{});
+            iroh_mod.linkSystemLibrary("pthread", .{});
+        },
+        else => {},
+    }
+
     const gen_headers = b.addSystemCommand(&.{
         "cargo",
         "run",
@@ -146,8 +204,7 @@ fn buildIroh(
     headers_step.dependOn(&gen_headers.step);
 
     return .{
-        .lib_path = lib_path,
-        .target = target,
+        .module = iroh_mod,
         .step = &cargo_build.step,
     };
 }
@@ -156,38 +213,29 @@ fn buildCore(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
-    plutovg_lib: *std.Build.Step.Compile,
+    plutovg_mod: *std.Build.Module,
+    graphviz_mod: *std.Build.Module,
     sqlite_mod: *std.Build.Module,
     known_folders_mod: *std.Build.Module,
     uuid_mod: *std.Build.Module,
-    iroh: Iroh,
+    iroh_mod: *std.Build.Module,
+    c_mod: *std.Build.Module,
 ) *std.Build.Module {
-    const core_c = b.addTranslateC(.{
-        .root_source_file = b.path("src/core/c.h"),
-        .target = target,
-        .optimize = optimize,
-    });
-    core_c.addIncludePath(b.path("vendor/plutovg/include"));
-    core_c.addIncludePath(b.path("vendor/iroh-c-ffi"));
-    core_c.step.dependOn(iroh.step);
-
     const core_mod = b.addModule("core", .{
         .root_source_file = b.path("src/core/root.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
         .imports = &.{
-            .{ .name = "c", .module = core_c.createModule() },
+            .{ .name = "c", .module = c_mod },
+            .{ .name = "plutovg", .module = plutovg_mod },
+            .{ .name = "graphviz", .module = graphviz_mod },
             .{ .name = "sqlite", .module = sqlite_mod },
             .{ .name = "known-folders", .module = known_folders_mod },
             .{ .name = "uuid", .module = uuid_mod },
+            .{ .name = "iroh", .module = iroh_mod },
         },
     });
-
-    core_mod.linkSystemLibrary("cgraph", .{});
-    core_mod.linkSystemLibrary("gvc", .{});
-    core_mod.linkLibrary(plutovg_lib);
-    iroh.link(core_mod);
 
     return core_mod;
 }

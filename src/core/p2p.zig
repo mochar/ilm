@@ -1,27 +1,27 @@
 const std = @import("std");
-const c = @import("c");
+const iroh = @import("iroh").c;
 
 /// 32-byte secret key.
 pub const SecretKey = struct {
-    ptr: *c.SecretKey_t,
+    ptr: *iroh.SecretKey_t,
 
     pub fn generate() SecretKey {
-        return .{ .ptr = c.secret_key_generate() orelse @panic("failed to generate secret key") };
+        return .{ .ptr = iroh.secret_key_generate() orelse @panic("failed to generate secret key") };
     }
 
     pub fn deinit(self: *const SecretKey) void {
-        c.secret_key_free(self.ptr);
+        iroh.secret_key_free(self.ptr);
     }
 
     /// Derives the corresponding public key.
     pub fn public(self: *const SecretKey) PublicKey {
-        return .{ .raw = c.secret_key_public(self.ptr) };
+        return .{ .raw = iroh.secret_key_public(self.ptr) };
     }
 
     /// Returns the 64-character hex-encoded string representation
     pub fn asHex(self: *const SecretKey) [64]u8 {
-        const c_str = c.secret_key_as_base32(self.ptr) orelse @panic("secret_key_as_base32 returned null");
-        defer c.rust_free_string(c_str);
+        const c_str = iroh.secret_key_as_base32(self.ptr) orelse @panic("secret_key_as_base32 returned null");
+        defer iroh.rust_free_string(c_str);
 
         const slice = std.mem.span(c_str);
         var result: [64]u8 = undefined;
@@ -31,15 +31,15 @@ pub const SecretKey = struct {
 
     /// Allocates and returns a hex-encoded string.
     pub fn toHexAlloc(self: *const SecretKey, allocator: std.mem.Allocator) ![]u8 {
-        const c_str = c.secret_key_as_base32(self.ptr) orelse return error.OutOfMemory;
-        defer c.rust_free_string(c_str);
+        const c_str = iroh.secret_key_as_base32(self.ptr) orelse return error.OutOfMemory;
+        defer iroh.rust_free_string(c_str);
         return allocator.dupe(u8, std.mem.span(c_str));
     }
 };
 
 /// 32-byte public key / NodeId.
 pub const PublicKey = struct {
-    raw: c.PublicKey_t,
+    raw: iroh.PublicKey_t,
 
     /// Returns the raw 32-byte public key array.
     pub fn bytes(self: *const PublicKey) *const [32]u8 {
@@ -48,8 +48,8 @@ pub const PublicKey = struct {
 
     /// Allocates and returns the base32 string representation.
     pub fn toBase32(self: *const PublicKey, allocator: std.mem.Allocator) ![]u8 {
-        const c_str = c.public_key_as_base32(&self.raw) orelse return error.OutOfMemory;
-        defer c.rust_free_string(c_str);
+        const c_str = iroh.public_key_as_base32(&self.raw) orelse return error.OutOfMemory;
+        defer iroh.rust_free_string(c_str);
         return allocator.dupe(u8, std.mem.span(c_str));
     }
 };
