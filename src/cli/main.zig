@@ -18,9 +18,9 @@ pub fn main(init: std.process.Init) !void {
     _ = try stdout_writer.interface.write("> ");
     try stdout_writer.flush();
 
-    const secret_key = ilm.p2p.SecretKey.generate();
+    const secret_key = ilm.p2p.iroh.SecretKey.generate();
     defer secret_key.deinit();
-    std.log.info("Secret key hex:  {s}", .{secret_key.asHex()});
+    std.log.info("Secret key hex: {s}", .{secret_key.asHex()});
 
     while (try stdin_reader.interface.takeDelimiter('\n')) |input| {
         _ = input;
