@@ -1,7 +1,6 @@
-//! Wrapper for the Graphviz library
 const std = @import("std");
 const c = @import("c");
-const assets = @import("assets");
+const plutovg = @import("plutovg");
 const Graph = @This();
 
 /// Resolution of graph in pixels per inch. Explanation:
@@ -251,9 +250,9 @@ pub const RendererOptions = struct {
     /// Viewport height in pixels. If 0, uses buffer_height.
     view_height: u32 = 0,
     /// Buffer stride in pixels
-    buffer_stride: usize,
+    buffer_stride: u32,
     /// Number of rows in the buffer
-    buffer_height: usize,
+    buffer_height: u32,
     /// ARGB32 pixel buffer. If null, buffer allocation is managed internally.
     buffer: ?[]u8 = null,
     camera: Camera = .{},
@@ -271,6 +270,7 @@ pub const Renderer = struct {
     hovered: ?Node = null,
     highlighted: std.AutoHashMap(u128, void),
     state: State = .{},
+    canvas: plutovg.Canvas,
     /// ARGB32 pixel buffer.
     buffer: []u8,
     /// Buffer stride in pixels
@@ -284,11 +284,6 @@ pub const Renderer = struct {
     camera: Camera,
     /// If true, buffer allocation is managed internally.
     managed: bool,
-
-    // Load the font and keep it in memory forever. Since it will be reused
-    // there is no need to deallocate.
-    const font_data = assets.fonts.dejavu_sans;
-    var plutovg_font: ?*c.plutovg_font_face_t = null;
 
     pub fn init(options: RendererOptions) !Renderer {
         const gpa = options.gpa;
@@ -305,18 +300,6 @@ pub const Renderer = struct {
             @memset(buffer, 0);
         }
 
-        if (plutovg_font == null) {
-            if (c.plutovg_font_face_load_from_data(
-                font_data.ptr,
-                font_data.len,
-                0, // ttcindex (0 for standard .ttf)
-                null, // destroy_func (null because memory is static)
-                null, // closure
-            )) |font| {
-                plutovg_font = font;
-            } else std.log.warn("Graph renderer font not loaded", .{});
-        }
-
         const view_w: u32 = if (options.view_width > 0)
             @min(options.view_width, @as(u32, @intCast(stride)))
         else
@@ -331,6 +314,8 @@ pub const Renderer = struct {
             graph.setRatio(@as(f32, @floatFromInt(view_h)) / @as(f32, @floatFromInt(view_w)));
         }
 
+        const canvas = try plutovg.Canvas.initForData(buffer.ptr, view_w, view_h, stride);
+
         return .{
             .gpa = gpa,
             .graph = graph,
@@ -341,6 +326,7 @@ pub const Renderer = struct {
             .height = height,
             .view_width = view_w,
             .view_height = view_h,
+            .canvas = canvas,
             .camera = options.camera,
             .managed = options.buffer == null,
         };
@@ -352,6 +338,7 @@ pub const Renderer = struct {
         if (self.managed) {
             self.gpa.free(self.buffer);
         }
+        self.canvas.deinit();
     }
 
     pub fn clear(self: *Renderer) void {
@@ -540,39 +527,28 @@ pub const Renderer = struct {
 
     /// Render the graph in the pixel buffer using current camera transformation.
     pub fn render(self: *Renderer) !void {
-        const buffer = self.buffer;
         const graph = &self.graph;
+        const canvas = &self.canvas;
 
         const render_w = self.view_width;
         const render_h = self.view_height;
 
-        const surface = c.plutovg_surface_create_for_data(
-            buffer.ptr,
-            @intCast(render_w),
-            @intCast(render_h),
-            @intCast(self.stride * 4),
-        ) orelse return error.SurfaceFailed;
-        defer c.plutovg_surface_destroy(surface);
-
-        const canvas = c.plutovg_canvas_create(surface) orelse return error.CanvasFailed;
-        defer c.plutovg_canvas_destroy(canvas);
-
         // Clear background (dark theme background)
-        c.plutovg_canvas_save(canvas);
-        defer c.plutovg_canvas_restore(canvas);
+        canvas.save();
+        defer canvas.restore();
 
-        c.plutovg_canvas_set_rgba(canvas, 0.12, 0.12, 0.15, 1.0);
-        c.plutovg_canvas_set_operator(canvas, c.PLUTOVG_OPERATOR_SRC);
-        c.plutovg_canvas_paint(canvas);
-        c.plutovg_canvas_set_operator(canvas, c.PLUTOVG_OPERATOR_SRC_OVER);
+        canvas.setRGBA(0.12, 0.12, 0.15, 1.0);
+        canvas.setOperator(.src);
+        canvas.paint();
+        canvas.setOperator(.src_over);
 
         // Apply camera transformation:
         // Viewport center -> zoom & flip Y (Graphviz Y-up -> PlutoVG Y-down) -> camera center
         const vw: f32 = @floatFromInt(render_w);
         const vh: f32 = @floatFromInt(render_h);
-        c.plutovg_canvas_translate(canvas, vw / 2.0, vh / 2.0);
-        c.plutovg_canvas_scale(canvas, self.camera.zoom, -self.camera.zoom);
-        c.plutovg_canvas_translate(canvas, -self.camera.center_x, -self.camera.center_y);
+        canvas.translate(vw / 2.0, vh / 2.0);
+        canvas.scale(self.camera.zoom, -self.camera.zoom);
+        canvas.translate(-self.camera.center_x, -self.camera.center_y);
 
         // Draw edge splines and arrowheads
         var maybe_node = c.agfstnode(graph.g);
@@ -593,63 +569,40 @@ pub const Renderer = struct {
             const h: f32 = @floatCast(node_info.height * 72.0 * 0.5);
 
             // Draw node body
-            c.plutovg_canvas_circle(canvas, cx, cy, h / 2);
+            canvas.circle(cx, cy, h / 2);
             if (self.highlighted.contains(node_id)) {
-                c.plutovg_canvas_set_rgba(canvas, 0.8, 0.85, 1.0, 1.0);
+                canvas.setRGBA(0.8, 0.85, 1.0, 1.0);
             } else if (self.hovered != null and self.hovered.?.cnode == node) {
-                c.plutovg_canvas_set_rgba(canvas, 0.3, 0.3, 0.0, 1.0);
+                canvas.setRGBA(0.3, 0.3, 0.0, 1.0);
             } else {
-                c.plutovg_canvas_set_rgba(canvas, 0.0, 0.0, 0.0, 0.0);
+                canvas.setRGBA(0.0, 0.0, 0.0, 0.0);
             }
-            c.plutovg_canvas_fill_preserve(canvas);
+            canvas.fillPreserve();
 
             // Draw node border
-            c.plutovg_canvas_set_rgba(canvas, 0.8, 0.85, 1.0, 1.0);
-            c.plutovg_canvas_set_line_width(canvas, 1.5);
-            c.plutovg_canvas_stroke(canvas);
+            canvas.setRGBA(0.8, 0.85, 1.0, 1.0);
+            canvas.setLineWidth(1.5);
+            canvas.stroke();
 
             // Label
             const label: []const u8 = std.mem.span(node_info.label.*.text);
+            const font_size: f32 = 12.0;
 
-            if (plutovg_font) |font| {
-                c.plutovg_canvas_save(canvas);
+            if (plutovg.plutovg_font != null) {
+                canvas.save();
+                
                 // Translate to node center and flip Y back to right-side up
-                c.plutovg_canvas_translate(canvas, cx, cy - h / 3);
-                c.plutovg_canvas_scale(canvas, 1.0, -1.0);
+                canvas.translate(cx, cy - h / 3);
+                canvas.scale(1.0, -1.0);
 
-                const font_size: f32 = 12.0;
-                c.plutovg_canvas_set_font(canvas, font, font_size);
-
-                var extents: c.plutovg_rect_t = undefined;
-                const adv = c.plutovg_font_face_text_extents(
-                    font,
-                    font_size,
-                    label.ptr,
-                    @intCast(label.len),
-                    c.PLUTOVG_TEXT_ENCODING_UTF8,
-                    &extents,
-                );
-
-                // Center horizontally and vertically
-                const tx_label = -adv / 2.0;
-                const ty_label = extents.h / 2.0;
-
-                c.plutovg_canvas_set_rgba(canvas, 1.0, 1.0, 1.0, 1.0);
-                _ = c.plutovg_canvas_fill_text(
-                    canvas,
-                    label.ptr,
-                    @intCast(label.len),
-                    c.PLUTOVG_TEXT_ENCODING_UTF8,
-                    tx_label,
-                    ty_label,
-                );
-                c.plutovg_canvas_restore(canvas);
+                canvas.drawText(label, font_size);
+                canvas.restore();
             }
         }
     }
 
     /// Render graphviz edge's Bezier splines and arrowheads
-    fn drawEdgeSpline(canvas: *c.plutovg_canvas_t, edge: *c.struct_Agedge_s) !void {
+    fn drawEdgeSpline(canvas: *const plutovg.Canvas, edge: *c.struct_Agedge_s) !void {
         // Each bezier structure has a list field pointing to an array containing
         // the control points and a size field giving the number of points in list,
         // which will always have the form (3 ∗ n + 1).
@@ -679,14 +632,13 @@ pub const Renderer = struct {
             const num_ctrl_points: usize = @intCast(bezier.size); // always (3 * n + 1)
             const ctrl_points = bezier.list;
 
-            c.plutovg_canvas_set_rgba(canvas, 0.7, 0.75, 0.85, 0.9);
-            c.plutovg_canvas_set_line_width(canvas, 2.0);
-            c.plutovg_canvas_move_to(canvas, @floatCast(ctrl_points[0].x), @floatCast(ctrl_points[0].y));
+            canvas.setRGBA(0.7, 0.75, 0.85, 0.9);
+            canvas.setLineWidth(2.0);
+            canvas.moveTo(@floatCast(ctrl_points[0].x), @floatCast(ctrl_points[0].y));
 
             var i: usize = 1;
             while (i + 2 < num_ctrl_points) : (i += 3) {
-                c.plutovg_canvas_cubic_to(
-                    canvas,
+                canvas.cubicTo(
                     @floatCast(ctrl_points[i].x),
                     @floatCast(ctrl_points[i].y),
                     @floatCast(ctrl_points[i + 1].x),
@@ -695,11 +647,11 @@ pub const Renderer = struct {
                     @floatCast(ctrl_points[i + 2].y),
                 );
             }
-            c.plutovg_canvas_stroke(canvas);
+            canvas.stroke();
 
             // Draw end arrowhead
             if (bezier.eflag == 1) {
-                c.plutovg_canvas_set_rgba(canvas, 0.7, 0.75, 0.85, 0.9);
+                canvas.setRGBA(0.7, 0.75, 0.85, 0.9);
                 drawArrow(
                     canvas,
                     @floatCast(ctrl_points[num_ctrl_points - 1].x),
@@ -712,7 +664,7 @@ pub const Renderer = struct {
 
             // Draw start arrowhead (if bi-directional)
             if (bezier.sflag == 1) {
-                c.plutovg_canvas_set_rgba(canvas, 0.7, 0.75, 0.85, 0.9);
+                canvas.setRGBA(0.7, 0.75, 0.85, 0.9);
                 drawArrow(
                     canvas,
                     @floatCast(ctrl_points[0].x),
@@ -726,7 +678,7 @@ pub const Renderer = struct {
     }
 
     /// Draw a solid triangular arrowhead
-    fn drawArrow(canvas: *c.plutovg_canvas_t, from_x: f32, from_y: f32, to_x: f32, to_y: f32, size: f32) void {
+    fn drawArrow(canvas: *const plutovg.Canvas, from_x: f32, from_y: f32, to_x: f32, to_y: f32, size: f32) void {
         // TODO: The actual shape and width of the arrowhead is determined by the
         // arrowtail and arrowsize attributes
         var dx = to_x - from_x;
@@ -742,12 +694,12 @@ pub const Renderer = struct {
         const base_x = to_x - dx * size;
         const base_y = to_y - dy * size;
         const half_w = size * 0.4;
-
-        c.plutovg_canvas_move_to(canvas, to_x, to_y);
-        c.plutovg_canvas_line_to(canvas, base_x + px * half_w, base_y + py * half_w);
-        c.plutovg_canvas_line_to(canvas, base_x - px * half_w, base_y - py * half_w);
-        c.plutovg_canvas_close_path(canvas);
-        c.plutovg_canvas_fill(canvas);
+        
+        canvas.moveTo(to_x, to_y);
+        canvas.lineTo(base_x + px * half_w, base_y + py * half_w);
+        canvas.lineTo(base_x - px * half_w, base_y - py * half_w);
+        canvas.closePath();
+        canvas.fill();
     }
 };
 
