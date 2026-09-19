@@ -81,7 +81,7 @@ fn buildAssets(
     target: Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
 ) *Build.Module {
-    // Dynamic assets can be loaded at runtime. 
+    // Dynamic assets can be loaded at runtime.
     const install_assets = b.addInstallDirectory(.{
         .source_dir = b.path("assets/dynamic/"),
         .install_dir = .bin,
@@ -771,14 +771,22 @@ fn buildGui(
     optimize: std.builtin.OptimizeMode,
     imports: []const Module.Import,
 ) *Build.Step {
-    const dvui_dep = b.dependency(
-        "dvui",
-        .{
+    const target_android = target.result.abi.isAndroid();
+    const android_include_path: std.Build.LazyPath = .{ .cwd_relative = "/home/mochar/Android/Sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include" };
+
+    const dvui_dep = if (target_android)
+        b.dependency("dvui", .{
             .target = target,
             .optimize = optimize,
             .backend = .sdl3,
-        },
-    );
+            .android_include_path = android_include_path,
+        })
+    else
+        b.dependency("dvui", .{
+            .target = target,
+            .optimize = optimize,
+            .backend = .sdl3,
+        });
 
     const gui_mod = b.createModule(.{
         .root_source_file = b.path("src/gui/main.zig"),
@@ -788,6 +796,14 @@ fn buildGui(
     });
     gui_mod.addImport("dvui", dvui_dep.module("dvui_sdl3"));
     gui_mod.addImport("sdl-backend", dvui_dep.module("sdl3")); // for zls
+
+    if (target_android) {
+        const gui_lib = b.addLibrary(.{
+            .name = "ilm-gui",
+            .root_module = gui_mod,
+        });
+        b.installArtifact(gui_lib);
+    }
 
     const gui_exe = b.addExecutable(.{
         .name = "ilm-gui",
