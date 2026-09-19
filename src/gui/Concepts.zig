@@ -5,7 +5,7 @@ const sqlite = @import("sqlite");
 const ilm = @import("ilm");
 const Core = ilm.Core;
 const Concept = ilm.concept.Concept;
-const Graph = ilm.Graph;
+const GraphRenderer = ilm.GraphRenderer;
 const Id = ilm.Id;
 const Self = @This();
 
@@ -17,7 +17,7 @@ arena: std.heap.ArenaAllocator,
 render_arena: std.heap.ArenaAllocator,
 concepts: []Concept = &.{},
 selected: ?*Concept = null,
-graph_renderer: Graph.Renderer,
+graph_renderer: GraphRenderer,
 graph_texture: dvui.Texture,
 rendered_width: u32 = 0,
 rendered_height: u32 = 0,
@@ -29,7 +29,7 @@ pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
     const render_arena = std.heap.ArenaAllocator.init(gpa);
     errdefer render_arena.deinit();
 
-    const graph_renderer = try Graph.Renderer.init(.{
+    const graph_renderer = try GraphRenderer.init(.{
         .gpa = gpa,
         .graph_options = .{},
         .buffer_stride = MAX_GRAPH_WIDTH,
@@ -171,7 +171,7 @@ fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void {
 
                 switch (me.action) {
                     .press => {
-                        const btn: ?Graph.MouseButton = switch (me.button) {
+                        const btn: ?GraphRenderer.MouseButton = switch (me.button) {
                             .left => .left,
                             .right => .right,
                             .middle => .middle,

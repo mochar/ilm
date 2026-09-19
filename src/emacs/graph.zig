@@ -2,7 +2,7 @@ const std = @import("std");
 const ilm = @import("ilm");
 const Core = ilm.Core;
 const Id = ilm.Id;
-const Graph = ilm.Graph;
+const GraphRenderer = ilm.GraphRenderer;
 const graphviz = @import("graphviz");
 const emacs = @import("emacs.zig");
 const Context = emacs.Context;
@@ -11,7 +11,7 @@ const sqlite = @import("sqlite");
 
 const c_allocator = std.heap.c_allocator;
 
-pub fn refreshGraph(ctx: *Context, gr: *Graph.Renderer, canvas_spec: EmacsValue) !void {
+pub fn refreshGraph(ctx: *Context, gr: *GraphRenderer, canvas_spec: EmacsValue) !void {
     gr.layout("neato") catch |err| return ctx.setError("Failed to layout graph: {t}", .{err});
     gr.fitToGraph();
     gr.render() catch |err| return ctx.setError("Failed to render graph: {t}", .{err});
@@ -46,12 +46,12 @@ pub const Funcs = struct {
         };
 
         // Create graph renderer in heap
-        const graph_renderer = c_allocator.create(Graph.Renderer) catch |err| {
+        const graph_renderer = c_allocator.create(GraphRenderer) catch |err| {
             ctx.setError("Failed to allocate Graph.Renderer: {t}", .{err});
             return err;
         };
         errdefer c_allocator.destroy(graph_renderer);
-        graph_renderer.* = Graph.Renderer.init(.{
+        graph_renderer.* = GraphRenderer.init(.{
             .gpa = core.gpa,
             .graph_options = .{},
             .view_width = view_width,
@@ -65,7 +65,7 @@ pub const Funcs = struct {
         };
 
         // Construct response: a plist
-        const graph_user_ptr = ctx.env.makeUserPtr(Graph.Renderer, graph_renderer);
+        const graph_user_ptr = ctx.env.makeUserPtr(GraphRenderer, graph_renderer);
         const args = [_]EmacsValue{
             ctx.env.intern(":graph-ptr"),
             graph_user_ptr,
@@ -81,7 +81,7 @@ pub const Funcs = struct {
 
     /// Resize visible viewport, refresh, and update the graph data with new width and height.
     pub fn resize(ctx: *Context, graph_data: EmacsValue, width: u32, height: u32) !void {
-        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *Graph.Renderer);
+        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *GraphRenderer);
         const canvas_spec = try ctx.env.plistGet(graph_data, "canvas", ctx.arena, EmacsValue);
         try gr.resize(width, height);
         try ctx.env.plistSet(graph_data, "width", gr.view_width);
@@ -91,7 +91,7 @@ pub const Funcs = struct {
 
     /// Update the graph to match the width and height of graph data.
     pub fn update(ctx: *Context, graph_data: EmacsValue) !void {
-        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *Graph.Renderer);
+        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *GraphRenderer);
 
         const view_width = try ctx.env.plistGet(graph_data, "width", ctx.arena, u32);
         const view_height = try ctx.env.plistGet(graph_data, "height", ctx.arena, u32);
@@ -106,7 +106,7 @@ pub const Funcs = struct {
     }
 
     pub fn mouseDown(ctx: *Context, graph_data: EmacsValue, x: f32, y: f32, button: u32) !void {
-        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *Graph.Renderer);
+        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *GraphRenderer);
         if (try gr.mouseDown(x, y, @enumFromInt(button))) {
             const canvas_spec = try ctx.env.plistGet(graph_data, "canvas", ctx.arena, EmacsValue);
             _ = try ctx.env.funcall1(ctx.env.intern("canvas-refresh"), canvas_spec);
@@ -115,7 +115,7 @@ pub const Funcs = struct {
     }
     
     pub fn mouseUp(ctx: *Context, graph_data: EmacsValue, x: f32, y: f32) !void {
-        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *Graph.Renderer);
+        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *GraphRenderer);
         if (try gr.mouseUp(x, y)) {
             const canvas_spec = try ctx.env.plistGet(graph_data, "canvas", ctx.arena, EmacsValue);
             _ = try ctx.env.funcall1(ctx.env.intern("canvas-refresh"), canvas_spec);
@@ -124,7 +124,7 @@ pub const Funcs = struct {
     }
     
     pub fn mouseMove(ctx: *Context, graph_data: EmacsValue, x: f32, y: f32) !void {
-        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *Graph.Renderer);
+        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *GraphRenderer);
         if (try gr.mouseMove(x, y)) {
             const canvas_spec = try ctx.env.plistGet(graph_data, "canvas", ctx.arena, EmacsValue);
             _ = try ctx.env.funcall1(ctx.env.intern("canvas-refresh"), canvas_spec);
@@ -133,7 +133,7 @@ pub const Funcs = struct {
     }
 
     pub fn mouseScroll(ctx: *Context, graph_data: EmacsValue, factor: f32) !void {
-        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *Graph.Renderer);
+        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *GraphRenderer);
         try gr.mouseScroll(factor);
         const canvas_spec = try ctx.env.plistGet(graph_data, "canvas", ctx.arena, EmacsValue);
         _ = try ctx.env.funcall1(ctx.env.intern("canvas-refresh"), canvas_spec);
@@ -141,7 +141,7 @@ pub const Funcs = struct {
 
     /// Pan the camera by screen delta (dx, dy).
     pub fn pan(ctx: *Context, graph_data: EmacsValue, dx: f32, dy: f32) !void {
-        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *Graph.Renderer);
+        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *GraphRenderer);
         const canvas_spec = try ctx.env.plistGet(graph_data, "canvas", ctx.arena, EmacsValue);
         try gr.pan(dx, dy);
         _ = try ctx.env.funcall1(ctx.env.intern("canvas-refresh"), canvas_spec);
@@ -150,7 +150,7 @@ pub const Funcs = struct {
     /// Zoom the camera by factor, centered at (focus_x, focus_y).
     /// If focus coordinates are negative, zoom is centered at current camera position.
     pub fn zoom(ctx: *Context, graph_data: EmacsValue, factor: f32, focus_x: f32, focus_y: f32) !void {
-        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *Graph.Renderer);
+        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *GraphRenderer);
         const canvas_spec = try ctx.env.plistGet(graph_data, "canvas", ctx.arena, EmacsValue);
         const fx: ?f32 = if (focus_x >= 0 and focus_y >= 0) focus_x else null;
         const fy: ?f32 = if (focus_x >= 0 and focus_y >= 0) focus_y else null;
@@ -160,7 +160,7 @@ pub const Funcs = struct {
 
     /// Fit camera to current graph's bounding box and refresh.
     pub fn fit(ctx: *Context, graph_data: EmacsValue) !void {
-        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *Graph.Renderer);
+        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *GraphRenderer);
         const canvas_spec = try ctx.env.plistGet(graph_data, "canvas", ctx.arena, EmacsValue);
         gr.fitToGraph();
         try gr.render();
@@ -169,7 +169,7 @@ pub const Funcs = struct {
 
     /// Query node id under screen coordinate (screen_x, screen_y).
     pub fn getNodeAt(ctx: *Context, graph_data: EmacsValue, screen_x: f32, screen_y: f32) !EmacsValue {
-        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *Graph.Renderer);
+        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *GraphRenderer);
         if (gr.getNodeAt(screen_x, screen_y)) |node| {
             const node_id = try node.getId();
             var buf: [33]u8 = undefined;

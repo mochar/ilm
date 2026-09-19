@@ -2,7 +2,7 @@ const std = @import("std");
 const ilm = @import("ilm");
 const Core = ilm.Core;
 const Id = ilm.Id;
-const Graph = ilm.Graph;
+const GraphRenderer = ilm.GraphRenderer;
 const Concept = ilm.concept.Concept;
 const ConceptAncestor = ilm.concept.ConceptAncestor;
 const sqlite = @import("sqlite");
@@ -91,7 +91,7 @@ pub const Funcs = struct {
     }
 
     pub fn setGraph(ctx: *Context, core: *Core, graph_data: EmacsValue, concept_id: Id) !void {
-        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *Graph.Renderer);
+        const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *GraphRenderer);
         const graph = &gr.graph;
         gr.clear();
 
