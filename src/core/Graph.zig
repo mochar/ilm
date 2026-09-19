@@ -1,6 +1,7 @@
 //! Wrapper for the Graphviz library
 const std = @import("std");
 const c = @import("c");
+const assets = @import("assets");
 const Graph = @This();
 
 /// Resolution of graph in pixels per inch. Explanation:
@@ -286,7 +287,7 @@ pub const Renderer = struct {
 
     // Load the font and keep it in memory forever. Since it will be reused
     // there is no need to deallocate.
-    const font_data = @embedFile("assets/DejaVuSans.ttf");
+    const font_data = assets.fonts.dejavu_sans;
     var plutovg_font: ?*c.plutovg_font_face_t = null;
 
     pub fn init(options: RendererOptions) !Renderer {

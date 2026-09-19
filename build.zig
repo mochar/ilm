@@ -20,6 +20,9 @@ pub fn build(b: *Build) void {
     const known_folders_mod = known_folders_dep.module("known-folders");
     const uuid_mod = uuid_dep.module("uuid");
 
+    // Assets module
+    const assets_mod = buildAssets(b, target, optimize);
+
     // Universal C bindings
     const c_bindings = b.addTranslateC(.{
         .root_source_file = b.path("src/c.h"),
@@ -29,7 +32,7 @@ pub fn build(b: *Build) void {
     const c_mod = c_bindings.createModule();
 
     // Specific Binding Modules
-    const plutovg_mod = buildPlutoVG(b, target, optimize, c_mod, c_bindings);
+    const plutovg_mod = buildPlutoVG(b, target, optimize, assets_mod, c_mod, c_bindings);
     const graphviz = buildGraphviz(b, target, optimize, c_mod, c_bindings);
     const iroh = buildIroh(b, target, optimize, c_mod, c_bindings);
 
@@ -40,6 +43,7 @@ pub fn build(b: *Build) void {
     // Core module
     const core_mod = buildCore(b, target, optimize, &.{
         .{ .name = "c", .module = c_mod },
+        .{ .name = "assets", .module = assets_mod },
         .{ .name = "plutovg", .module = plutovg_mod },
         .{ .name = "graphviz", .module = graphviz.module },
         .{ .name = "sqlite", .module = sqlite_mod },
@@ -71,10 +75,33 @@ pub fn build(b: *Build) void {
     test_step.dependOn(gui_test_step);
 }
 
+fn buildAssets(
+    b: *Build,
+    target: Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *Build.Module {
+    // Dynamic assets can be loaded at runtime. 
+    const install_assets = b.addInstallDirectory(.{
+        .source_dir = b.path("assets/dynamic/"),
+        .install_dir = .bin,
+        .install_subdir = "assets", // installed as zig-out/bin/assets/
+    });
+    b.getInstallStep().dependOn(&install_assets.step);
+
+    // Static assets module contains embedded assets.
+    const assets_mod = b.createModule(.{
+        .root_source_file = b.path("assets/assets.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    return assets_mod;
+}
+
 fn buildPlutoVG(
     b: *Build,
     target: Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
+    assets_mod: *Build.Module,
     c_mod: *Build.Module,
     c_bindings: *Build.Step.TranslateC,
 ) *Build.Module {
@@ -132,6 +159,7 @@ fn buildPlutoVG(
         .link_libc = true,
         .imports = &.{
             .{ .name = "c", .module = c_mod },
+            .{ .name = "assets", .module = assets_mod },
         },
     });
     plutovg_mod.linkLibrary(lib);
@@ -377,9 +405,9 @@ fn buildGraphviz(
     lib_mod.addCSourceFiles(.{
         .root = b.path("vendor/graphviz/lib/cdt"),
         .files = &.{
-            "dtclose.c", "dtdisc.c",   "dtextract.c", "dtflatten.c", "dthash.c",
-            "dtmethod.c", "dtopen.c",   "dtrenew.c",   "dtrestore.c", "dtsize.c",
-            "dtstat.c",   "dtstrhash.c", "dttree.c",   "dtview.c",    "dtwalk.c",
+            "dtclose.c",  "dtdisc.c",    "dtextract.c", "dtflatten.c", "dthash.c",
+            "dtmethod.c", "dtopen.c",    "dtrenew.c",   "dtrestore.c", "dtsize.c",
+            "dtstat.c",   "dtstrhash.c", "dttree.c",    "dtview.c",    "dtwalk.c",
         },
         .flags = c_flags,
     });
@@ -388,10 +416,10 @@ fn buildGraphviz(
     lib_mod.addCSourceFiles(.{
         .root = b.path("vendor/graphviz/lib/cgraph"),
         .files = &.{
-            "acyclic.c", "agerror.c", "apply.c", "attr.c", "edge.c",
-            "graph.c", "id.c", "imap.c", "ingraphs.c", "io.c",
-            "node.c", "node_induce.c", "obj.c", "rec.c", "refstr.c",
-            "subg.c", "tred.c", "unflatten.c", "utils.c", "write.c",
+            "acyclic.c", "agerror.c",     "apply.c",     "attr.c",     "edge.c",
+            "graph.c",   "id.c",          "imap.c",      "ingraphs.c", "io.c",
+            "node.c",    "node_induce.c", "obj.c",       "rec.c",      "refstr.c",
+            "subg.c",    "tred.c",        "unflatten.c", "utils.c",    "write.c",
         },
         .flags = c_flags,
     });
@@ -406,7 +434,7 @@ fn buildGraphviz(
         .root = b.path("vendor/graphviz/lib/util"),
         .files = &.{
             "arena.c", "base64.c", "gv_find_me.c", "gv_fopen.c",
-            "list.c", "random.c", "xml.c",
+            "list.c",  "random.c", "xml.c",
         },
         .flags = c_flags,
     });
@@ -415,8 +443,9 @@ fn buildGraphviz(
     lib_mod.addCSourceFiles(.{
         .root = b.path("vendor/graphviz/lib/pathplan"),
         .files = &.{
-            "cvt.c", "inpoly.c", "route.c", "shortest.c",
-            "shortestpth.c", "solvers.c", "triang.c", "util.c", "visibility.c",
+            "cvt.c",         "inpoly.c",  "route.c",  "shortest.c",
+            "shortestpth.c", "solvers.c", "triang.c", "util.c",
+            "visibility.c",
         },
         .flags = c_flags,
     });
@@ -431,7 +460,7 @@ fn buildGraphviz(
     // xdot
     lib_mod.addCSourceFiles(.{
         .root = b.path("vendor/graphviz/lib/xdot"),
-        .files = &.{ "xdot.c" },
+        .files = &.{"xdot.c"},
         .flags = c_flags,
     });
 
@@ -448,17 +477,17 @@ fn buildGraphviz(
     lib_mod.addCSourceFiles(.{
         .root = b.path("vendor/graphviz/lib/common"),
         .files = &.{
-            "args.c", "arrows.c", "colxlate.c", "ellipse.c", "emit.c",
-            "geom.c", "globals.c", "htmllex.c", "htmltable.c", "input.c",
-            "labels.c", "ns.c", "output.c", "pointset.c", "postproc.c",
-            "psusershape.c", "routespl.c", "shapes.c", "splines.c", "taper.c",
-            "textspan.c", "textspan_lut.c", "timing.c", "utils.c",
+            "args.c",        "arrows.c",       "colxlate.c", "ellipse.c",   "emit.c",
+            "geom.c",        "globals.c",      "htmllex.c",  "htmltable.c", "input.c",
+            "labels.c",      "ns.c",           "output.c",   "pointset.c",  "postproc.c",
+            "psusershape.c", "routespl.c",     "shapes.c",   "splines.c",   "taper.c",
+            "textspan.c",    "textspan_lut.c", "timing.c",   "utils.c",
         },
         .flags = c_flags,
     });
     lib_mod.addCSourceFiles(.{
         .root = b.path("vendor/graphviz/build/lib/common"),
-        .files = &.{ "htmlparse.c" },
+        .files = &.{"htmlparse.c"},
         .flags = c_flags,
     });
 
@@ -466,8 +495,8 @@ fn buildGraphviz(
     lib_mod.addCSourceFiles(.{
         .root = b.path("vendor/graphviz/lib/gvc"),
         .files = &.{
-            "gvc.c", "gvconfig.c", "gvcontext.c", "gvdevice.c", "gvevent.c",
-            "gvjobs.c", "gvlayout.c", "gvloadimage.c", "gvplugin.c", "gvrender.c",
+            "gvc.c",          "gvconfig.c",    "gvcontext.c",   "gvdevice.c", "gvevent.c",
+            "gvjobs.c",       "gvlayout.c",    "gvloadimage.c", "gvplugin.c", "gvrender.c",
             "gvtextlayout.c", "gvtool_tred.c", "gvusershape.c",
         },
         .flags = c_flags,
@@ -477,9 +506,10 @@ fn buildGraphviz(
     lib_mod.addCSourceFiles(.{
         .root = b.path("vendor/graphviz/lib/dotgen"),
         .files = &.{
-            "acyclic.c", "aspect.c", "class1.c", "class2.c", "cluster.c",
-            "compound.c", "conc.c", "decomp.c", "dotinit.c", "dotsplines.c",
-            "fastgr.c", "flat.c", "mincross.c", "position.c", "rank.c", "sameport.c",
+            "acyclic.c",  "aspect.c", "class1.c",   "class2.c",   "cluster.c",
+            "compound.c", "conc.c",   "decomp.c",   "dotinit.c",  "dotsplines.c",
+            "fastgr.c",   "flat.c",   "mincross.c", "position.c", "rank.c",
+            "sameport.c",
         },
         .flags = c_flags,
     });
@@ -488,14 +518,14 @@ fn buildGraphviz(
     lib_mod.addCSourceFiles(.{
         .root = b.path("vendor/graphviz/lib/neatogen"),
         .files = &.{
-            "adjust.c", "bfs.c", "call_tri.c", "circuit.c", "closest.c",
-            "compute_hierarchy.c", "conjgrad.c", "constrained_majorization.c", "constraint.c", "delaunay.c",
-            "dijkstra.c", "edges.c", "embed_graph.c", "geometry.c", "heap.c",
-            "hedges.c", "info.c", "kkutils.c", "legal.c", "lu.c",
-            "matinv.c", "matrix_ops.c", "multispline.c", "neatoinit.c", "neatosplines.c",
-            "opt_arrangement.c", "overlap.c", "pca.c", "poly.c", "quad_prog_solve.c",
-            "randomkit.c", "sgd.c", "site.c", "smart_ini_x.c", "solve.c",
-            "stress.c", "stuff.c", "voronoi.c",
+            "adjust.c",            "bfs.c",        "call_tri.c",                 "circuit.c",     "closest.c",
+            "compute_hierarchy.c", "conjgrad.c",   "constrained_majorization.c", "constraint.c",  "delaunay.c",
+            "dijkstra.c",          "edges.c",      "embed_graph.c",              "geometry.c",    "heap.c",
+            "hedges.c",            "info.c",       "kkutils.c",                  "legal.c",       "lu.c",
+            "matinv.c",            "matrix_ops.c", "multispline.c",              "neatoinit.c",   "neatosplines.c",
+            "opt_arrangement.c",   "overlap.c",    "pca.c",                      "poly.c",        "quad_prog_solve.c",
+            "randomkit.c",         "sgd.c",        "site.c",                     "smart_ini_x.c", "solve.c",
+            "stress.c",            "stuff.c",      "voronoi.c",
         },
         .flags = c_flags,
     });
@@ -503,13 +533,13 @@ fn buildGraphviz(
         .root = b.path("vendor/graphviz/lib/sparse"),
         .files = &.{
             "clustering.c", "color_palette.c", "colorutil.c", "DotIO.c",
-            "general.c", "mq.c", "QuadTree.c", "SparseMatrix.c",
+            "general.c",    "mq.c",            "QuadTree.c",  "SparseMatrix.c",
         },
         .flags = c_flags,
     });
     lib_mod.addCSourceFiles(.{
         .root = b.path("vendor/graphviz/lib/rbtree"),
-        .files = &.{ "red_black_tree.c" },
+        .files = &.{"red_black_tree.c"},
         .flags = c_flags,
     });
 
@@ -517,9 +547,9 @@ fn buildGraphviz(
     lib_mod.addCSourceFiles(.{
         .root = b.path("vendor/graphviz/plugin/core"),
         .files = &.{
-            "gvplugin_core.c", "gvrender_core_dot.c", "gvrender_core_fig.c", "gvrender_core_json.c",
+            "gvplugin_core.c",     "gvrender_core_dot.c", "gvrender_core_fig.c", "gvrender_core_json.c",
             "gvrender_core_map.c", "gvrender_core_pic.c", "gvrender_core_pov.c", "gvrender_core_ps.c",
-            "gvrender_core_svg.c", "gvrender_core_tk.c", "gvloadimage_core.c",
+            "gvrender_core_svg.c", "gvrender_core_tk.c",  "gvloadimage_core.c",
         },
         .flags = c_flags,
     });
