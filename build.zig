@@ -1,6 +1,13 @@
 const std = @import("std");
+const Build = std.Build;
+const Module = Build.Module;
 
-pub fn build(b: *std.Build) void {
+const BuildPart = struct {
+    module: *Build.Module,
+    step: *Build.Step,
+};
+
+pub fn build(b: *Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
@@ -15,7 +22,7 @@ pub fn build(b: *std.Build) void {
 
     // Universal C bindings
     const c_bindings = b.addTranslateC(.{
-        .root_source_file = b.path("src/bindings/c.h"),
+        .root_source_file = b.path("src/c.h"),
         .target = target,
         .optimize = optimize,
     });
@@ -23,19 +30,39 @@ pub fn build(b: *std.Build) void {
 
     // Specific Binding Modules
     const plutovg_mod = buildPlutoVG(b, target, optimize, c_mod, c_bindings);
-    const graphviz_mod = buildGraphviz(b, target, optimize, c_mod);
+    const graphviz = buildGraphviz(b, target, optimize, c_mod, c_bindings);
     const iroh = buildIroh(b, target, optimize, c_mod, c_bindings);
-    
+
     // Ensure cargo build runs before translate-c starts parsing
     c_bindings.step.dependOn(iroh.step);
+    c_bindings.step.dependOn(graphviz.step);
 
-    const core_mod = buildCore(b, target, optimize, plutovg_mod, graphviz_mod, sqlite_mod, known_folders_mod, uuid_mod, iroh.module, c_mod);
+    // Core module
+    const core_mod = buildCore(b, target, optimize, &.{
+        .{ .name = "c", .module = c_mod },
+        .{ .name = "plutovg", .module = plutovg_mod },
+        .{ .name = "graphviz", .module = graphviz.module },
+        .{ .name = "sqlite", .module = sqlite_mod },
+        .{ .name = "known-folders", .module = known_folders_mod },
+        .{ .name = "uuid", .module = uuid_mod },
+        .{ .name = "iroh", .module = iroh.module },
+    });
 
     // Targets & Steps
     const core_test_step = addCoreTests(b, core_mod);
-    const cli_test_step = buildCli(b, target, optimize, core_mod, known_folders_mod);
-    buildEmacs(b, target, optimize, core_mod, sqlite_mod);
-    const gui_test_step = buildGui(b, target, optimize, core_mod, sqlite_mod, known_folders_mod);
+    const cli_test_step = buildCli(b, target, optimize, &.{
+        .{ .name = "ilm", .module = core_mod },
+        .{ .name = "known-folders", .module = known_folders_mod },
+    });
+    buildEmacs(b, target, optimize, &.{
+        .{ .name = "ilm", .module = core_mod },
+        .{ .name = "sqlite", .module = sqlite_mod },
+    });
+    const gui_test_step = buildGui(b, target, optimize, &.{
+        .{ .name = "ilm", .module = core_mod },
+        .{ .name = "known-folders", .module = known_folders_mod },
+        .{ .name = "sqlite", .module = sqlite_mod },
+    });
 
     // Tests
     const test_step = b.step("test", "Run tests");
@@ -45,12 +72,12 @@ pub fn build(b: *std.Build) void {
 }
 
 fn buildPlutoVG(
-    b: *std.Build,
-    target: std.Build.ResolvedTarget,
+    b: *Build,
+    target: Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
-    c_mod: *std.Build.Module,
-    c_bindings: *std.Build.Step.TranslateC,
-) *std.Build.Module {
+    c_mod: *Build.Module,
+    c_bindings: *Build.Step.TranslateC,
+) *Build.Module {
     // Inject headers into the universal c_bindings translation
     c_bindings.addIncludePath(b.path("vendor/plutovg/include"));
 
@@ -113,11 +140,33 @@ fn buildPlutoVG(
 }
 
 fn buildGraphviz(
-    b: *std.Build,
-    target: std.Build.ResolvedTarget,
+    b: *Build,
+    target: Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
-    c_mod: *std.Build.Module,
-) *std.Build.Module {
+    c_mod: *Build.Module,
+    c_bindings: *Build.Step.TranslateC,
+) BuildPart {
+    const is_release = optimize != .Debug;
+
+    const cmake_cfg = b.addSystemCommand(&.{
+        "cmake", "-B", "vendor/graphviz/build", "-S", "vendor/graphviz",
+    });
+    if (is_release) {
+        cmake_cfg.addArgs(&.{"-DCMAKE_BUILD_TYPE=Release"});
+    }
+
+    const cmake_build = b.addSystemCommand(&.{ "cmake", "--build", "vendor/graphviz/build", "--parallel" });
+
+    // Only configure if CMakeCache.txt doesn't exist.
+    // cmake --build will automatically reconfigure if CMakeLists.txt changes.
+    std.Io.Dir.accessAbsolute(b.graph.io, b.pathFromRoot("vendor/graphviz/build/CMakeCache.txt"), .{}) catch {
+        cmake_build.step.dependOn(&cmake_cfg.step);
+    };
+
+    c_bindings.addIncludePath(b.path("vendor/graphviz/lib/cgraph"));
+    c_bindings.addIncludePath(b.path("vendor/graphviz/lib/gvc"));
+    c_bindings.addIncludePath(b.path("vendor/graphviz/build")); // For generated headers
+
     const graphviz_mod = b.createModule(.{
         .root_source_file = b.path("src/bindings/graphviz.zig"),
         .target = target,
@@ -127,32 +176,35 @@ fn buildGraphviz(
             .{ .name = "c", .module = c_mod },
         },
     });
+
+    graphviz_mod.addLibraryPath(b.path("vendor/graphviz/build/lib/cgraph"));
+    graphviz_mod.addLibraryPath(b.path("vendor/graphviz/build/lib/gvc"));
+    graphviz_mod.addLibraryPath(b.path("vendor/graphviz/build/lib/cdt"));
+
     graphviz_mod.linkSystemLibrary("cgraph", .{});
     graphviz_mod.linkSystemLibrary("gvc", .{});
-    return graphviz_mod;
+    graphviz_mod.linkSystemLibrary("cdt", .{});
+
+    return .{
+        .module = graphviz_mod,
+        .step = &cmake_build.step,
+    };
 }
 
-const Iroh = struct {
-    module: *std.Build.Module,
-    step: *std.Build.Step,
-};
-
 fn buildIroh(
-    b: *std.Build,
-    target: std.Build.ResolvedTarget,
+    b: *Build,
+    target: Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
-    c_mod: *std.Build.Module,
-    c_bindings: *std.Build.Step.TranslateC,
-) Iroh {
+    c_mod: *Build.Module,
+    c_bindings: *Build.Step.TranslateC,
+) BuildPart {
     // Inject headers into the universal c_bindings translation
     c_bindings.addIncludePath(b.path("vendor/iroh-c-ffi"));
 
     const is_release = optimize != .Debug;
     const rel_target = if (is_release) "release" else "debug";
 
-    const cargo_build = b.addSystemCommand(&.{
-        "cargo", "build", "--manifest-path", "vendor/iroh-c-ffi/Cargo.toml"
-    });
+    const cargo_build = b.addSystemCommand(&.{ "cargo", "build", "--manifest-path", "vendor/iroh-c-ffi/Cargo.toml" });
     if (is_release) {
         cargo_build.addArgs(&.{"--release"});
     }
@@ -210,37 +262,23 @@ fn buildIroh(
 }
 
 fn buildCore(
-    b: *std.Build,
-    target: std.Build.ResolvedTarget,
+    b: *Build,
+    target: Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
-    plutovg_mod: *std.Build.Module,
-    graphviz_mod: *std.Build.Module,
-    sqlite_mod: *std.Build.Module,
-    known_folders_mod: *std.Build.Module,
-    uuid_mod: *std.Build.Module,
-    iroh_mod: *std.Build.Module,
-    c_mod: *std.Build.Module,
-) *std.Build.Module {
+    imports: []const Module.Import,
+) *Module {
     const core_mod = b.addModule("core", .{
         .root_source_file = b.path("src/core/root.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
-        .imports = &.{
-            .{ .name = "c", .module = c_mod },
-            .{ .name = "plutovg", .module = plutovg_mod },
-            .{ .name = "graphviz", .module = graphviz_mod },
-            .{ .name = "sqlite", .module = sqlite_mod },
-            .{ .name = "known-folders", .module = known_folders_mod },
-            .{ .name = "uuid", .module = uuid_mod },
-            .{ .name = "iroh", .module = iroh_mod },
-        },
+        .imports = imports,
     });
 
     return core_mod;
 }
 
-fn addCoreTests(b: *std.Build, core_mod: *std.Build.Module) *std.Build.Step {
+fn addCoreTests(b: *Build, core_mod: *Build.Module) *Build.Step {
     const core_tests = b.addTest(.{
         .root_module = core_mod,
     });
@@ -249,22 +287,18 @@ fn addCoreTests(b: *std.Build, core_mod: *std.Build.Module) *std.Build.Step {
 }
 
 fn buildCli(
-    b: *std.Build,
-    target: std.Build.ResolvedTarget,
+    b: *Build,
+    target: Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
-    core_mod: *std.Build.Module,
-    known_folders_mod: *std.Build.Module,
-) *std.Build.Step {
+    imports: []const Module.Import,
+) *Build.Step {
     const cli_exe = b.addExecutable(.{
         .name = "ilm-cli",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/cli/main.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{
-                .{ .name = "ilm", .module = core_mod },
-                .{ .name = "known-folders", .module = known_folders_mod },
-            },
+            .imports = imports,
         }),
     });
     b.installArtifact(cli_exe);
@@ -285,11 +319,10 @@ fn buildCli(
 }
 
 fn buildEmacs(
-    b: *std.Build,
-    target: std.Build.ResolvedTarget,
+    b: *Build,
+    target: Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
-    core_mod: *std.Build.Module,
-    sqlite_mod: *std.Build.Module,
+    imports: []const Module.Import,
 ) void {
     const emacs_c = b.addTranslateC(.{
         .root_source_file = b.path("src/emacs/emacs-module.h"),
@@ -302,12 +335,9 @@ fn buildEmacs(
         .target = target,
         .optimize = optimize,
         .link_libc = true,
-        .imports = &.{
-            .{ .name = "ilm", .module = core_mod },
-            .{ .name = "sqlite", .module = sqlite_mod },
-            .{ .name = "emacs_c", .module = emacs_c.createModule() },
-        },
+        .imports = imports,
     });
+    emacs_mod.addImport("emacs_c", emacs_c.createModule());
 
     const emacs_lib = b.addLibrary(.{
         .linkage = .dynamic,
@@ -325,29 +355,32 @@ fn buildEmacs(
 }
 
 fn buildGui(
-    b: *std.Build,
-    target: std.Build.ResolvedTarget,
+    b: *Build,
+    target: Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
-    core_mod: *std.Build.Module,
-    sqlite_mod: *std.Build.Module,
-    known_folders_mod: *std.Build.Module,
-) *std.Build.Step {
-    const dvui_dep = b.dependency("dvui", .{ .target = target, .optimize = optimize, .backend = .sdl3 });
+    imports: []const Module.Import,
+) *Build.Step {
+    const dvui_dep = b.dependency(
+        "dvui",
+        .{
+            .target = target,
+            .optimize = optimize,
+            .backend = .sdl3,
+        },
+    );
+
+    const gui_mod = b.createModule(.{
+        .root_source_file = b.path("src/gui/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = imports,
+    });
+    gui_mod.addImport("dvui", dvui_dep.module("dvui_sdl3"));
+    gui_mod.addImport("sdl-backend", dvui_dep.module("sdl3")); // for zls
 
     const gui_exe = b.addExecutable(.{
         .name = "ilm-gui",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/gui/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "ilm", .module = core_mod },
-                .{ .name = "known-folders", .module = known_folders_mod },
-                .{ .name = "sqlite", .module = sqlite_mod },
-                .{ .name = "dvui", .module = dvui_dep.module("dvui_sdl3") },
-                .{ .name = "sdl-backend", .module = dvui_dep.module("sdl3") }, // for zls
-            },
-        }),
+        .root_module = gui_mod,
     });
     b.installArtifact(gui_exe);
 
