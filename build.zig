@@ -6,9 +6,10 @@
 //! @imported.
 //!
 //! When building for android (zig build -Dandroid), the modules are compiled to
-//! object and archive files, which are then copied over to the android project
+//! object and archive files and stored in the android project //!
 //! (/android). Gradle is then called to link to final native library and generate
-//! an APK.
+//! an APK. Because a native library is generated, we need to turn on PIC and
+//! turn off UBSan sanitizer.
 //! TODO Support linking by making libc file that points to Bionic
 //! Or just use: https://github.com/silbinarywolf/zig-android-sdk
 const std = @import("std");
@@ -938,6 +939,8 @@ fn injectDvuiAndroidHack(
     dvui_dep: *std.Build.Dependency,
 ) void {
     const dvui_mod = dvui_dep.module("dvui_sdl3");
+    dvui_mod.pic = true;
+    dvui_mod.sanitize_c = .off;
 
     // Fix standard stb_image bindings (needs NDK stdio.h, etc.)
     const dvui_c_mod = dvui_mod.import_table.get("dvui-c").?;
@@ -984,6 +987,8 @@ fn buildGuiAndroid(
         .target = target,
         .optimize = optimize,
         .imports = imports,
+        .pic = true,
+        .sanitize_c = .off,
     });
     gui_mod.addImport("dvui", dvui_dep.module("dvui_sdl3"));
     gui_mod.addImport("sdl-backend", dvui_dep.module("sdl3")); // for zls
