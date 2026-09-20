@@ -1,18 +1,41 @@
+//! Build system.
+//!
+//! For vendored C libraries (/vendor) we use TranslateC to make them available
+//! in one global "c" module (see src/c.h). In addition, each library has a small
+//! wrapper in /src/bindings, which also gets compiled into a module that can be
+//! @imported.
+//!
+//! When building for android (zig build -Dandroid), the modules are compiled to
+//! object and archive files, which are then copied over to the android project
+//! (/android). Gradle is then called to link to final native library and generate
+//! an APK.
+//! TODO Support linking by making libc file that points to Bionic
+//! Or just use: https://github.com/silbinarywolf/zig-android-sdk
 const std = @import("std");
 const Build = std.Build;
 const Module = Build.Module;
 
-const android_include_path: std.Build.LazyPath = .{ .cwd_relative = "/home/mochar/Android/Sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include" };
+// TODO Replace with looking for $ANDROID_HOME, with -Dandroid-home fallback option.
+const ANDROID_HOME = "/home/mochar/Android/Sdk";
+const ANDROID_NDK_HOME = ANDROID_HOME ++ "/ndk/28.2.13676358";
+const ANDROID_INCLUDE = ANDROID_NDK_HOME ++ "/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include";
+const android_include_path: std.Build.LazyPath = .{
+    .cwd_relative = ANDROID_INCLUDE,
+};
 
 const BuildPart = struct {
     module: *Build.Module,
     step: *Build.Step,
 };
 
+/// Points the compiler to the android NDK includes to build object files for android arch.
+/// No linking is done, this is handled by Gradle after giving it the object files.
+/// Mostly copied from DVUI build.zig.
 fn injectAndroidInclude(b: *Build, target: Build.ResolvedTarget, step_or_mod: anytype) void {
     if (!target.result.abi.isAndroid()) return;
 
-    // NDK requires an arch-specific include path alongside the generic one
+    // NDK requires an arch-specific include path alongside the generic one.
+    // Example: ../sysroot/usr/include/aarch64-linux-android/...
     const arch_specific_path = switch (target.result.cpu.arch) {
         .x86 => "i686-linux-android",
         .x86_64 => "x86_64-linux-android",
@@ -28,11 +51,6 @@ fn injectAndroidInclude(b: *Build, target: Build.ResolvedTarget, step_or_mod: an
     } else if (T == *std.Build.Step.TranslateC) {
         step_or_mod.addIncludePath(android_include_path.path(b, arch_specific_path));
         step_or_mod.addIncludePath(android_include_path);
-
-        // Clang's TranslateC parser crashes on Apple's _Nonnull attributes in Android NDK headers.
-        // We strip them out entirely to fix the parsing.
-        step_or_mod.defineCMacro("_Nonnull", "");
-        step_or_mod.defineCMacro("_Nullable", "");
     } else {
         @compileError("Unsupported type for injectAndroidInclude: " ++ @typeName(T));
     }
@@ -40,16 +58,20 @@ fn injectAndroidInclude(b: *Build, target: Build.ResolvedTarget, step_or_mod: an
 
 pub fn build(b: *Build) void {
     var target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
 
+    // When building for android, we compile the object files, copy them over to
+    // the android project, and make gradle link them to native libraries. This
+    // is what DVUI's android example does, though since we compile our own
+    // libraries, we need to create object files for them as well.
     if (b.option(bool, "android", "Set target to Android for GUI") orelse false) {
         target = b.resolveTargetQuery(.{
             .cpu_arch = .aarch64,
             .os_tag = .linux,
             .abi = .android,
         });
+        b.lib_dir = "./android/app/src/main/c/prebuilt/arm64-v8a/";
     }
-
-    const optimize = b.standardOptimizeOption(.{});
 
     // Dependencies
     const sqlite_dep = b.dependency("sqlite", .{ .target = target, .optimize = optimize });
@@ -97,7 +119,13 @@ pub fn build(b: *Build) void {
     });
 
     // Targets & Steps
-    if (!target.result.abi.isAndroid()) {
+    if (target.result.abi.isAndroid()) {
+        buildGuiAndroid(b, target, optimize, &.{
+            .{ .name = "ilm", .module = core_mod },
+            .{ .name = "known-folders", .module = known_folders_mod },
+            .{ .name = "sqlite", .module = sqlite_mod },
+        });
+    } else {
         const core_test_step = addCoreTests(b, core_mod);
         const cli_test_step = buildCli(b, target, optimize, &.{
             .{ .name = "ilm", .module = core_mod },
@@ -120,21 +148,18 @@ pub fn build(b: *Build) void {
             .{ .name = "sqlite", .module = sqlite_mod },
         });
         test_step.dependOn(gui_test_step);
-    } else {
-        buildGuiAndroid(b, target, optimize, &.{
-            .{ .name = "ilm", .module = core_mod },
-            .{ .name = "known-folders", .module = known_folders_mod },
-            .{ .name = "sqlite", .module = sqlite_mod },
-        });
     }
 }
 
+/// Compiles a module that holds static assets in memory (see
+/// assets/assets.zig), and copies over the dynamic assets folder.
 fn buildAssets(
     b: *Build,
     target: Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
 ) *Build.Module {
     // Dynamic assets can be loaded at runtime.
+    // TODO: For android, copy the dynamic assets to the android res folder.
     const install_assets = b.addInstallDirectory(.{
         .source_dir = b.path("assets/dynamic/"),
         .install_dir = .bin,
@@ -203,6 +228,7 @@ fn buildPlutoVG(
         }
     }
 
+    // Create the bindings module.
     const lib = b.addLibrary(.{
         .name = "plutovg",
         .linkage = .static,
@@ -220,6 +246,12 @@ fn buildPlutoVG(
         },
     });
     plutovg_mod.linkLibrary(lib);
+
+    // Build shared object for android.
+    if (target.result.abi.isAndroid()) {
+        const mod_lib = b.addLibrary(.{ .name = "ilm-plutovg", .root_module = plutovg_mod });
+        b.installArtifact(mod_lib);
+    }
 
     return plutovg_mod;
 }
@@ -632,6 +664,7 @@ fn buildGraphviz(
         }
     }
 
+    // Build bindings module.
     const lib = b.addLibrary(.{
         .name = "graphviz",
         .linkage = .static,
@@ -653,6 +686,14 @@ fn buildGraphviz(
     });
     graphviz_mod.linkLibrary(lib);
 
+    // Build shared object for android.
+    if (target.result.abi.isAndroid()) {
+        b.installArtifact(b.addLibrary(.{
+            .name = "ilm-graphviz",
+            .root_module = graphviz_mod,
+        }));
+    }
+
     return .{
         .module = graphviz_mod,
         .step = &lib.step,
@@ -673,13 +714,24 @@ fn buildIroh(
     const rel_target = if (is_release) "release" else "debug";
 
     const cargo_build = b.addSystemCommand(&.{ "cargo", "build", "--manifest-path", "vendor/iroh-c-ffi/Cargo.toml" });
+    if (target.result.abi.isAndroid()) {
+        cargo_build.addArgs(&.{ "--target", "aarch64-linux-android" });
+        cargo_build.setEnvironmentVariable("ANDROID_NDK_HOME", ANDROID_NDK_HOME);
+        cargo_build.setEnvironmentVariable("CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER", ANDROID_NDK_HOME ++ "/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang");
+        cargo_build.setEnvironmentVariable("CXX", ANDROID_NDK_HOME ++ "/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang++");
+        cargo_build.setEnvironmentVariable("CC", ANDROID_NDK_HOME ++ "/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang");
+        
+        cargo_build.addPathDir(ANDROID_NDK_HOME ++ "/toolchains/llvm/prebuilt/linux-x86_64/bin");
+    }
     if (is_release) {
         cargo_build.addArgs(&.{"--release"});
     }
     cargo_build.setEnvironmentVariable("CARGO_PROFILE_DEV_DEBUG", "0");
     cargo_build.has_side_effects = true;
 
-    const lib_dir = b.pathJoin(&.{ "vendor/iroh-c-ffi/target", rel_target });
+    const target_sub_dir = if (target.result.abi.isAndroid()) "aarch64-linux-android" else "";
+    const lib_dir = b.pathJoin(&.{ "vendor/iroh-c-ffi/target", target_sub_dir, rel_target });
+    const iroh_lib_path = b.path(b.pathJoin(&.{ lib_dir, "libiroh_c_ffi.a" }));
 
     const iroh_mod = b.createModule(.{
         .root_source_file = b.path("src/bindings/iroh.zig"),
@@ -690,8 +742,10 @@ fn buildIroh(
             .{ .name = "c", .module = c_mod },
         },
     });
-    iroh_mod.addObjectFile(b.path(b.pathJoin(&.{ lib_dir, "libiroh_c_ffi.a" })));
-
+    if (!target.result.abi.isAndroid()) {
+        iroh_mod.addObjectFile(iroh_lib_path);
+    }
+    
     switch (target.result.os.tag) {
         .linux => {
             iroh_mod.linkSystemLibrary("unwind", .{});
@@ -711,19 +765,26 @@ fn buildIroh(
         else => {},
     }
 
-    const gen_headers = b.addSystemCommand(&.{
+    const gen_cmd = b.addSystemCommand(&.{
         "cargo",
         "run",
     });
-    gen_headers.setCwd(b.path("vendor/iroh-c-ffi"));
-    gen_headers.addArgs(&.{
+    gen_cmd.setCwd(b.path("vendor/iroh-c-ffi"));
+    gen_cmd.addArgs(&.{
         "--features",
         "headers",
         "--bin",
         "generate_headers",
     });
     const headers_step = b.step("iroh-headers", "Generate C headers for iroh-c-ffi");
-    headers_step.dependOn(&gen_headers.step);
+    headers_step.dependOn(&gen_cmd.step);
+
+    if (target.result.abi.isAndroid()) {
+        // .lib tells Zig to install this into whatever b.lib_dir is set to
+        const install_iroh = b.addInstallFileWithDir(iroh_lib_path, .lib, "libiroh_c_ffi.a");
+        install_iroh.step.dependOn(&cargo_build.step); // wait for cargo build
+        b.getInstallStep().dependOn(&install_iroh.step);
+    }
 
     return .{
         .module = iroh_mod,
@@ -744,14 +805,11 @@ fn buildCore(
         .link_libc = true,
         .imports = imports,
     });
-
     return core_mod;
 }
 
 fn addCoreTests(b: *Build, core_mod: *Build.Module) *Build.Step {
-    const core_tests = b.addTest(.{
-        .root_module = core_mod,
-    });
+    const core_tests = b.addTest(.{ .root_module = core_mod });
     const run_core_tests = b.addRunArtifact(core_tests);
     return &run_core_tests.step;
 }
@@ -865,23 +923,32 @@ fn buildGui(
     return &run_gui_tests.step;
 }
 
-/// dvui's build script is intrinsically broken for Android on Zig 0.14+ because it uses hardcoded
-/// `b.addTranslateC` steps for its C bindings without exposing any way to pass Android NDK include
-/// paths, nor does it pass the fetched sdl3 artifact include tree to its sdl backend translator on Android.
+/// dvui's build script is intrinsically broken for Android on Zig 0.14+ because
+/// it uses hardcoded `b.addTranslateC` steps for its C bindings without
+/// exposing any way to pass Android NDK include paths, nor does it pass the
+/// fetched sdl3 artifact include tree to its sdl backend translator on Android.
 ///
-/// Instead of heavily patching the transient dependency inside zig-pkg/ or .zig-cache/, this function
-/// reaches into the dvui dependency's compiled module graph, unearths the hidden TranslateC steps via
-/// `@fieldParentPtr`, and injects the necessary include paths and Clang macro workarounds at configure time.
-fn injectDvuiAndroidHack(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, dvui_dep: *std.Build.Dependency) void {
+/// This function reaches into the dvui dependency's compiled module graph,
+/// unearths the hidden TranslateC steps via `@fieldParentPtr`, and injects the
+/// necessary include paths and Clang macro workarounds at configure time.
+fn injectDvuiAndroidHack(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    dvui_dep: *std.Build.Dependency,
+) void {
     const dvui_mod = dvui_dep.module("dvui_sdl3");
 
-    // 1. Fix standard stb_image bindings (needs NDK stdio.h, etc.)
+    // Fix standard stb_image bindings (needs NDK stdio.h, etc.)
     const dvui_c_mod = dvui_mod.import_table.get("dvui-c").?;
     const dvui_c_step = dvui_c_mod.root_source_file.?.generated.file.step;
     const dvui_tr = @as(*std.Build.Step.TranslateC, @fieldParentPtr("step", dvui_c_step));
     injectAndroidInclude(b, target, dvui_tr);
 
-    // 2. Fix SDL3 backend bindings (needs NDK headers AND the SDL3 package headers)
+    dvui_tr.defineCMacro("_Nonnull", "");
+    dvui_tr.defineCMacro("_Nullable", "");
+
+    // Fix SDL3 backend bindings (needs NDK headers AND the SDL3 package headers)
     const sdl3_dep = dvui_dep.builder.lazyDependency("sdl3", .{ .target = target, .optimize = optimize });
     const sdl3_include = sdl3_dep.?.artifact("SDL3").getEmittedIncludeTree();
 
@@ -890,10 +957,15 @@ fn injectDvuiAndroidHack(b: *std.Build, target: std.Build.ResolvedTarget, optimi
     const sdl3_c_step = sdl3_c_mod.root_source_file.?.generated.file.step;
     const sdl3_tr = @as(*std.Build.Step.TranslateC, @fieldParentPtr("step", sdl3_c_step));
 
+    sdl3_tr.defineCMacro("_Nonnull", "");
+    sdl3_tr.defineCMacro("_Nullable", "");
+
     injectAndroidInclude(b, target, sdl3_tr);
     sdl3_tr.addIncludePath(sdl3_include);
 }
 
+/// Build the DVUI frontend for android.
+/// This only creates the object file.
 fn buildGuiAndroid(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -920,12 +992,6 @@ fn buildGuiAndroid(
         .name = "ilm-gui",
         .root_module = gui_mod,
     });
-
     injectDvuiAndroidHack(b, target, optimize, dvui_dep);
-
     b.installArtifact(gui_lib);
-
-    const gui_android_step = b.step("gui-android", "Build GUI library for Android");
-    gui_android_step.dependOn(&b.addInstallArtifact(gui_lib, .{}).step);
-    b.default_step = gui_android_step;
 }

@@ -45,8 +45,8 @@
             .hash = "uuid-0.5.0-oOieIRSbAACFMLvr97X_oGqnr91fdthOrxzHaRI28bhJ",
         },
         .dvui = .{
-            .url = "git+https://github.com/david-vanderson/dvui?ref=main#7b6f5f959e0ba8c8538d0f72ee432c698d2e95be",
-            .hash = "dvui-0.5.0-dev-AQFJmcRcAwFsKsTXaf0DH8vwZNoqsJ4a7qb030OPsDoH",
+            .url = "git+https://github.com/david-vanderson/dvui?ref=main#e5718eb8ecf5babc5311d7494f1cb2de1457ac2f",
+            .hash = "dvui-0.5.0-dev-AQFJmXOKAwHIwYXUv3KNj6Q3hqJUb3v5gLfdhQDXriru",
         },
     },
     .paths = .{
