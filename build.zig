@@ -7,12 +7,37 @@ const BuildPart = struct {
     step: *Build.Step,
 };
 
+fn injectAndroidInclude(b: *Build, target: Build.ResolvedTarget, mod: *Build.Module) void {
+    if (!target.result.abi.isAndroid()) return;
+    const arch_specific_path = switch (target.result.cpu.arch) {
+        .x86 => "i686-linux-android",
+        .x86_64 => "x86_64-linux-android",
+        .arm => "arm-linux-androideabi",
+        .aarch64 => "aarch64-linux-android",
+        else => @panic("Unknown Android arch"),
+    };
+    const include_path: std.Build.LazyPath = .{ .cwd_relative = "/home/mochar/Android/Sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include" };
+    mod.addSystemIncludePath(include_path.path(b, arch_specific_path));
+    mod.addSystemIncludePath(include_path);
+}
+
 pub fn build(b: *Build) void {
-    const target = b.standardTargetOptions(.{});
+    var target = b.standardTargetOptions(.{});
+    
+    if (b.option(bool, "android", "Buil GUI for Android") orelse false) {
+        target = b.resolveTargetQuery(.{
+            .cpu_arch = .aarch64,
+            .os_tag = .linux,
+            .abi = .android,
+        });
+    }
     const optimize = b.standardOptimizeOption(.{});
 
     // Dependencies
     const sqlite_dep = b.dependency("sqlite", .{ .target = target, .optimize = optimize });
+    if (target.result.abi.isAndroid()) {
+        injectAndroidInclude(b, target, sqlite_dep.artifact("sqlite").root_module);
+    }
     const known_folders_dep = b.dependency("known_folders", .{ .target = target, .optimize = optimize });
     const uuid_dep = b.dependency("uuid", .{ .target = target, .optimize = optimize });
 
@@ -29,6 +54,18 @@ pub fn build(b: *Build) void {
         .target = target,
         .optimize = optimize,
     });
+    if (target.result.abi.isAndroid()) {
+        const arch_specific_path = switch (target.result.cpu.arch) {
+            .x86 => "i686-linux-android",
+            .x86_64 => "x86_64-linux-android",
+            .arm => "arm-linux-androideabi",
+            .aarch64 => "aarch64-linux-android",
+            else => @panic("Unknown Android arch"),
+        };
+        const include_path: std.Build.LazyPath = .{ .cwd_relative = "/home/mochar/Android/Sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include" };
+        c_bindings.addIncludePath(include_path.path(b, arch_specific_path));
+        c_bindings.addIncludePath(include_path);
+    }
     const c_mod = c_bindings.createModule();
 
     // Specific Binding Modules
@@ -53,27 +90,36 @@ pub fn build(b: *Build) void {
     });
 
     // Targets & Steps
-    const core_test_step = addCoreTests(b, core_mod);
-    const cli_test_step = buildCli(b, target, optimize, &.{
-        .{ .name = "ilm", .module = core_mod },
-        .{ .name = "known-folders", .module = known_folders_mod },
-    });
-    buildEmacs(b, target, optimize, &.{
-        .{ .name = "ilm", .module = core_mod },
-        .{ .name = "sqlite", .module = sqlite_mod },
-        .{ .name = "graphviz", .module = graphviz.module },
-    });
-    const gui_test_step = buildGui(b, target, optimize, &.{
-        .{ .name = "ilm", .module = core_mod },
-        .{ .name = "known-folders", .module = known_folders_mod },
-        .{ .name = "sqlite", .module = sqlite_mod },
-    });
+    if (!target.result.abi.isAndroid()) {
+        const core_test_step = addCoreTests(b, core_mod);
+        const cli_test_step = buildCli(b, target, optimize, &.{
+            .{ .name = "ilm", .module = core_mod },
+            .{ .name = "known-folders", .module = known_folders_mod },
+        });
+        buildEmacs(b, target, optimize, &.{
+            .{ .name = "ilm", .module = core_mod },
+            .{ .name = "sqlite", .module = sqlite_mod },
+            .{ .name = "graphviz", .module = graphviz.module },
+        });
 
-    // Tests
-    const test_step = b.step("test", "Run tests");
-    test_step.dependOn(core_test_step);
-    test_step.dependOn(cli_test_step);
-    test_step.dependOn(gui_test_step);
+        // Tests
+        const test_step = b.step("test", "Run tests");
+        test_step.dependOn(core_test_step);
+        test_step.dependOn(cli_test_step);
+
+        const gui_test_step = buildGui(b, target, optimize, &.{
+            .{ .name = "ilm", .module = core_mod },
+            .{ .name = "known-folders", .module = known_folders_mod },
+            .{ .name = "sqlite", .module = sqlite_mod },
+        });
+        test_step.dependOn(gui_test_step);
+    } else {
+        buildGuiAndroid(b, target, optimize, &.{
+            .{ .name = "ilm", .module = core_mod },
+            .{ .name = "known-folders", .module = known_folders_mod },
+            .{ .name = "sqlite", .module = sqlite_mod },
+        });
+    }
 }
 
 fn buildAssets(
@@ -114,6 +160,7 @@ fn buildPlutoVG(
         .target = target,
         .optimize = optimize,
     });
+    injectAndroidInclude(b, target, lib_mod);
     lib_mod.addIncludePath(b.path("vendor/plutovg/include"));
     lib_mod.addIncludePath(b.path("vendor/plutovg/source"));
     lib_mod.addCSourceFiles(.{
@@ -359,6 +406,7 @@ fn buildGraphviz(
         .target = target,
         .optimize = optimize,
     });
+    injectAndroidInclude(b, target, lib_mod);
 
     lib_mod.addIncludePath(inc_files.getDirectory());
     lib_mod.addIncludePath(b.path("vendor/graphviz/lib"));
@@ -771,22 +819,11 @@ fn buildGui(
     optimize: std.builtin.OptimizeMode,
     imports: []const Module.Import,
 ) *Build.Step {
-    const target_android = target.result.abi.isAndroid();
-    const android_include_path: std.Build.LazyPath = .{ .cwd_relative = "/home/mochar/Android/Sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include" };
-
-    const dvui_dep = if (target_android)
-        b.dependency("dvui", .{
-            .target = target,
-            .optimize = optimize,
-            .backend = .sdl3,
-            .android_include_path = android_include_path,
-        })
-    else
-        b.dependency("dvui", .{
-            .target = target,
-            .optimize = optimize,
-            .backend = .sdl3,
-        });
+    const dvui_dep = b.dependency("dvui", .{
+        .target = target,
+        .optimize = optimize,
+        .backend = .sdl3,
+    });
 
     const gui_mod = b.createModule(.{
         .root_source_file = b.path("src/gui/main.zig"),
@@ -796,14 +833,6 @@ fn buildGui(
     });
     gui_mod.addImport("dvui", dvui_dep.module("dvui_sdl3"));
     gui_mod.addImport("sdl-backend", dvui_dep.module("sdl3")); // for zls
-
-    if (target_android) {
-        const gui_lib = b.addLibrary(.{
-            .name = "ilm-gui",
-            .root_module = gui_mod,
-        });
-        b.installArtifact(gui_lib);
-    }
 
     const gui_exe = b.addExecutable(.{
         .name = "ilm-gui",
@@ -825,3 +854,39 @@ fn buildGui(
     const run_gui_tests = b.addRunArtifact(gui_tests);
     return &run_gui_tests.step;
 }
+
+fn buildGuiAndroid(
+    b: *Build,
+    target: Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    imports: []const Module.Import,
+) void {
+    const android_include_path: std.Build.LazyPath = .{ .cwd_relative = "/home/mochar/Android/Sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include" };
+
+    const dvui_dep = b.dependency("dvui", .{
+        .target = target,
+        .optimize = optimize,
+        .backend = .sdl3,
+        .android_include_path = android_include_path,
+    });
+
+    const gui_mod = b.createModule(.{
+        .root_source_file = b.path("src/gui/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = imports,
+    });
+    gui_mod.addImport("dvui", dvui_dep.module("dvui_sdl3"));
+
+    const gui_lib = b.addLibrary(.{
+        .name = "ilm-gui",
+        .root_module = gui_mod,
+    });
+
+    const install_step = b.addInstallArtifact(gui_lib, .{});
+    const gui_android_step = b.step("gui-android", "Build the GUI library for Android");
+    gui_android_step.dependOn(&install_step.step);
+
+    b.default_step = gui_android_step;
+}
+
