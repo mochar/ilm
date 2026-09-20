@@ -20,7 +20,7 @@ pub const dvui_app: dvui.App = .{
 };
 pub const main = dvui.App.main;
 export fn dvui_main() callconv(.c) void { // For android
-    _ = dvui.App.main() catch {};
+    _ = dvui.App.main(dvui.App.main_init orelse unreachable) catch {};
 }
 pub const panic = dvui.App.panic;
 pub const std_options: std.Options = .{
