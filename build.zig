@@ -2,13 +2,17 @@ const std = @import("std");
 const Build = std.Build;
 const Module = Build.Module;
 
+const android_include_path: std.Build.LazyPath = .{ .cwd_relative = "/home/mochar/Android/Sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include" };
+
 const BuildPart = struct {
     module: *Build.Module,
     step: *Build.Step,
 };
 
-fn injectAndroidInclude(b: *Build, target: Build.ResolvedTarget, mod: *Build.Module) void {
+fn injectAndroidInclude(b: *Build, target: Build.ResolvedTarget, step_or_mod: anytype) void {
     if (!target.result.abi.isAndroid()) return;
+
+    // NDK requires an arch-specific include path alongside the generic one
     const arch_specific_path = switch (target.result.cpu.arch) {
         .x86 => "i686-linux-android",
         .x86_64 => "x86_64-linux-android",
@@ -16,21 +20,35 @@ fn injectAndroidInclude(b: *Build, target: Build.ResolvedTarget, mod: *Build.Mod
         .aarch64 => "aarch64-linux-android",
         else => @panic("Unknown Android arch"),
     };
-    const include_path: std.Build.LazyPath = .{ .cwd_relative = "/home/mochar/Android/Sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include" };
-    mod.addSystemIncludePath(include_path.path(b, arch_specific_path));
-    mod.addSystemIncludePath(include_path);
+
+    const T = @TypeOf(step_or_mod);
+    if (T == *std.Build.Module) {
+        step_or_mod.addSystemIncludePath(android_include_path.path(b, arch_specific_path));
+        step_or_mod.addSystemIncludePath(android_include_path);
+    } else if (T == *std.Build.Step.TranslateC) {
+        step_or_mod.addIncludePath(android_include_path.path(b, arch_specific_path));
+        step_or_mod.addIncludePath(android_include_path);
+
+        // Clang's TranslateC parser crashes on Apple's _Nonnull attributes in Android NDK headers.
+        // We strip them out entirely to fix the parsing.
+        step_or_mod.defineCMacro("_Nonnull", "");
+        step_or_mod.defineCMacro("_Nullable", "");
+    } else {
+        @compileError("Unsupported type for injectAndroidInclude: " ++ @typeName(T));
+    }
 }
 
 pub fn build(b: *Build) void {
     var target = b.standardTargetOptions(.{});
-    
-    if (b.option(bool, "android", "Buil GUI for Android") orelse false) {
+
+    if (b.option(bool, "android", "Set target to Android for GUI") orelse false) {
         target = b.resolveTargetQuery(.{
             .cpu_arch = .aarch64,
             .os_tag = .linux,
             .abi = .android,
         });
     }
+
     const optimize = b.standardOptimizeOption(.{});
 
     // Dependencies
@@ -54,18 +72,7 @@ pub fn build(b: *Build) void {
         .target = target,
         .optimize = optimize,
     });
-    if (target.result.abi.isAndroid()) {
-        const arch_specific_path = switch (target.result.cpu.arch) {
-            .x86 => "i686-linux-android",
-            .x86_64 => "x86_64-linux-android",
-            .arm => "arm-linux-androideabi",
-            .aarch64 => "aarch64-linux-android",
-            else => @panic("Unknown Android arch"),
-        };
-        const include_path: std.Build.LazyPath = .{ .cwd_relative = "/home/mochar/Android/Sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include" };
-        c_bindings.addIncludePath(include_path.path(b, arch_specific_path));
-        c_bindings.addIncludePath(include_path);
-    }
+    injectAndroidInclude(b, target, c_bindings);
     const c_mod = c_bindings.createModule();
 
     // Specific Binding Modules
@@ -187,11 +194,13 @@ fn buildPlutoVG(
         },
     });
 
-    if (target.result.os.tag == .linux) {
-        lib_mod.linkSystemLibrary("m", .{});
-        lib_mod.linkSystemLibrary("pthread", .{});
-    } else if (target.result.os.tag == .macos) {
-        lib_mod.linkSystemLibrary("pthread", .{});
+    if (!target.result.abi.isAndroid()) {
+        if (target.result.os.tag == .linux) {
+            lib_mod.linkSystemLibrary("m", .{});
+            lib_mod.linkSystemLibrary("pthread", .{});
+        } else if (target.result.os.tag == .macos) {
+            lib_mod.linkSystemLibrary("pthread", .{});
+        }
     }
 
     const lib = b.addLibrary(.{
@@ -609,18 +618,18 @@ fn buildGraphviz(
         .flags = c_flags,
     });
 
-    switch (target.result.os.tag) {
-        .linux => {
-            lib_mod.linkSystemLibrary("m", .{});
-            if (!target.result.abi.isAndroid()) {
+    if (!target.result.abi.isAndroid()) {
+        switch (target.result.os.tag) {
+            .linux => {
+                lib_mod.linkSystemLibrary("m", .{});
                 lib_mod.linkSystemLibrary("pthread", .{});
-            }
-        },
-        .macos => {
-            lib_mod.linkSystemLibrary("pthread", .{});
-            lib_mod.linkSystemLibrary("m", .{});
-        },
-        else => {},
+            },
+            .macos => {
+                lib_mod.linkSystemLibrary("pthread", .{});
+                lib_mod.linkSystemLibrary("m", .{});
+            },
+            else => {},
+        }
     }
 
     const lib = b.addLibrary(.{
@@ -671,7 +680,6 @@ fn buildIroh(
     cargo_build.has_side_effects = true;
 
     const lib_dir = b.pathJoin(&.{ "vendor/iroh-c-ffi/target", rel_target });
-    const lib_path = b.path(lib_dir);
 
     const iroh_mod = b.createModule(.{
         .root_source_file = b.path("src/bindings/iroh.zig"),
@@ -682,20 +690,23 @@ fn buildIroh(
             .{ .name = "c", .module = c_mod },
         },
     });
-    iroh_mod.addLibraryPath(lib_path);
-    iroh_mod.linkSystemLibrary("iroh_c_ffi", .{});
+    iroh_mod.addObjectFile(b.path(b.pathJoin(&.{ lib_dir, "libiroh_c_ffi.a" })));
 
     switch (target.result.os.tag) {
         .linux => {
             iroh_mod.linkSystemLibrary("unwind", .{});
-            iroh_mod.linkSystemLibrary("m", .{});
-            iroh_mod.linkSystemLibrary("pthread", .{});
-            iroh_mod.linkSystemLibrary("dl", .{});
+            if (!target.result.abi.isAndroid()) {
+                iroh_mod.linkSystemLibrary("m", .{});
+                iroh_mod.linkSystemLibrary("pthread", .{});
+                iroh_mod.linkSystemLibrary("dl", .{});
+            }
         },
         .macos => {
             iroh_mod.linkSystemLibrary("System", .{});
-            iroh_mod.linkSystemLibrary("m", .{});
-            iroh_mod.linkSystemLibrary("pthread", .{});
+            if (!target.result.abi.isAndroid()) {
+                iroh_mod.linkSystemLibrary("m", .{});
+                iroh_mod.linkSystemLibrary("pthread", .{});
+            }
         },
         else => {},
     }
@@ -824,7 +835,6 @@ fn buildGui(
         .optimize = optimize,
         .backend = .sdl3,
     });
-
     const gui_mod = b.createModule(.{
         .root_source_file = b.path("src/gui/main.zig"),
         .target = target,
@@ -855,14 +865,41 @@ fn buildGui(
     return &run_gui_tests.step;
 }
 
-fn buildGuiAndroid(
-    b: *Build,
-    target: Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
-    imports: []const Module.Import,
-) void {
-    const android_include_path: std.Build.LazyPath = .{ .cwd_relative = "/home/mochar/Android/Sdk/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include" };
+/// dvui's build script is intrinsically broken for Android on Zig 0.14+ because it uses hardcoded
+/// `b.addTranslateC` steps for its C bindings without exposing any way to pass Android NDK include
+/// paths, nor does it pass the fetched sdl3 artifact include tree to its sdl backend translator on Android.
+///
+/// Instead of heavily patching the transient dependency inside zig-pkg/ or .zig-cache/, this function
+/// reaches into the dvui dependency's compiled module graph, unearths the hidden TranslateC steps via
+/// `@fieldParentPtr`, and injects the necessary include paths and Clang macro workarounds at configure time.
+fn injectDvuiAndroidHack(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, dvui_dep: *std.Build.Dependency) void {
+    const dvui_mod = dvui_dep.module("dvui_sdl3");
 
+    // 1. Fix standard stb_image bindings (needs NDK stdio.h, etc.)
+    const dvui_c_mod = dvui_mod.import_table.get("dvui-c").?;
+    const dvui_c_step = dvui_c_mod.root_source_file.?.generated.file.step;
+    const dvui_tr = @as(*std.Build.Step.TranslateC, @fieldParentPtr("step", dvui_c_step));
+    injectAndroidInclude(b, target, dvui_tr);
+
+    // 2. Fix SDL3 backend bindings (needs NDK headers AND the SDL3 package headers)
+    const sdl3_dep = dvui_dep.builder.lazyDependency("sdl3", .{ .target = target, .optimize = optimize });
+    const sdl3_include = sdl3_dep.?.artifact("SDL3").getEmittedIncludeTree();
+
+    const sdl3_backend_mod = dvui_mod.import_table.get("backend").?;
+    const sdl3_c_mod = sdl3_backend_mod.import_table.get("sdl3-c").?;
+    const sdl3_c_step = sdl3_c_mod.root_source_file.?.generated.file.step;
+    const sdl3_tr = @as(*std.Build.Step.TranslateC, @fieldParentPtr("step", sdl3_c_step));
+
+    injectAndroidInclude(b, target, sdl3_tr);
+    sdl3_tr.addIncludePath(sdl3_include);
+}
+
+fn buildGuiAndroid(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    imports: []const std.Build.Module.Import,
+) void {
     const dvui_dep = b.dependency("dvui", .{
         .target = target,
         .optimize = optimize,
@@ -877,16 +914,18 @@ fn buildGuiAndroid(
         .imports = imports,
     });
     gui_mod.addImport("dvui", dvui_dep.module("dvui_sdl3"));
+    gui_mod.addImport("sdl-backend", dvui_dep.module("sdl3")); // for zls
 
     const gui_lib = b.addLibrary(.{
         .name = "ilm-gui",
         .root_module = gui_mod,
     });
 
-    const install_step = b.addInstallArtifact(gui_lib, .{});
-    const gui_android_step = b.step("gui-android", "Build the GUI library for Android");
-    gui_android_step.dependOn(&install_step.step);
+    injectDvuiAndroidHack(b, target, optimize, dvui_dep);
 
+    b.installArtifact(gui_lib);
+
+    const gui_android_step = b.step("gui-android", "Build GUI library for Android");
+    gui_android_step.dependOn(&b.addInstallArtifact(gui_lib, .{}).step);
     b.default_step = gui_android_step;
 }
-
