@@ -37,9 +37,43 @@ pub const SecretKey = struct {
     }
 };
 
+/// Acts as endpoint id.
 /// 32-byte public key / NodeId.
 pub const PublicKey = struct {
     key: c.PublicKey_t,
+
+    pub const PublicKeyError = error{
+        InvalidPublicKey,
+        InvalidSecretKey,
+    };
+
+    fn checkErrorResult(result: c_int) ?PublicKeyError {
+        return switch (result) {
+            c.KEY_RESULT_OK => null,
+            c.KEY_RESULT_INVALID_PUBLIC_KEY => error.InvalidPublicKey,
+            c.KEY_RESULT_INVALID_SECRET_KEY => error.InvalidSecretKey,
+            else => unreachable,
+        };
+    }
+
+    pub fn default() PublicKey {
+        return .{ .key = c.public_key_default() };
+    }
+
+    pub fn deinit(self: *const PublicKey) void {
+        c.public_key_free(self.key);
+    }
+
+    pub fn fromEndpointId(endpoint_id: []const u8) PublicKeyError!PublicKey {
+        var public_key = PublicKey.default();
+        errdefer public_key.deinit();
+        const errno = c.public_key_from_base32(@ptrCast(endpoint_id), &public_key.key);
+        if (checkErrorResult(errno)) |err| {
+            std.log.err("Invalid endpoint id ({t}): {s}", .{err, endpoint_id});
+            return err;
+        }
+        return public_key;
+    }
 
     /// Returns the raw 32-byte public key array.
     pub fn bytes(self: *const PublicKey) *const [32]u8 {
@@ -62,6 +96,11 @@ pub const EndpointAddr = struct {
         return .{ .addr = addr, .id = .{ .key = addr.id } };
     }
 
+    pub fn fromPublicKey(public_key: *const PublicKey) EndpointAddr {
+        const addr = c.endpoint_addr_new(public_key.key);
+        return .fromAddr(addr);
+    }
+
     pub fn deinit(self: *const EndpointAddr) void {
         c.endpoint_addr_free(self.addr);
     }
@@ -76,9 +115,6 @@ pub const EndpointAddr = struct {
         return null;
     }
 };
-
-/// A struct container a pointer and len of u8s.
-pub const SliceRef = struct {};
 
 pub const EndpointError = error{
     BindError,
@@ -123,15 +159,26 @@ pub fn checkEndpointResult(result: c_int) ?EndpointError {
 pub const Endpoint = struct {
     gpa: std.mem.Allocator,
     ptr: *c.Endpoint_t,
+    alpn: []const u8,
+    alpn_slice: c.slice_ref_uint8_t,
     state: union(enum) {
         bound: void,
-        online: struct {
-            addr: EndpointAddr,
-            id: []const u8,
-            relay_url: []const u8,
-        },
+        online: OnlineState,
     },
 
+    pub const OnlineState = struct {
+        addr: EndpointAddr,
+        id: []const u8,
+        relay_url: []const u8,
+
+        pub fn deinit(self: *const OnlineState, alloc: std.mem.Allocator) void {
+            self.addr.deinit();
+            alloc.free(self.id);
+            alloc.free(self.relay_url);
+        }
+    };
+
+    /// ALPN is assumed to be a static slice or with lifetime longer than this.
     pub fn init(gpa: std.mem.Allocator, alpn: []const u8) !Endpoint {
         var alpn_slice: c.slice_ref_uint8_t = undefined;
         alpn_slice.ptr = alpn.ptr;
@@ -146,23 +193,31 @@ pub const Endpoint = struct {
         const bind_res = c.endpoint_bind(&config, null, null, &endpoint);
         if (bind_res != 0) return error.BindFailed;
 
-        return .{ .gpa = gpa, .ptr = endpoint, .state = .bound };
+        return .{
+            .gpa = gpa,
+            .ptr = endpoint,
+            .alpn = alpn,
+            .alpn_slice = alpn_slice,
+            .state = .bound,
+        };
     }
 
     pub fn deinit(endpoint: *Endpoint) void {
         c.endpoint_free(endpoint.ptr);
         switch (endpoint.state) {
             .bound => {},
-            .online => |state| {
-                state.addr.deinit();
-                endpoint.gpa.free(state.id);
-                endpoint.gpa.free(state.relay_url);
-            },
+            .online => |state| state.deinit(endpoint.gpa),
         }
     }
 
     pub fn ensureOnline(endpoint: *Endpoint) EndpointError!void {
-        try endpoint.checkOnline(.{});
+        endpoint.checkOnline(.{}) catch |err| {
+            switch (endpoint.state) {
+                .online => |state| state.deinit(endpoint.gpa),
+                else => {},
+            }
+            return err;
+        };
 
         // Get our address
         var addr_c = c.endpoint_addr_default();
@@ -186,8 +241,8 @@ pub const Endpoint = struct {
         switch (endpoint.state) {
             .online => |state| {
                 std.log.info("Listening on:", .{});
-                std.log.info("  Endpoint Id: {s}:", .{ state.id });
-                std.log.info("  Relay: {s}:", .{ state.relay_url });
+                std.log.info("  Endpoint Id: {s}", .{state.id});
+                std.log.info("  Relay: {s}", .{state.relay_url});
                 std.log.info("  Addrs:", .{});
                 for (0..state.addr.addr.ip_addrs.len - 1) |i| {
                     const socket_addr = c.endpoint_addr_ip_addrs_nth(&state.addr.addr, i);
@@ -210,6 +265,58 @@ pub const Endpoint = struct {
         const errno = c.endpoint_online(&endpoint.ptr, opts.timeout_ms);
         if (checkEndpointResult(errno)) |err| {
             std.log.err("Failed to get a home relay: {t}", .{err});
+            return err;
+        }
+    }
+
+    /// Accept a new connection on this endpoint.
+    ///
+    /// Blocks the current thread until a connection is established.
+    pub fn accept(endpoint: *const Endpoint) EndpointError!Connection {
+        const conn = Connection.default();
+        const errno = c.endpoint_accept(&endpoint.ptr, endpoint.alpn_slice, &conn.ptr);
+        if (checkEndpointResult(errno)) |err| {
+            std.log.err("Failed to accept connection: {t}", .{err});
+            return err;
+        }
+        return conn;
+    }
+
+    /// Blocks all incoming connections and then waits for all current connections
+    /// to close gracefully, before shutting down the endpoint.
+    /// Consumes the endpoint, no need to free it afterwards.
+    pub fn close(endpoint: *const Endpoint) void {
+        c.endpoint_close(&endpoint.ptr);
+        endpoint.deinit();
+    }
+
+    pub fn connect(ep: *const Endpoint, addr: *const EndpointAddr) EndpointError!Connection {
+        const conn = Connection.default();
+        const errno = c.endpoint_connect(&ep.ptr, ep.alpn_slice, addr.addr, &conn.ptr);
+        if (checkEndpointResult(errno)) |err| {
+            std.log.err("Failed to connect to server: {t}", .{err});
+            return err;
+        }
+        return conn;
+    }
+};
+
+pub const Connection = struct {
+    ptr: *c.Connection_t,
+
+    pub fn default() Connection {
+        return .{ .ptr = c.connection_default() orelse unreachable };
+    }
+
+    pub fn deinit(self: *const Connection) void {
+        c.connection_free(self.ptr);
+    }
+
+    pub fn createSendStream(self: *const Connection) !void {
+        const stream = c.send_stream_default() orelse unreachable;
+        const errno = c.connection_open_uni(&self.ptr, &stream);
+        if (checkEndpointResult(errno)) |err| {
+            std.log.err("Failed to establish send stream: {t}", .{err});
             return err;
         }
     }

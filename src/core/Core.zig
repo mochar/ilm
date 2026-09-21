@@ -1,6 +1,7 @@
 const std = @import("std");
 const database = @import("database.zig");
 const Id = database.Id;
+const P2p = @import("P2p.zig");
 const sqlite = @import("sqlite");
 
 const Core = @This();
@@ -9,20 +10,32 @@ gpa: std.mem.Allocator,
 io: std.Io,
 data_dir: []const u8,
 db: sqlite.Db,
+p2p: P2p,
 
 pub const Options = struct {
     sqlite_diagnostics: ?*sqlite.Diagnostics = null,
+    spawn_p2p_thread: bool = true,
 };
 
 pub fn init(gpa: std.mem.Allocator, io: std.Io, data_dir: []const u8, options: Options) !Core {
     const db_path = try std.fs.path.joinZ(gpa, &.{ data_dir, "ilm.db" });
     defer gpa.free(db_path);
-    const db = try database.getDb(.{ .path = db_path, .diags = options.sqlite_diagnostics });
+    var db = try database.getDb(.{ .path = db_path, .diags = options.sqlite_diagnostics });
+    errdefer db.deinit();
+
+    var p2p: P2p = try .init(gpa);
+    if (options.spawn_p2p_thread) {
+        p2p.spawnListenThread(io) catch |err| {
+            std.log.err("Failed to spawn thread: {t}", .{err});
+        };
+    }
+
     return .{
         .gpa = gpa,
         .io = io,
         .data_dir = gpa.dupe(u8, data_dir) catch @panic("OOM"),
         .db = db,
+        .p2p = p2p,
     };
 }
 

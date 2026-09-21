@@ -139,6 +139,7 @@ pub fn build(b: *Build) void {
         const cli_test_step = buildCli(b, target, optimize, &.{
             .{ .name = "ilm", .module = core_mod },
             .{ .name = "known-folders", .module = known_folders_mod },
+            .{ .name = "iroh", .module = iroh.module },
         });
         buildEmacs(b, target, optimize, &.{
             .{ .name = "ilm", .module = core_mod },
