@@ -9,6 +9,16 @@ pub fn main(init: std.process.Init) !void {
     var core = try Core.init(init.gpa, init.io, data_path, .{});
     defer core.deinit();
 
+    const secret_key = ilm.p2p.iroh.SecretKey.generate();
+    defer secret_key.deinit();
+    std.log.info("Secret key hex: {s}", .{secret_key.asHex()});
+
+    var endpoint = try ilm.p2p.iroh.Endpoint.init(init.gpa, ilm.p2p.ALPN);
+    defer endpoint.deinit();
+    endpoint.ensureOnline() catch {};
+    std.log.info("Online!", .{});
+    endpoint.logAddr();
+
     var read_buf: [1024]u8 = undefined;
     var stdin_reader = std.Io.File.stdin().reader(init.io, &read_buf);
 
@@ -17,10 +27,6 @@ pub fn main(init: std.process.Init) !void {
 
     _ = try stdout_writer.interface.write("> ");
     try stdout_writer.flush();
-
-    const secret_key = ilm.p2p.iroh.SecretKey.generate();
-    defer secret_key.deinit();
-    std.log.info("Secret key hex: {s}", .{secret_key.asHex()});
 
     while (try stdin_reader.interface.takeDelimiter('\n')) |input| {
         _ = input;
@@ -35,4 +41,3 @@ pub fn main(init: std.process.Init) !void {
         try stdout_writer.flush();
     }
 }
-
