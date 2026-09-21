@@ -98,27 +98,41 @@ pub fn render(self: *Self) void {
         tl.format("Found {d} concepts", .{self.concepts.len}, .{});
     }
 
-    var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .both });
+    const win_rect = dvui.windowRect();
+    const is_wide = win_rect.w > win_rect.h;
+    var hbox = dvui.box(@src(), .{
+        .dir = if (is_wide) .horizontal else .vertical,
+        .equal_space = !is_wide,
+    }, .{ .expand = .both });
     defer hbox.deinit();
 
     // Left sidebar scroll area
-    {
-        var scroll = dvui.scrollArea(@src(), .{}, .{
-            .expand = .vertical,
-            .min_size_content = .{ .w = 200 },
-        });
-        defer scroll.deinit();
+    if (is_wide) {
+        self.renderSidebar(is_wide);
+        self.renderGraph();
+    } else {
+        self.renderGraph();
+        self.renderSidebar(is_wide);
+    }
+}
 
-        for (self.concepts, 0..) |*concept, i| {
-            var c_box = dvui.box(@src(), .{ .dir = .horizontal }, .{ .id_extra = i, .expand = .horizontal });
-            defer c_box.deinit();
-            if (dvui.labelClick(@src(), "{s}", .{concept.name}, .{}, .{})) {
-                self.selectConcept(concept);
-            }
+fn renderSidebar(self: *Self, is_wide: bool) void {
+    var scroll = dvui.scrollArea(@src(), .{}, .{
+        .expand = if (is_wide) .vertical else .both,
+        .min_size_content = .{ .w = 200 },
+    });
+    defer scroll.deinit();
+
+    for (self.concepts, 0..) |*concept, i| {
+        var c_box = dvui.box(@src(), .{ .dir = .horizontal }, .{ .id_extra = i, .expand = .horizontal });
+        defer c_box.deinit();
+        if (dvui.labelClick(@src(), "{s}", .{concept.name}, .{}, .{})) {
+            self.selectConcept(concept);
         }
     }
+}
 
-    // Right pane: Expands to fill the rest of the window
+fn renderGraph(self: *Self) void {
     if (self.selected) |concept| {
         var vbox = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .both });
         defer vbox.deinit();
@@ -215,7 +229,7 @@ fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void {
                         e.handle(@src(), wd);
                         const factor: f32 = @exp(me.action.wheel_y / 180);
                         self.graph_renderer.mouseScroll(factor) catch |err| {
-                        // self.graph_renderer.zoomBy(factor, x, y) catch |err| {
+                            // self.graph_renderer.zoomBy(factor, x, y) catch |err| {
                             self.toastErr(@src(), err, "Failed to zoom graph", .{});
                         };
                         self.syncGraphTexture();

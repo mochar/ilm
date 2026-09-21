@@ -30,11 +30,22 @@ pub fn render(self: *Self) ?dvui.App.Result {
         if (tabs.addTabLabel(true, "Concepts", .{})) {
             self.tab = 0;
         }
+        if (tabs.addTabLabel(true, "Info", .{})) {
+            self.tab = 1;
+        }
     }
 
     {
-        if (self.tab == 0) {
-            self.concepts.render();
+        switch (self.tab) {
+            0 => self.concepts.render(),
+            1 => {
+                {
+                    var tl = dvui.textLayout(@src(), .{}, .{ .expand = .horizontal, .font = .theme(.title) });
+                    defer tl.deinit();
+                    tl.format("Path: {s}", .{self.core.data_dir}, .{});
+                }
+            },
+            else => {},
         }
     }
 

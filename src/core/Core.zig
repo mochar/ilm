@@ -7,6 +7,7 @@ const Core = @This();
 
 gpa: std.mem.Allocator,
 io: std.Io,
+data_dir: []const u8,
 db: sqlite.Db,
 
 pub const Options = struct {
@@ -20,12 +21,14 @@ pub fn init(gpa: std.mem.Allocator, io: std.Io, data_dir: []const u8, options: O
     return .{
         .gpa = gpa,
         .io = io,
+        .data_dir = gpa.dupe(u8, data_dir) catch @panic("OOM"),
         .db = db,
     };
 }
 
 pub fn deinit(core: *Core) void {
     core.db.deinit();
+    core.gpa.free(core.data_dir);
 }
 
 /// Returns true if still functional

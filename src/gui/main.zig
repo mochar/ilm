@@ -120,6 +120,8 @@ fn connect() void {
             dvui.toast(@src(), .{ .message = "Failed to find prefpath" });
             return;
         }
+    } else {
+        data_dir = "/home/mochar/tmp/ilm/";
     }
     
     var diags: sqlite.Diagnostics = .{};
