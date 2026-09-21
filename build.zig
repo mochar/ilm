@@ -77,7 +77,12 @@ pub fn build(b: *Build) void {
     // Dependencies
     const sqlite_dep = b.dependency("sqlite", .{ .target = target, .optimize = optimize });
     if (target.result.abi.isAndroid()) {
-        injectAndroidInclude(b, target, sqlite_dep.artifact("sqlite").root_module);
+        const sqlite_lib = sqlite_dep.artifact("sqlite");
+        injectAndroidInclude(b, target, sqlite_lib.root_module);
+        // Need to export shared object so gradle can compile it
+        sqlite_lib.root_module.pic = true;
+        sqlite_lib.root_module.sanitize_c = .off;
+        b.installArtifact(sqlite_lib);
     }
     const known_folders_dep = b.dependency("known_folders", .{ .target = target, .optimize = optimize });
     const uuid_dep = b.dependency("uuid", .{ .target = target, .optimize = optimize });
@@ -194,6 +199,10 @@ fn buildPlutoVG(
         .optimize = optimize,
     });
     injectAndroidInclude(b, target, lib_mod);
+    if (target.result.abi.isAndroid()) {
+        lib_mod.pic = true;
+        lib_mod.sanitize_c = .off;
+    }
     lib_mod.addIncludePath(b.path("vendor/plutovg/include"));
     lib_mod.addIncludePath(b.path("vendor/plutovg/source"));
     lib_mod.addCSourceFiles(.{
@@ -211,12 +220,18 @@ fn buildPlutoVG(
             "plutovg-ft-raster.c",
             "plutovg-ft-stroker.c",
         },
-        .flags = &[_][]const u8{
-            "-std=gnu11",
-            "-DPLUTOVG_BUILD",
-            "-DPLUTOVG_BUILD_STATIC",
-            "-Wno-sign-compare",
-            "-Wno-unused-function",
+        .flags = blk: {
+            const default_flags = &[_][]const u8{
+                "-std=gnu11",
+                "-DPLUTOVG_BUILD",
+                "-DPLUTOVG_BUILD_STATIC",
+                "-Wno-sign-compare",
+                "-Wno-unused-function",
+            };
+            break :blk if (target.result.abi.isAndroid())
+                (default_flags ++ .{"-DEXTRA_FLAG"})
+            else
+                default_flags;
         },
     });
 
@@ -235,6 +250,10 @@ fn buildPlutoVG(
         .linkage = .static,
         .root_module = lib_mod,
     });
+    // Install shared object for android.
+    if (target.result.abi.isAndroid()) {
+        b.installArtifact(lib);
+    }
 
     const plutovg_mod = b.createModule(.{
         .root_source_file = b.path("src/bindings/plutovg.zig"),
@@ -247,12 +266,6 @@ fn buildPlutoVG(
         },
     });
     plutovg_mod.linkLibrary(lib);
-
-    // Build shared object for android.
-    if (target.result.abi.isAndroid()) {
-        const mod_lib = b.addLibrary(.{ .name = "ilm-plutovg", .root_module = plutovg_mod });
-        b.installArtifact(mod_lib);
-    }
 
     return plutovg_mod;
 }
@@ -267,6 +280,9 @@ fn buildGraphviz(
     const cmake_cfg = b.addSystemCommand(&.{
         "cmake", "-B", "vendor/graphviz/build", "-S", "vendor/graphviz",
     });
+    if (target.result.abi.isAndroid()) {
+        cmake_cfg.addArgs(&.{"-fPIC"});
+    }
     if (optimize != .Debug) {
         cmake_cfg.addArgs(&.{"-DCMAKE_BUILD_TYPE=Release"});
     }
@@ -449,6 +465,10 @@ fn buildGraphviz(
         .optimize = optimize,
     });
     injectAndroidInclude(b, target, lib_mod);
+    if (target.result.abi.isAndroid()) {
+        lib_mod.pic = true;
+        lib_mod.sanitize_c = .off;
+    }
 
     lib_mod.addIncludePath(inc_files.getDirectory());
     lib_mod.addIncludePath(b.path("vendor/graphviz/lib"));
@@ -470,26 +490,32 @@ fn buildGraphviz(
     lib_mod.addIncludePath(b.path("vendor/graphviz/build/lib/cgraph"));
     lib_mod.addIncludePath(b.path("vendor/graphviz/build/lib/common"));
 
-    const c_flags = &[_][]const u8{
-        "-std=gnu11",
-        "-DEXPORT_CDT",
-        "-DEXPORT_CGRAPH",
-        "-DEXPORT_CGHDR",
-        "-DPATHPLAN_EXPORTS",
-        "-DEXPORT_XDOT",
-        "-DGVC_EXPORTS",
-        "-DNEATOGEN_EXPORTS=1",
-        "-DGVLIBDIR=\"\"",
-        "-DgvContext=orig_gvContext",
-        "-Wno-unused-parameter",
-        "-Wno-sign-compare",
-        "-Wno-unused-function",
-        "-Wno-implicit-fallthrough",
-        "-Wno-deprecated-declarations",
-        "-Wno-unused-but-set-variable",
-        "-Wno-strict-prototypes",
-        "-Wno-incompatible-pointer-types",
-        "-Wno-return-type",
+    const c_flags = blk: {
+        const default_flags = &[_][]const u8{
+            "-std=gnu11",
+            "-DEXPORT_CDT",
+            "-DEXPORT_CGRAPH",
+            "-DEXPORT_CGHDR",
+            "-DPATHPLAN_EXPORTS",
+            "-DEXPORT_XDOT",
+            "-DGVC_EXPORTS",
+            "-DNEATOGEN_EXPORTS=1",
+            "-DGVLIBDIR=\"\"",
+            "-DgvContext=orig_gvContext",
+            "-Wno-unused-parameter",
+            "-Wno-sign-compare",
+            "-Wno-unused-function",
+            "-Wno-implicit-fallthrough",
+            "-Wno-deprecated-declarations",
+            "-Wno-unused-but-set-variable",
+            "-Wno-strict-prototypes",
+            "-Wno-incompatible-pointer-types",
+            "-Wno-return-type",
+        };
+        break :blk if (target.result.abi.isAndroid())
+            (default_flags ++ .{"-fPIC"})
+        else
+            default_flags;
     };
 
     // cdt
@@ -671,6 +697,10 @@ fn buildGraphviz(
         .linkage = .static,
         .root_module = lib_mod,
     });
+    // Install shared object for android.
+    if (target.result.abi.isAndroid()) {
+        b.installArtifact(lib);
+    }
 
     if (cmake_needed) {
         lib.step.dependOn(&cmake_cfg.step);
@@ -686,14 +716,6 @@ fn buildGraphviz(
         },
     });
     graphviz_mod.linkLibrary(lib);
-
-    // Build shared object for android.
-    if (target.result.abi.isAndroid()) {
-        b.installArtifact(b.addLibrary(.{
-            .name = "ilm-graphviz",
-            .root_module = graphviz_mod,
-        }));
-    }
 
     return .{
         .module = graphviz_mod,
@@ -721,7 +743,7 @@ fn buildIroh(
         cargo_build.setEnvironmentVariable("CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER", ANDROID_NDK_HOME ++ "/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang");
         cargo_build.setEnvironmentVariable("CXX", ANDROID_NDK_HOME ++ "/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang++");
         cargo_build.setEnvironmentVariable("CC", ANDROID_NDK_HOME ++ "/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang");
-        
+
         cargo_build.addPathDir(ANDROID_NDK_HOME ++ "/toolchains/llvm/prebuilt/linux-x86_64/bin");
     }
     if (is_release) {
@@ -746,7 +768,7 @@ fn buildIroh(
     if (!target.result.abi.isAndroid()) {
         iroh_mod.addObjectFile(iroh_lib_path);
     }
-    
+
     switch (target.result.os.tag) {
         .linux => {
             iroh_mod.linkSystemLibrary("unwind", .{});
