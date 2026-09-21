@@ -186,7 +186,7 @@ fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void {
                 switch (me.action) {
                     .press => {
                         const btn: ?GraphRenderer.MouseButton = switch (me.button) {
-                            .left => .left,
+                            .left, .touch0 => .left,
                             .right => .right,
                             .middle => .middle,
                             else => null,
