@@ -18,6 +18,26 @@ var io = std.Io.Threaded.init_single_threaded;
 
 pub export var plugin_is_GPL_compatible: c_int = 1;
 
+pub const std_options: std.Options = .{
+    .logFn = emacsLogFn,
+};
+
+pub fn emacsLogFn(
+    comptime message_level: std.log.Level,
+    comptime scope: @EnumLiteral(),
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    // If we are currently inside an Emacs call, log to *Messages*
+    if (emacs.active_env) |env| {
+        const prefix = if (scope == .default) ": " else "(" ++ @tagName(scope) ++ "): ";
+        env.message("[{s}]{s}" ++ format, .{ @tagName(message_level), prefix } ++ args);
+    } else {
+        // Fallback to stderr if called from a background thread
+        std.log.defaultLog(message_level, scope, format, args);
+    }
+}
+
 pub const Funcs = struct {
     pub fn init(ctx: *Context, data_dir: []const u8) !*Core {
         var diags: sqlite.Diagnostics = .{};
@@ -47,10 +67,15 @@ export fn emacs_module_init(raw_rt: [*c]c.emacs_runtime) c_int {
     const rt = emacs.Runtime.fromRaw(raw_rt) orelse return 1;
     const env = rt.getEnvironment() orelse return 1;
 
+    // Set the active env so our logFn can find it
+    emacs.active_env = env;
+    defer emacs.active_env = null;
+    std.log.err("Kaulo emacs", .{});
+    
     emacs.registerFunc(env, "ilm--core-init", Funcs.init, "Initialize ilm core and return state");
     emacs.registerFunc(env, "ilm--core-is-valid", Funcs.isValid, "Return t if core in valid state");
     emacs.registerFunc(env, "ilm--core-new-id", Funcs.newId, "Generate a new UUID");
-    
+
     emacs.registerFunc(env, "ilm--core-add-concept", ConceptFuncs.add, "Add new concept, return id");
     emacs.registerFunc(env, "ilm--core-add-concept-parent", ConceptFuncs.addParent, "Assign a parent to a concept");
     emacs.registerFunc(env, "ilm--core-remove-concept-parent", ConceptFuncs.removeParent, "Unassign a parent from a concept");
@@ -58,7 +83,7 @@ export fn emacs_module_init(raw_rt: [*c]c.emacs_runtime) c_int {
     emacs.registerFunc(env, "ilm--core-concepts-by-id", ConceptFuncs.getById, "Get concepts by IDs");
     emacs.registerFunc(env, "ilm--core-concept-ancestors", ConceptFuncs.getAncestors, "Get ancestory of concepts");
     emacs.registerFunc(env, "ilm--core-set-concept-graph", ConceptFuncs.setGraph, "");
-    
+
     emacs.registerFunc(env, "ilm--core-make-graph", GraphFuncs.make, "");
     emacs.registerFunc(env, "ilm--core-resize-graph", GraphFuncs.resize, "");
     emacs.registerFunc(env, "ilm--core-update-graph", GraphFuncs.update, "");

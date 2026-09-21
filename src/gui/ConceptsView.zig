@@ -71,21 +71,12 @@ fn getConcepts(self: *Self) void {
     const arena = arena_instance.allocator();
     defer arena_instance.deinit();
 
-    var diags: sqlite.Diagnostics = .{};
-    if (ilm.concept.getAll(self.core, arena, .{ .diags = &diags })) |concepts| {
-        if (self.arena.allocator().dupe(Concept, concepts)) |cs| {
-            self.concepts = cs;
-        } else |_| {
-            dvui.toast(@src(), .{ .message = "Failed to allocate concepts" });
-        }
-    } else |err| {
-        if (diags.err) |sqlite_err| {
-            const err_msg = std.fmt.allocPrint(arena, "Sqlite error: {s}", .{sqlite_err.message}) catch "Failed to get concepts";
-            dvui.toast(@src(), .{ .message = err_msg });
-        } else {
-            const err_msg = std.fmt.allocPrint(arena, "Failed to get concepts: {t}", .{err}) catch "Failed to get concepts";
-            dvui.toast(@src(), .{ .message = err_msg });
-        }
+    if (ilm.concept.getAll(self.core, arena)) |concepts| {
+        self.concepts = self.arena.allocator().dupe(Concept, concepts) catch {
+            return dvui.toast(@src(), .{ .message = "Failed to allocate concepts" });
+        };
+    } else |_| {
+        dvui.toast(@src(), .{ .message = "Failed to get concepts" });
     }
 }
 
@@ -137,7 +128,11 @@ fn renderGraph(self: *Self) void {
         var vbox = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .both });
         defer vbox.deinit();
 
-        dvui.label(@src(), "{s}", .{concept.name}, .{});
+        {
+            var tl = dvui.textLayout(@src(), .{}, .{ .expand = .horizontal, .font = .theme(.title) });
+            defer tl.deinit();
+            tl.format("{s}", .{concept.name}, .{});
+        }
 
         var texture_box = dvui.box(@src(), .{}, .{
             .expand = .both,
@@ -271,7 +266,6 @@ fn updateGraphContent(self: *Self) void {
     var graph = &self.graph_renderer.graph;
 
     if (self.selected) |concept| {
-        var diags: sqlite.Diagnostics = .{};
         const ids: [1]Id = .{concept.id};
         graph.addNode(concept.id.uuid, concept.name) catch |err| {
             return self.toastErr(@src(), err, "Failed to add node", .{});
@@ -279,7 +273,7 @@ fn updateGraphContent(self: *Self) void {
         self.graph_renderer.highlighted.put(concept.id.uuid, {}) catch |err| {
             return self.toastErr(@src(), err, "Failed to add graph highlight", .{});
         };
-        const ancestors = ilm.concept.getAncestors(self.core, self.arena.allocator(), &ids, false, .{ .diags = &diags }) catch |err| {
+        const ancestors = ilm.concept.getAncestors(self.core, self.arena.allocator(), &ids, false) catch |err| {
             return self.toastErr(@src(), err, "Failed to get ancestors", .{});
         };
         for (ancestors) |*ancestor| {

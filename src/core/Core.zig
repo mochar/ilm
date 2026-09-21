@@ -39,3 +39,18 @@ pub fn isValid(core: *Core) bool {
 pub fn newId(core: *Core) Id {
     return Id.new(core.io);
 }
+
+pub fn exec(core: *Core, comptime query: []const u8, args: anytype) !void {
+    var diags: sqlite.Diagnostics = .{};
+
+    var stmt = core.db.prepareWithDiags(query, .{ .diags = &diags }) catch |err| {
+        std.log.err("DB prepare error: {s} \nQuery: {s}", .{ diags.message, query });
+        return err;
+    };
+    defer stmt.deinit();
+
+    stmt.exec(.{ .diags = &diags }, args) catch |err| {
+        std.log.err("DB exec error: {s} \nQuery: {s}", .{ diags.message, query });
+        return err;
+    };
+}

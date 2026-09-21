@@ -11,6 +11,10 @@ pub const EmacsFunc = *const fn (
     data: ?*anyopaque,
 ) callconv(.c) c.emacs_value;
 
+/// Holds env during emacs function call.
+/// Used in log function to print to emacs.
+pub threadlocal var active_env: ?Env = null;
+
 /// Wrapper around Emacs runtime pointer
 pub const Runtime = struct {
     raw: *c.emacs_runtime,
@@ -552,6 +556,10 @@ pub fn wrapFunc(comptime func: anytype) EmacsFunc {
             const env = Env.fromRaw(raw_env) orelse unreachable;
             const q_nil = env.nil();
 
+            // Set the active env so our logFn can find it
+            active_env = env;
+            defer active_env = null;
+
             var arena = std.heap.ArenaAllocator.init(std.heap.c_allocator);
             defer arena.deinit();
             const allocator = arena.allocator();
@@ -576,7 +584,10 @@ pub fn wrapFunc(comptime func: anytype) EmacsFunc {
             // Call native Zig function
             const r_type, const r_val = blk: {
                 if (@typeInfo(return_type) == .error_union) {
-                    const result = @call(.auto, func, args_tuple) catch {
+                    const result = @call(.auto, func, args_tuple) catch |err| {
+                        if (ctx.err_msg == null) {
+                            ctx.setError("Error: {t}", .{err});
+                        }
                         ctx.signalError(.{});
                         return q_nil;
                     };

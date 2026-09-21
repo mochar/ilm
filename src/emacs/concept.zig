@@ -13,81 +13,29 @@ const EmacsValue = emacs.EmacsValue;
 const refreshGraph = @import("graph.zig").refreshGraph;
 
 pub const Funcs = struct {
-    pub fn add(ctx: *Context, core: *Core, name: []u8, parent_ids: []Id) !Id.StrT {
-        var diags: sqlite.Diagnostics = .{};
-        var id = ilm.concept.add(core, name, parent_ids, .{ .diags = &diags }) catch |err| {
-            if (diags.err) |sqlite_err| {
-                ctx.setError("Sqlite error: {s}", .{sqlite_err.message});
-            } else {
-                ctx.setError("Failed to add concept: {t}", .{err});
-            }
-            return err;
-        };
+    pub fn add(_: *Context, core: *Core, name: []u8, parent_ids: []Id) !Id.StrT {
+        var id = try ilm.concept.add(core, name, parent_ids);
         return id.serialize();
     }
 
-    pub fn addParent(ctx: *Context, core: *Core, child_id: Id, parent_id: Id) !void {
-        var diags: sqlite.Diagnostics = .{};
-        ilm.concept.addParent(core, child_id, parent_id, .{ .diags = &diags }) catch |err| {
-            if (diags.err) |sqlite_err| {
-                ctx.setError("Sqlite error: {s}", .{sqlite_err.message});
-            } else {
-                ctx.setError("Failed to add concept parent: {t}", .{err});
-            }
-            return err;
-        };
+    pub fn addParent(_: *Context, core: *Core, child_id: Id, parent_id: Id) !void {
+        try ilm.concept.addParent(core, child_id, parent_id);
     }
 
-    pub fn removeParent(ctx: *Context, core: *Core, child_id: Id, parent_id: Id) !void {
-        var diags: sqlite.Diagnostics = .{};
-        ilm.concept.removeParent(core, child_id, parent_id, .{ .diags = &diags }) catch |err| {
-            if (diags.err) |sqlite_err| {
-                ctx.setError("Sqlite error: {s}", .{sqlite_err.message});
-            } else {
-                ctx.setError("Failed to remove concept parent: {t}", .{err});
-            }
-            return err;
-        };
+    pub fn removeParent(_: *Context, core: *Core, child_id: Id, parent_id: Id) !void {
+        try ilm.concept.removeParent(core, child_id, parent_id);
     }
 
     pub fn getAll(ctx: *Context, core: *Core) ![]Concept {
-        var diags: sqlite.Diagnostics = .{};
-        const concepts = ilm.concept.getAll(core, ctx.arena, .{ .diags = &diags }) catch |err| {
-            if (diags.err) |sqlite_err| {
-                ctx.setError("Sqlite error: {s}", .{sqlite_err.message});
-            } else {
-                ctx.setError("Failed to get concepts: {t}", .{err});
-            }
-            return err;
-        };
-        return concepts;
+        return try ilm.concept.getAll(core, ctx.arena);
     }
 
     pub fn getById(ctx: *Context, core: *Core, ids: []const Id) ![]Concept {
-        var diags: sqlite.Diagnostics = .{};
-        const concepts = ilm.concept.getById(core, ctx.arena, ids, .{ .diags = &diags }) catch |err| {
-            if (diags.err) |sqlite_err| {
-                ctx.setError("Sqlite error: {s}", .{sqlite_err.message});
-            } else {
-                ctx.setError("Failed to get concepts: {t}", .{err});
-            }
-            return err;
-        };
-        ctx.env.message("Found {d} ids and {d} concepts", .{ ids.len, concepts.len });
-        return concepts;
+        return try ilm.concept.getById(core, ctx.arena, ids);
     }
 
     pub fn getAncestors(ctx: *Context, core: *Core, ids: []Id, direct_only: bool) ![]ConceptAncestor {
-        var diags: sqlite.Diagnostics = .{};
-        const ancestors = ilm.concept.getAncestors(core, ctx.arena, ids, direct_only, .{ .diags = &diags }) catch |err| {
-            if (diags.err) |sqlite_err| {
-                ctx.setError("Sqlite error: {s}", .{sqlite_err.message});
-            } else {
-                ctx.setError("Failed to get ancestors: {t}", .{err});
-            }
-            return err;
-        };
-        return ancestors;
+        return try ilm.concept.getAncestors(core, ctx.arena, ids, direct_only);
     }
 
     pub fn setGraph(ctx: *Context, core: *Core, graph_data: EmacsValue, concept_id: Id) !void {
@@ -112,10 +60,7 @@ pub const Funcs = struct {
             return ctx.setError("Failed to add graph highlight: {t}", .{err});
         };
 
-        var diags: sqlite.Diagnostics = .{};
-        const ancestors = ilm.concept.getAncestors(core, ctx.arena, &ids, false, .{ .diags = &diags }) catch |err| {
-            return ctx.setError("Failed to get ancestors: {t}", .{err});
-        };
+        const ancestors = try ilm.concept.getAncestors(core, ctx.arena, &ids, false);
         for (ancestors) |*ancestor| {
             graph.addNode(ancestor.id.uuid, ancestor.name) catch |err| {
                 return ctx.setError("Failed to add node: {t}", .{err});
@@ -126,7 +71,7 @@ pub const Funcs = struct {
                 return ctx.setError("Failed to add edge: {t}", .{err});
             };
         }
-        
+
         const canvas_spec = try ctx.env.plistGet(graph_data, "canvas", ctx.arena, EmacsValue);
         try refreshGraph(ctx, gr, canvas_spec);
     }

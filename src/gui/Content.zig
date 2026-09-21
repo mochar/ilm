@@ -4,28 +4,28 @@ const dvui = @import("dvui");
 const ilm = @import("ilm");
 const Core = ilm.Core;
 const Self = @This();
-const Concepts = @import("Concepts.zig");
+const ConceptsView = @import("ConceptsView.zig");
 
 gpa: std.mem.Allocator,
 core: *Core,
-concepts: Concepts,
+concepts_view: ConceptsView,
 tab: usize = 0,
 
 pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
     return .{
         .gpa = gpa,
         .core = core,
-        .concepts = try .init(gpa, core),
+        .concepts_view = try .init(gpa, core),
     };
 }
 
 pub fn deinit(self: *Self) void {
-    self.concepts.deinit();
+    self.concepts_view.deinit();
 }
 
 pub fn render(self: *Self) ?dvui.App.Result {
     {
-        var tabs = dvui.tabs(@src(), .{}, .{});
+        var tabs = dvui.tabs(@src(), .{}, .{ .expand = .horizontal });
         defer tabs.deinit();
         if (tabs.addTabLabel(true, "Concepts", .{})) {
             self.tab = 0;
@@ -37,7 +37,7 @@ pub fn render(self: *Self) ?dvui.App.Result {
 
     {
         switch (self.tab) {
-            0 => self.concepts.render(),
+            0 => self.concepts_view.render(),
             1 => {
                 {
                     var tl = dvui.textLayout(@src(), .{}, .{ .expand = .horizontal, .font = .theme(.title) });

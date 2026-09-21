@@ -1,4 +1,5 @@
 const std = @import("std");
+const log = std.log;
 const Core = @import("Core.zig");
 const sqlite = @import("sqlite");
 const Id = @import("database.zig").Id;
@@ -16,34 +17,56 @@ pub const ConceptAncestor = struct {
     is_direct: bool,
 };
 
-pub const Options = struct {
-    diags: ?*sqlite.Diagnostics = null,
-};
+pub fn add(core: *Core, name: []const u8, parent_ids: []const Id) !Id {
+    var diags: sqlite.Diagnostics = .{};
 
-pub fn add(core: *Core, name: []const u8, parent_ids: []const Id, opts: Options) !Id {
     var savepoint = try core.db.savepoint("addconcept");
     defer savepoint.rollback();
     const id = core.newId();
     const id_blob = id.asBlob();
 
     {
-        var stmt = try core.db.prepareWithDiags("INSERT INTO concept(id, name) VALUES (?, ?)", .{ .diags = opts.diags });
+        var stmt = core.db.prepareWithDiags(
+            "INSERT INTO concept(id, name) VALUES (?, ?)",
+            .{ .diags = &diags },
+        ) catch |err| {
+            log.err("SQLite prepare failed: {s}", .{diags.message});
+            return err;
+        };
         defer {
             _ = sqlite.c.sqlite3_reset(stmt.dynamic_stmt.stmt);
             stmt.deinit();
         }
-        try stmt.exec(.{ .diags = opts.diags }, .{ .id = id_blob, .name = name });
+        stmt.exec(
+            .{ .diags = &diags },
+            .{ .id = id_blob, .name = name },
+        ) catch |err| {
+            log.err("SQLite exec failed: {s}", .{diags.message});
+            return err;
+        };
     }
 
     {
-        var stmt = try core.db.prepareWithDiags("INSERT INTO concept_rel(parent_id, child_id) VALUES (?, ?)", .{ .diags = opts.diags });
+        var stmt = core.db.prepareWithDiags(
+            "INSERT INTO concept_rel(parent_id, child_id) VALUES (?, ?)",
+            .{ .diags = &diags },
+        ) catch |err| {
+            log.err("SQLite prepare failed: {s}", .{diags.message});
+            return err;
+        };
         defer {
             _ = sqlite.c.sqlite3_reset(stmt.dynamic_stmt.stmt);
             stmt.deinit();
         }
         for (parent_ids) |*parent_id| {
             stmt.reset();
-            try stmt.exec(.{ .diags = opts.diags }, .{ .parent_id = parent_id.asBlob(), .child_id = id_blob });
+            stmt.exec(
+                .{ .diags = &diags },
+                .{ .parent_id = parent_id.asBlob(), .child_id = id_blob },
+            ) catch |err| {
+                log.err("SQLite exec failed: {s}", .{diags.message});
+                return err;
+            };
         }
     }
 
@@ -52,32 +75,50 @@ pub fn add(core: *Core, name: []const u8, parent_ids: []const Id, opts: Options)
     return id;
 }
 
-pub fn addParent(core: *Core, child_id: Id, parent_id: Id, opts: Options) !void {
-    var stmt = try core.db.prepareWithDiags("INSERT OR IGNORE INTO concept_rel(parent_id, child_id) VALUES (?, ?)", .{ .diags = opts.diags });
+pub fn addParent(core: *Core, child_id: Id, parent_id: Id) !void {
+    var diags: sqlite.Diagnostics = .{};
+    var stmt = try core.db.prepareWithDiags(
+        "INSERT OR IGNORE INTO concept_rel(parent_id, child_id) VALUES (?, ?)",
+        .{ .diags = &diags },
+    );
     defer {
         _ = sqlite.c.sqlite3_reset(stmt.dynamic_stmt.stmt);
         stmt.deinit();
     }
-    try stmt.exec(.{ .diags = opts.diags }, .{ .parent_id = parent_id.asBlob(), .child_id = child_id.asBlob() });
+    try stmt.exec(.{ .diags = &diags }, .{
+        .parent_id = parent_id.asBlob(),
+        .child_id = child_id.asBlob(),
+    });
 }
 
-pub fn removeParent(core: *Core, child_id: Id, parent_id: Id, opts: Options) !void {
-    var stmt = try core.db.prepareWithDiags("DELETE FROM concept_rel WHERE parent_id = ? AND child_id = ?", .{ .diags = opts.diags });
+pub fn removeParent(core: *Core, child_id: Id, parent_id: Id) !void {
+    var diags: sqlite.Diagnostics = .{};
+    var stmt = try core.db.prepareWithDiags(
+        "DELETE FROM concept_rel WHERE parent_id = ? AND child_id = ?",
+        .{ .diags = &diags },
+    );
     defer {
         _ = sqlite.c.sqlite3_reset(stmt.dynamic_stmt.stmt);
         stmt.deinit();
     }
-    try stmt.exec(.{ .diags = opts.diags }, .{ .parent_id = parent_id.asBlob(), .child_id = child_id.asBlob() });
+    try stmt.exec(
+        .{ .diags = &diags },
+        .{ .parent_id = parent_id.asBlob(), .child_id = child_id.asBlob() },
+    );
 }
 
-pub fn getAll(core: *Core, allocator: std.mem.Allocator, opts: Options) ![]Concept {
-    var stmt = try core.db.prepareWithDiags("SELECT id, name FROM concept ORDER BY name", .{ .diags = opts.diags });
+pub fn getAll(core: *Core, allocator: std.mem.Allocator) ![]Concept {
+    var diags: sqlite.Diagnostics = .{};
+    var stmt = try core.db.prepareWithDiags(
+        "SELECT id, name FROM concept ORDER BY name",
+        .{ .diags = &diags },
+    );
     defer stmt.deinit();
 
     var iter = try stmt.iteratorAlloc(Concept, allocator, .{});
     var rows: std.ArrayList(Concept) = .empty;
     defer rows.deinit(allocator);
-    while (try iter.nextAlloc(allocator, .{ .diags = opts.diags })) |row| {
+    while (try iter.nextAlloc(allocator, .{ .diags = &diags })) |row| {
         try rows.append(allocator, row);
     }
     const result = try rows.toOwnedSlice(allocator);
@@ -85,7 +126,7 @@ pub fn getAll(core: *Core, allocator: std.mem.Allocator, opts: Options) ![]Conce
     return result;
 }
 
-pub fn getById(core: *Core, allocator: std.mem.Allocator, ids: []const Id, opts: Options) ![]Concept {
+pub fn getById(core: *Core, allocator: std.mem.Allocator, ids: []const Id) ![]Concept {
     if (ids.len == 0) return &.{};
 
     var query_builder: std.ArrayList(u8) = .empty;
@@ -97,14 +138,15 @@ pub fn getById(core: *Core, allocator: std.mem.Allocator, ids: []const Id, opts:
     }
     try query_builder.appendSlice(allocator, ")");
 
+    var diags: sqlite.Diagnostics = .{};
     const query: []const u8 = query_builder.items;
-    var stmt = try core.db.prepareDynamicWithDiags(query, .{ .diags = opts.diags });
+    var stmt = try core.db.prepareDynamicWithDiags(query, .{ .diags = &diags });
     defer stmt.deinit();
 
     var iter = try stmt.iteratorAlloc(Concept, allocator, ids);
     var rows: std.ArrayList(Concept) = .empty;
     defer rows.deinit(allocator);
-    while (try iter.nextAlloc(allocator, .{ .diags = opts.diags })) |row| {
+    while (try iter.nextAlloc(allocator, .{ .diags = &diags })) |row| {
         try rows.append(allocator, row);
     }
     const result = try rows.toOwnedSlice(allocator);
@@ -120,7 +162,7 @@ pub fn getById(core: *Core, allocator: std.mem.Allocator, ids: []const Id, opts:
 ///
 /// NOTE: Direct parents (depth = 1) will be included even if marked as redundant
 /// in `concept_rel`.
-pub fn getAncestors(core: *Core, allocator: std.mem.Allocator, ids: []const Id, direct_only: bool, opts: Options) ![]ConceptAncestor {
+pub fn getAncestors(core: *Core, allocator: std.mem.Allocator, ids: []const Id, direct_only: bool) ![]ConceptAncestor {
     if (ids.len == 0) return &.{};
 
     var query_builder: std.ArrayList(u8) = .empty;
@@ -167,14 +209,15 @@ pub fn getAncestors(core: *Core, allocator: std.mem.Allocator, ids: []const Id, 
         );
     }
 
+    var diags: sqlite.Diagnostics = .{};
     const query: []const u8 = query_builder.items;
-    var stmt = try core.db.prepareDynamicWithDiags(query, .{ .diags = opts.diags });
+    var stmt = try core.db.prepareDynamicWithDiags(query, .{ .diags = &diags });
     defer stmt.deinit();
 
     var iter = try stmt.iteratorAlloc(ConceptAncestor, allocator, ids);
     var rows: std.ArrayList(ConceptAncestor) = .empty;
     defer rows.deinit(allocator);
-    while (try iter.nextAlloc(allocator, .{ .diags = opts.diags })) |row| {
+    while (try iter.nextAlloc(allocator, .{ .diags = &diags })) |row| {
         try rows.append(allocator, row);
     }
     const result = try rows.toOwnedSlice(allocator);

@@ -32,7 +32,7 @@ export fn dvui_main() callconv(.c) void { // For android
     real_init.gpa = gpa;
     real_init.io = threaded.io();
     real_init.environ_map = &environ_map;
-        
+
     _ = dvui.App.main(real_init) catch {};
 }
 pub const panic = dvui.App.panic;
@@ -64,7 +64,11 @@ pub fn appDeinit(win: *dvui.Window) void {
 }
 
 pub fn appFrame() !dvui.App.Result {
-    var scaler = dvui.scale(@src(), .{ .scale = &dvui.currentWindow().content_scale, .pinch_zoom = .global }, .{ .rect = .cast(dvui.windowRect()) });
+    var scaler = dvui.scale(
+        @src(),
+        .{ .scale = &dvui.currentWindow().content_scale, .pinch_zoom = .global },
+        .{ .rect = .cast(dvui.windowRect()) },
+    );
     scaler.deinit();
 
     if (menu()) |res| return res;
@@ -123,7 +127,7 @@ fn connect() void {
     } else {
         data_dir = "/home/mochar/tmp/ilm/";
     }
-    
+
     var diags: sqlite.Diagnostics = .{};
     core = gpa.create(Core) catch {
         return dvui.toast(@src(), .{ .message = "Failed to allocate Core" });
