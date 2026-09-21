@@ -49,9 +49,11 @@ fn injectAndroidInclude(b: *Build, target: Build.ResolvedTarget, step_or_mod: an
     if (T == *std.Build.Module) {
         step_or_mod.addSystemIncludePath(android_include_path.path(b, arch_specific_path));
         step_or_mod.addSystemIncludePath(android_include_path);
+        step_or_mod.addCMacro("_FORTIFY_SOURCE", "0"); // for ReleaseSafe
     } else if (T == *std.Build.Step.TranslateC) {
         step_or_mod.addIncludePath(android_include_path.path(b, arch_specific_path));
         step_or_mod.addIncludePath(android_include_path);
+        step_or_mod.defineCMacro("_FORTIFY_SOURCE", "0"); // for ReleaseSafe
     } else {
         @compileError("Unsupported type for injectAndroidInclude: " ++ @typeName(T));
     }
@@ -71,6 +73,7 @@ pub fn build(b: *Build) void {
             .os_tag = .linux,
             .abi = .android,
         });
+        // optimize = .ReleaseSafe;
         b.lib_dir = "./android/app/src/main/c/prebuilt/arm64-v8a/";
     }
 
