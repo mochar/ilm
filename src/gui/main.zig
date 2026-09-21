@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const dvui = @import("dvui");
 const sqlite = @import("sqlite");
+const sdl = @import("sdl-backend");
 
 const Core = @import("ilm").Core;
 const Content = @import("Content.zig");
@@ -20,7 +21,19 @@ pub const dvui_app: dvui.App = .{
 };
 pub const main = dvui.App.main;
 export fn dvui_main() callconv(.c) void { // For android
-    _ = dvui.App.main(dvui.App.main_init orelse unreachable) catch {};
+    // Not init passed by main so make a ourselves
+    var environ_map = std.process.Environ.Map.init(gpa);
+    defer environ_map.deinit();
+
+    var threaded: std.Io.Threaded = .init(gpa, .{});
+    defer threaded.deinit();
+
+    var real_init: std.process.Init = undefined;
+    real_init.gpa = gpa;
+    real_init.io = threaded.io();
+    real_init.environ_map = &environ_map;
+        
+    _ = dvui.App.main(real_init) catch {};
 }
 pub const panic = dvui.App.panic;
 pub const std_options: std.Options = .{
@@ -99,8 +112,17 @@ fn connect() void {
     if (content) |*c| c.deinit();
     if (core) |c| c.deinit();
 
+    var data_dir: []const u8 = undefined;
+    if (builtin.abi == .android) {
+        if (sdl.c.SDL_GetPrefPath("org.libsdl", "ilm")) |c_str| {
+            data_dir = std.mem.span(c_str);
+        } else {
+            dvui.toast(@src(), .{ .message = "Failed to find prefpath" });
+            return;
+        }
+    }
+    
     var diags: sqlite.Diagnostics = .{};
-    const data_dir = "/home/mochar/tmp/ilm/";
     core = gpa.create(Core) catch {
         return dvui.toast(@src(), .{ .message = "Failed to allocate Core" });
     };
