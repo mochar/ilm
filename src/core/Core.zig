@@ -25,7 +25,7 @@ pub fn init(gpa: std.mem.Allocator, io: std.Io, data_dir: []const u8, options: O
 
     var p2p: P2p = try .init(gpa);
     if (options.spawn_p2p_thread) {
-        p2p.spawnListenThread(io) catch |err| {
+        p2p.spawnListenThread() catch |err| {
             std.log.err("Failed to spawn thread: {t}", .{err});
         };
     }

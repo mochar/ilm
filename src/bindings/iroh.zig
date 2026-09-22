@@ -92,7 +92,7 @@ pub const PublicKey = struct {
 
         var public_key = PublicKey.default();
         errdefer public_key.deinit();
-        
+
         const errno = c.public_key_from_base32(&buf, &public_key.key);
         if (checkErrorResult(errno)) |err| {
             std.log.err("Invalid endpoint id ({t}): {s}", .{ err, hex_str });
@@ -326,13 +326,134 @@ pub const Connection = struct {
         c.connection_free(self.ptr);
     }
 
-    pub fn createSendStream(self: *const Connection) !void {
-        const stream = c.send_stream_default() orelse unreachable;
-        const errno = c.connection_open_uni(&self.ptr, &stream);
+    /// Close a connection.
+    /// Consumes the connection, no need to free it afterwards.
+    pub fn close(self: *const Connection) void {
+        c.connection_close(self.ptr);
+    }
+    /// Wait for the connection to be closed. Errors when failed to
+    /// close cleanly, which can be ignored. Blocks the current
+    /// thread.
+    ///
+    /// Consumes the connection, no need to free it afterwards.
+    pub fn wait_close(self: *const Connection) EndpointError!void {
+        // TODO Rust version returns ConnectionError enum with reason
+        // for why it is closed. One of them is ConnectionClosed that
+        // contains struct Closed with some info.
+        const errno = c.connection_closed(self.ptr);
+        if (checkEndpointResult(errno)) |err| {
+            std.log.err("Failed to close connection cleanly: {t}", .{err});
+            return err;
+        }
+    }
+
+    pub fn createSendStream(self: *const Connection) EndpointError!SendStream {
+        return try SendStream.fromConnection(self);
+    }
+
+    pub fn createRecvStream(self: *const Connection) EndpointError!RecvStream {
+        return try RecvStream.fromConnection(self);
+    }
+};
+
+pub const SendStream = struct {
+    ptr: *c.SendStream_t,
+
+    pub fn fromConnection(conn: *const Connection) EndpointError!SendStream {
+        var stream = c.send_stream_default() orelse unreachable;
+        const errno = c.connection_open_uni(&conn.ptr, @ptrCast(&stream));
         if (checkEndpointResult(errno)) |err| {
             std.log.err("Failed to establish send stream: {t}", .{err});
             return err;
         }
+        return .{ .ptr = stream };
+    }
+
+    /// Must be called before Endpoint.deinit()!
+    pub fn deinit(self: *const SendStream) void {
+        c.send_stream_free(self.ptr);
+    }
+
+    /// Finish the sending on this stream.
+    /// Consumes the send stream, no need to free it afterwards.
+    ///
+    /// Note that finishing can fail when not all data was managed to
+    /// be send before closing the stream. However this function does
+    /// not error when that happens, only logs it.
+    pub fn finish(self: *const SendStream) void {
+        const errno = c.send_stream_finish(self.ptr);
+        if (checkEndpointResult(errno)) |err| {
+            std.log.err("Failed to finish sending: {t}", .{err});
+        }
+    }
+
+    /// Send data on the stream. If timeout not null, returns an error
+    /// if the data was not written before it.
+    ///
+    /// Blocks current thread.
+    pub fn write(
+        self: *SendStream,
+        data: [:0]const u8,
+        opts: struct { timeout_ms: ?u64 = null },
+    ) EndpointError!void {
+        var data_slice: c.slice_ref_uint8_t = undefined;
+        data_slice.ptr = data.ptr;
+        data_slice.len = data.len;
+
+        const errno = if (opts.timeout_ms) |timeout|
+            c.send_stream_write_timeout(@ptrCast(&self.ptr), data_slice, timeout)
+        else
+            c.send_stream_write(@ptrCast(&self.ptr), data_slice);
+        if (checkEndpointResult(errno)) |err| {
+            std.log.err("Failed to send data: {t}", .{err});
+            return err;
+        }
+    }
+};
+
+pub const RecvStream = struct {
+    ptr: *c.RecvStream_t,
+
+    pub fn fromConnection(conn: *const Connection) EndpointError!RecvStream {
+        var stream = c.recv_stream_default() orelse unreachable;
+        const errno = c.connection_accept_uni(&conn.ptr, @ptrCast(&stream));
+        if (checkEndpointResult(errno)) |err| {
+            std.log.err("Failed to accept uni stream: {t}", .{err});
+            return err;
+        }
+        return .{ .ptr = stream };
+    }
+
+    pub fn deinit(self: *RecvStream) void {
+        c.recv_stream_free(self.ptr);
+    }
+
+    /// Return slice in buf of data that was read, or null if EOF.
+    pub fn read(
+        self: *RecvStream,
+        buf: []u8,
+        opts: struct { timeout_ms: ?u64 = null },
+    ) EndpointError!?[]const u8 {
+        var buf_slice: c.slice_mut_uint8 = undefined;
+        buf_slice.ptr = buf.ptr;
+        buf_slice.len = buf.len;
+
+        // Seems this api is still WIP, the rust function has
+        // commented out accepting n_read as a pointer and returning
+        // an error instead. Right now returns -1 as error, which
+        // makes it ambiguous what caused it.
+        const n_read = if (opts.timeout_ms) |timeout|
+            c.recv_stream_read_timeout(@ptrCast(&self.ptr), buf_slice, timeout)
+        else
+            c.recv_stream_read(@ptrCast(&self.ptr), buf_slice);
+
+        if (n_read == -1) {
+            std.log.err("Failed to recieve data", .{});
+            return EndpointError.ReadError;
+        }
+        if (n_read == 0) return null;
+
+        return buf[0..@intCast(n_read)];
     }
 };
 

@@ -60,12 +60,18 @@ fn connect(endpoint_id: []const u8, gpa: std.mem.Allocator) !void {
     defer addr.deinit();
 
     var endpoint: iroh.Endpoint = try .init(gpa, ilm.P2p.ALPN);
-    // var endpoint: iroh.Endpoint = .init(gpa, ilm.P2p.ALPN) catch |err| {
-    //     std.log.err("Endpoint failed: {t}", .{err});
-    //     return err;
-    // };
     defer endpoint.deinit();
 
     var conn = try endpoint.connect(&addr);
-    defer conn.deinit();
+    defer conn.wait_close() catch {};
+    std.log.info("Connected! Creating send stream...", .{});
+
+    var stream = try conn.createSendStream();
+    defer stream.finish();
+    std.log.info("Sending message...", .{});
+
+    try stream.write("Hallo lol", .{ .timeout_ms = 5000 });
+    std.log.info("Message send! Closing.", .{});
+    
+    try stream.write("DONE", .{ .timeout_ms = 5000 });
 }
