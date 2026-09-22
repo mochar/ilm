@@ -38,6 +38,7 @@ pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
     const graph_texture = try dvui.Texture.create(@ptrCast(graph_renderer.buffer), .{
         .width = MAX_GRAPH_WIDTH,
         .height = MAX_GRAPH_HEIGHT,
+        .interpolation = .nearest,
     });
 
     var self: Self = .{
@@ -140,10 +141,12 @@ fn renderGraph(self: *Self) void {
         });
         defer texture_box.deinit();
 
+        _ = dvui.spacer(@src(), .{ .expand = .both });
+
         // Get available width and height and clamp it to max graph dimensions
         const rs = texture_box.data().contentRectScale();
-        const target_w = std.math.clamp(@as(u32, @intFromFloat(@max(100.0, rs.r.w))), 100, MAX_GRAPH_WIDTH);
-        const target_h = std.math.clamp(@as(u32, @intFromFloat(@max(100.0, rs.r.h))), 100, MAX_GRAPH_HEIGHT);
+        const target_w = std.math.clamp(@as(u32, @intFromFloat(@max(1.0, rs.r.w))), 1, @max(1, MAX_GRAPH_WIDTH));
+        const target_h = std.math.clamp(@as(u32, @intFromFloat(@max(1.0, rs.r.h))), 1, @max(1, MAX_GRAPH_HEIGHT));
 
         // Update graph renderer and texture if the available space has changed
         if (target_w != self.rendered_width or target_h != self.rendered_height) {
@@ -154,20 +157,21 @@ fn renderGraph(self: *Self) void {
 
         self.handleEvents(texture_box.data(), rs);
 
-        // Render the graph texture. Set uv to only view the rendered part of
-        // the buffer.
-        if (self.rendered_width > 0 and self.rendered_height > 0) {
-            const u_scale = @as(f32, @floatFromInt(self.rendered_width)) / @as(f32, @floatFromInt(MAX_GRAPH_WIDTH));
-            const v_scale = @as(f32, @floatFromInt(self.rendered_height)) / @as(f32, @floatFromInt(MAX_GRAPH_HEIGHT));
+            // Render the graph texture. Set uv to only view the rendered part of
+            // the buffer.
+            if (self.rendered_width > 0 and self.rendered_height > 0) {
+                const u_scale = @as(f32, @floatFromInt(self.rendered_width)) / @as(f32, @floatFromInt(MAX_GRAPH_WIDTH));
+                const v_scale = @as(f32, @floatFromInt(self.rendered_height)) / @as(f32, @floatFromInt(MAX_GRAPH_HEIGHT));
+                // std.debug.print("rs.r: {d}x{d}, rendered: {d}x{d}, MAX: {d}x{d}, uv: {d}x{d}\n", .{rs.r.w, rs.r.h, self.rendered_width, self.rendered_height, MAX_GRAPH_WIDTH, MAX_GRAPH_HEIGHT, u_scale, v_scale});
 
-            dvui.renderTexture(self.graph_texture, rs, .{
-                .uv = .{ .x = 0, .y = 0, .w = u_scale, .h = v_scale },
-            }) catch |err| {
-                return self.toastErr(@src(), err, "Failed to render graph texture", .{});
-            };
+                dvui.renderTexture(self.graph_texture, rs, .{
+                    .uv = .{ .x = 0, .y = 0, .w = u_scale, .h = v_scale },
+                }) catch |err| {
+                    return self.toastErr(@src(), err, "Failed to render graph texture", .{});
+                };
+            }
         }
     }
-}
 
 fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void {
     for (dvui.events()) |*e| {
@@ -175,8 +179,13 @@ fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void {
 
         switch (e.evt) {
             .mouse => |me| {
-                const x = me.p.x - rs.r.x;
-                const y = me.p.y - rs.r.y;
+                // Map graph texture coordinates to screen coordinates
+                const rs_w = @max(1.0, rs.r.w);
+                const rs_h = @max(1.0, rs.r.h);
+                const scale_x = @as(f32, @floatFromInt(self.rendered_width)) / rs_w;
+                const scale_y = @as(f32, @floatFromInt(self.rendered_height)) / rs_h;
+                const x = (me.p.x - rs.r.x) * scale_x;
+                const y = (me.p.y - rs.r.y) * scale_y;
 
                 switch (me.action) {
                     .press => {
