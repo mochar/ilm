@@ -4,7 +4,8 @@ const dvui = @import("dvui");
 const sqlite = @import("sqlite");
 const sdl = @import("sdl-backend");
 
-const Core = @import("ilm").Core;
+const ilm = @import("ilm");
+const Core = ilm.Core;
 const Content = @import("Content.zig");
 
 pub const dvui_app: dvui.App = .{
@@ -42,9 +43,13 @@ pub const std_options: std.Options = .{
 
 var gpa_instance = std.heap.DebugAllocator(.{}){};
 const gpa = gpa_instance.allocator();
+var frame_arena_allocator: std.heap.ArenaAllocator = .init(gpa);
+const arena = frame_arena_allocator.allocator();
 
 var content: ?Content = null;
 var core: ?*Core = null;
+/// Holds copied-over events from the p2p event queue
+var p2p_event_queue: [32]ilm.P2p.Event = undefined;
 
 // Runs before the first frame, after backend and dvui.Window.init()
 // - runs between win.begin()/win.end()
@@ -64,6 +69,9 @@ pub fn appDeinit(win: *dvui.Window) void {
 }
 
 pub fn appFrame() !dvui.App.Result {
+    // TODO Use max capacity, see DVUI Window.zig for example
+    defer _ = frame_arena_allocator.reset(.retain_capacity);
+
     var scaler = dvui.scale(
         @src(),
         .{ .scale = &dvui.currentWindow().content_scale, .pinch_zoom = .global },
@@ -78,6 +86,28 @@ pub fn appFrame() !dvui.App.Result {
 
     if (content) |*c| {
         if (c.render()) |res| return res;
+    }
+
+    // Drain p2p events
+    // TODO Find some way to force refresh the window to show these toasts.
+    // When window not needed to be drawn according to dvui, this
+    // function is not called, so wecannot just do:
+    // dvui.refresh(dvui.currentWindow(), @src(), null);
+    if (core) |c| blk: {
+        const events = c.p2p.drainEvents(&p2p_event_queue) catch break :blk;
+        for (events) |event| {
+            switch (event) {
+                .connected => dvui.toast(@src(), .{ .message = "Connected to p2p client" }),
+                .disconnected => dvui.toast(@src(), .{ .message = "Disconnected from p2p client" }),
+                .stream_received => dvui.toast(@src(), .{ .message = "Stream received to p2p client" }),
+                .stream_closed => dvui.toast(@src(), .{ .message = "Stream closed to p2p client" }),
+                .message => |payload| {
+                    const msg = payload.buf[0..payload.len];
+                    const txt = std.fmt.allocPrint(arena, "Recieved p2p msg: {s}", .{msg}) catch "OOM";
+                    dvui.toast(@src(), .{ .message = txt });
+                },
+            }
+        }
     }
 
     return .ok;

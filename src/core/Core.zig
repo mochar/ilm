@@ -22,7 +22,7 @@ pub fn init(gpa: std.mem.Allocator, io: std.Io, data_dir: []const u8, options: O
     var db = try database.getDb(.{ .path = db_path, .diags = options.sqlite_diagnostics });
     errdefer db.deinit();
 
-    const p2p: P2p = try .init(gpa);
+    const p2p: P2p = try .init(gpa, io);
 
     return .{
         .gpa = gpa,

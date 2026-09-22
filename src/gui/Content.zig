@@ -39,10 +39,25 @@ pub fn render(self: *Self) ?dvui.App.Result {
         switch (self.tab) {
             0 => self.concepts_view.render(),
             1 => {
-                {
-                    var tl = dvui.textLayout(@src(), .{}, .{ .expand = .horizontal, .font = .theme(.title) });
-                    defer tl.deinit();
-                    tl.format("Path: {s}", .{self.core.data_dir}, .{});
+                var tl = dvui.textLayout(@src(), .{}, .{ .expand = .both, .font = .theme(.title) });
+                defer tl.deinit();
+                tl.format("Path: {s}\n", .{self.core.data_dir}, .{});
+
+                tl.addText("\n\nP2P\n", .{ .font = .theme(.heading) });
+                switch (self.core.p2p.endpoint.state) {
+                    .bound => tl.addText("Endpoint not online\n", .{}),
+                    .online => |state| {
+                        tl.addText("Endpoint id:\n", .{});
+                        if (tl.addTextClick(&state.id, .{ .margin = .all(4.0) })) |_| {
+                            dvui.clipboardTextSet(&state.id);
+                            dvui.toast(@src(), .{ .message = "Endpoint ID copied to clipboard!" });
+                        }
+                        tl.addText("\nTicket is:\n", .{});
+                        if (tl.addTextClick(state.ticket, .{ .margin = .all(4.0) })) |_| {
+                            dvui.clipboardTextSet(state.ticket);
+                            dvui.toast(@src(), .{ .message = "Ticket copied to clipboard!" });
+                        }
+                    },
                 }
             },
             else => {},
