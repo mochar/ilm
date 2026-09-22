@@ -120,6 +120,15 @@ pub const EndpointAddr = struct {
         c.endpoint_addr_free(self.addr);
     }
 
+    /// A token containing information for establishing a connection to an endpoint.
+    /// https://docs.rs/iroh-tickets/latest/iroh_tickets/endpoint/struct.EndpointTicket.html
+    /// https://docs.iroh.computer/concepts/tickets
+    pub fn ticketAlloc(self: *const EndpointAddr, alloc: std.mem.Allocator) ![]const u8 {
+        const c_str = c.endpoint_addr_as_str(&self.addr);
+        defer c.rust_free_string(c_str);
+        return try alloc.dupe(u8, std.mem.span(c_str));
+    }
+
     pub fn relayUrlNthAlloc(self: *const EndpointAddr, alloc: std.mem.Allocator, nth: usize) !?[]const u8 {
         const relay_url = c.endpoint_addr_relay_urls_nth(&self.addr, nth);
         if (relay_url.*) |url| {
@@ -185,10 +194,12 @@ pub const Endpoint = struct {
         addr: EndpointAddr,
         id: [64:0]u8,
         relay_url: []const u8,
+        ticket: []const u8,
 
         pub fn deinit(self: *const OnlineState, alloc: std.mem.Allocator) void {
             self.addr.deinit();
             alloc.free(self.relay_url);
+            alloc.free(self.ticket);
         }
     };
 
@@ -244,11 +255,15 @@ pub const Endpoint = struct {
             url orelse unreachable
         else |_|
             @panic("OOM");
-        endpoint.state = .{ .online = .{
-            .addr = addr,
-            .id = id,
-            .relay_url = relay_url,
-        } };
+        const ticket = addr.ticketAlloc(endpoint.gpa) catch @panic("OOM");
+        endpoint.state = .{
+            .online = .{
+                .addr = addr,
+                .id = id,
+                .relay_url = relay_url,
+                .ticket = ticket,
+            }
+        };
     }
 
     pub fn logAddr(endpoint: *Endpoint) void {
@@ -256,6 +271,7 @@ pub const Endpoint = struct {
             .online => |state| {
                 std.log.info("Listening on:", .{});
                 std.log.info("  Endpoint Id: {s}", .{state.id});
+                std.log.info("  Ticket: {s}", .{state.ticket});
                 std.log.info("  Relay: {s}", .{state.relay_url});
                 std.log.info("  Addrs:", .{});
                 for (0..state.addr.addr.ip_addrs.len - 1) |i| {
