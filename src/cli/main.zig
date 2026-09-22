@@ -29,12 +29,20 @@ pub fn main(init: std.process.Init) !void {
     while (try stdin.takeDelimiter('\n')) |input| {
         var parser = std.mem.splitScalar(u8, input, ' ');
         const command = parser.first();
-        if (std.meta.stringToEnum(enum { connect }, command)) |cmd| {
+        if (std.meta.stringToEnum(enum { connect, info }, command)) |cmd| {
             switch (cmd) {
                 .connect => {
                     const endpoint_id = parser.next() orelse core.p2p.endpoint.state.online.id;
                     connect(endpoint_id, init.gpa) catch {};
                 },
+                .info => {
+                    if (core.p2p.endpoint.checkOnline(.{})) {
+                        try stdout.print("Online\n", .{});
+                    } else |err| {
+                        try stdout.print("Offline! {t}\n", .{err});
+
+                    }
+                }
             }
         } else {
             try stdout.print("Unknown command\n", .{});
