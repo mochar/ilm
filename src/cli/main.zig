@@ -8,8 +8,11 @@ pub fn main(init: std.process.Init) !void {
     const data_path = (try known_folders.getPath(init.io, init.gpa, init.environ_map, .data)) orelse return error.FolderNotFound;
     defer init.gpa.free(data_path);
 
-    var core = try Core.init(init.gpa, init.io, data_path, .{ .spawn_p2p_thread = true });
+    var core = try Core.init(init.gpa, init.io, data_path, .{});
     defer core.deinit();
+    core.setupP2p() catch |err| {
+        std.log.err("Failed to setup p2p: {t}", .{err});
+    };
 
     // const secret_key = iroh.SecretKey.generate();
     // defer secret_key.deinit();
@@ -40,9 +43,8 @@ pub fn main(init: std.process.Init) !void {
                         try stdout.print("Online\n", .{});
                     } else |err| {
                         try stdout.print("Offline! {t}\n", .{err});
-
                     }
-                }
+                },
             }
         } else {
             try stdout.print("Unknown command\n", .{});
@@ -72,6 +74,6 @@ fn connect(endpoint_id: []const u8, gpa: std.mem.Allocator) !void {
 
     try stream.write("Hallo lol", .{ .timeout_ms = 5000 });
     std.log.info("Message send! Closing.", .{});
-    
+
     try stream.write("DONE", .{ .timeout_ms = 5000 });
 }

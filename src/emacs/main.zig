@@ -50,6 +50,10 @@ pub const Funcs = struct {
             }
             return error.InitFailed;
         };
+        // Not a big failure, dont err
+        core.setupP2p() catch |err| {
+            std.log.err("Failed to setup p2p: {t}", .{err});
+        };
         return core;
     }
 
@@ -71,7 +75,7 @@ export fn emacs_module_init(raw_rt: [*c]c.emacs_runtime) c_int {
     emacs.active_env = env;
     defer emacs.active_env = null;
     std.log.err("Kaulo emacs", .{});
-    
+
     emacs.registerFunc(env, "ilm--core-init", Funcs.init, "Initialize ilm core and return state");
     emacs.registerFunc(env, "ilm--core-is-valid", Funcs.isValid, "Return t if core in valid state");
     emacs.registerFunc(env, "ilm--core-new-id", Funcs.newId, "Generate a new UUID");

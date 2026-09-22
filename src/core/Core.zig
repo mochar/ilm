@@ -14,7 +14,6 @@ p2p: P2p,
 
 pub const Options = struct {
     sqlite_diagnostics: ?*sqlite.Diagnostics = null,
-    spawn_p2p_thread: bool = true,
 };
 
 pub fn init(gpa: std.mem.Allocator, io: std.Io, data_dir: []const u8, options: Options) !Core {
@@ -23,12 +22,7 @@ pub fn init(gpa: std.mem.Allocator, io: std.Io, data_dir: []const u8, options: O
     var db = try database.getDb(.{ .path = db_path, .diags = options.sqlite_diagnostics });
     errdefer db.deinit();
 
-    var p2p: P2p = try .init(gpa);
-    if (options.spawn_p2p_thread) {
-        p2p.spawnListenThread() catch |err| {
-            std.log.err("Failed to spawn thread: {t}", .{err});
-        };
-    }
+    const p2p: P2p = try .init(gpa);
 
     return .{
         .gpa = gpa,
@@ -47,6 +41,13 @@ pub fn deinit(core: *Core) void {
 /// Returns true if still functional
 pub fn isValid(core: *Core) bool {
     return database.isValid(&core.db);
+}
+
+pub fn setupP2p(core: *Core) !void {
+    core.p2p.spawnListenThread() catch |err| {
+        std.log.err("Failed to spawn thread: {t}", .{err});
+        return err;
+    };
 }
 
 pub fn newId(core: *Core) Id {

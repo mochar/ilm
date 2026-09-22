@@ -134,6 +134,10 @@ fn connect() void {
     };
     if (Core.init(gpa, dvui.io, data_dir, .{ .sqlite_diagnostics = &diags })) |c| {
         core.?.* = c;
+        core.?.setupP2p() catch |err| {
+            std.log.err("Failed to setup p2p: {t}", .{err});
+            dvui.toast(@src(), .{ .message = "Failed to setup p2p" });
+        };
         if (Content.init(gpa, core.?)) |con| {
             content = con;
             dvui.toast(@src(), .{ .message = "Connected!" });

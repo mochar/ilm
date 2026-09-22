@@ -752,6 +752,8 @@ fn buildIroh(
     }
     if (is_release) {
         cargo_build.addArgs(&.{"--release"});
+    } else {
+        cargo_build.setEnvironmentVariable("RUST_BACKTRACE", "1");
     }
     cargo_build.setEnvironmentVariable("CARGO_PROFILE_DEV_DEBUG", "0");
     cargo_build.has_side_effects = true;
@@ -860,6 +862,7 @@ fn buildCli(
 
     const cli_cmd = b.addRunArtifact(cli_exe);
     cli_cmd.step.dependOn(b.getInstallStep());
+    cli_cmd.setEnvironmentVariable("RUST_BACKTRACE", "1");
     const cli_step = b.step("cli", "Start the CLI");
     cli_step.dependOn(&cli_cmd.step);
     if (b.args) |args| {
@@ -937,6 +940,7 @@ fn buildGui(
 
     const gui_cmd = b.addRunArtifact(gui_exe);
     gui_cmd.step.dependOn(b.getInstallStep());
+    gui_cmd.setEnvironmentVariable("RUST_BACKTRACE", "1");
     const gui_step = b.step("gui", "Start the GUI");
     gui_step.dependOn(&gui_cmd.step);
     if (b.args) |args| {
