@@ -37,7 +37,7 @@ pub const SecretKey = struct {
     }
 };
 
-/// Acts as endpoint id.
+/// Alias of EndpointId.
 /// 32-byte public key / NodeId.
 pub const PublicKey = struct {
     key: c.PublicKey_t,
@@ -64,27 +64,42 @@ pub const PublicKey = struct {
         c.public_key_free(self.key);
     }
 
-    pub fn fromEndpointId(endpoint_id: []const u8) PublicKeyError!PublicKey {
-        var public_key = PublicKey.default();
-        errdefer public_key.deinit();
-        const errno = c.public_key_from_base32(@ptrCast(endpoint_id), &public_key.key);
-        if (checkErrorResult(errno)) |err| {
-            std.log.err("Invalid endpoint id ({t}): {s}", .{err, endpoint_id});
-            return err;
-        }
-        return public_key;
-    }
-
     /// Returns the raw 32-byte public key array.
     pub fn bytes(self: *const PublicKey) *const [32]u8 {
         return &self.key.key;
     }
 
-    /// Allocates and returns the base32 string representation.
-    pub fn toBase32(self: *const PublicKey, allocator: std.mem.Allocator) ![]u8 {
-        const c_str = c.public_key_as_base32(&self.key) orelse return error.OutOfMemory;
+    /// Returns the 64-character hex-encoded string representation
+    pub fn toHex(self: *const PublicKey) [64:0]u8 {
+        const c_str = c.public_key_as_base32(&self.key) orelse @panic("secret_key_as_base32 returned null");
         defer c.rust_free_string(c_str);
-        return allocator.dupe(u8, std.mem.span(c_str));
+
+        // var result: [64:0]u8 = undefined;
+        // @memcpy(&result, c_str[0..64]);
+        const result: [64:0]u8 = c_str[0..64 :0].*;
+
+        return result;
+    }
+
+    /// Return a PublicKey from a hex encoded string.
+    pub fn fromHex(hex_str: []const u8) !PublicKey {
+        if (hex_str.len != 64) return error.InvalidLength;
+
+        // Copy as zero terminated
+        var buf: [65]u8 = undefined;
+        var alloc = std.heap.FixedBufferAllocator.init(&buf);
+        _ = alloc.allocator().dupeZ(u8, hex_str) catch unreachable;
+
+        var public_key = PublicKey.default();
+        errdefer public_key.deinit();
+        
+        const errno = c.public_key_from_base32(&buf, &public_key.key);
+        if (checkErrorResult(errno)) |err| {
+            std.log.err("Invalid endpoint id ({t}): {s}", .{ err, hex_str });
+            return err;
+        }
+
+        return public_key;
     }
 };
 
@@ -168,12 +183,11 @@ pub const Endpoint = struct {
 
     pub const OnlineState = struct {
         addr: EndpointAddr,
-        id: []const u8,
+        id: [64:0]u8,
         relay_url: []const u8,
 
         pub fn deinit(self: *const OnlineState, alloc: std.mem.Allocator) void {
             self.addr.deinit();
-            alloc.free(self.id);
             alloc.free(self.relay_url);
         }
     };
@@ -224,7 +238,7 @@ pub const Endpoint = struct {
         const addr_res = c.endpoint_addr(&endpoint.ptr, &addr_c);
         if (checkEndpointResult(addr_res)) |err| return err;
         const addr = EndpointAddr.fromAddr(addr_c);
-        const id = addr.id.toBase32(endpoint.gpa) catch @panic("OOM");
+        const id = addr.id.toHex();
         // TODO Can use addr_c.relay_urls.len to ensure not null
         const relay_url = if (addr.relayUrlNthAlloc(endpoint.gpa, 0)) |url|
             url orelse unreachable

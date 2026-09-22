@@ -32,7 +32,7 @@ pub fn main(init: std.process.Init) !void {
         if (std.meta.stringToEnum(enum { connect, info }, command)) |cmd| {
             switch (cmd) {
                 .connect => {
-                    const endpoint_id = parser.next() orelse core.p2p.endpoint.state.online.id;
+                    const endpoint_id = parser.next() orelse &core.p2p.endpoint.state.online.id;
                     connect(endpoint_id, init.gpa) catch {};
                 },
                 .info => {
@@ -53,7 +53,7 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn connect(endpoint_id: []const u8, gpa: std.mem.Allocator) !void {
-    const public_key: iroh.PublicKey = try .fromEndpointId(endpoint_id);
+    const public_key: iroh.PublicKey = try .fromHex(endpoint_id);
     defer public_key.deinit();
 
     const addr: iroh.EndpointAddr = .fromPublicKey(&public_key);
