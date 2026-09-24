@@ -48,8 +48,29 @@ const arena = frame_arena_allocator.allocator();
 
 var content: ?Content = null;
 var core: ?*Core = null;
-/// Holds copied-over events from the p2p event queue
+/// Holds copied-over events from the p2p event queue. See p2pEventTrigger.
 var p2p_event_queue: [32]ilm.P2p.Event = undefined;
+
+/// Called when a new p2p events are available. Drains events and updates ui.
+fn p2pEventTrigger(window_opaque: ?*anyopaque) void {
+    const window: *dvui.Window = @ptrCast(@alignCast(window_opaque orelse unreachable));
+    if (core) |c| blk: {
+        const events = c.p2p.drainEvents(&p2p_event_queue) catch break :blk;
+        for (events) |event| {
+            switch (event) {
+                .connected => dvui.toast(@src(), .{ .window = window, .message = "Connected to p2p client" }),
+                .disconnected => dvui.toast(@src(), .{ .window = window, .message = "Disconnected from p2p client" }),
+                .stream_received => dvui.toast(@src(), .{ .window = window, .message = "Stream received to p2p client" }),
+                .stream_closed => dvui.toast(@src(), .{ .window = window, .message = "Stream closed to p2p client" }),
+                .message => |payload| {
+                    const msg = payload.buf[0..payload.len];
+                    const txt = std.fmt.allocPrint(arena, "Recieved p2p msg: {s}", .{msg}) catch "OOM";
+                    dvui.toast(@src(), .{ .window = window, .message = txt });
+                },
+            }
+        }
+    }
+}
 
 // Runs before the first frame, after backend and dvui.Window.init()
 // - runs between win.begin()/win.end()
@@ -86,28 +107,6 @@ pub fn appFrame() !dvui.App.Result {
 
     if (content) |*c| {
         if (c.render()) |res| return res;
-    }
-
-    // Drain p2p events
-    // TODO Find some way to force refresh the window to show these toasts.
-    // When window not needed to be drawn according to dvui, this
-    // function is not called, so wecannot just do:
-    // dvui.refresh(dvui.currentWindow(), @src(), null);
-    if (core) |c| blk: {
-        const events = c.p2p.drainEvents(&p2p_event_queue) catch break :blk;
-        for (events) |event| {
-            switch (event) {
-                .connected => dvui.toast(@src(), .{ .message = "Connected to p2p client" }),
-                .disconnected => dvui.toast(@src(), .{ .message = "Disconnected from p2p client" }),
-                .stream_received => dvui.toast(@src(), .{ .message = "Stream received to p2p client" }),
-                .stream_closed => dvui.toast(@src(), .{ .message = "Stream closed to p2p client" }),
-                .message => |payload| {
-                    const msg = payload.buf[0..payload.len];
-                    const txt = std.fmt.allocPrint(arena, "Recieved p2p msg: {s}", .{msg}) catch "OOM";
-                    dvui.toast(@src(), .{ .message = txt });
-                },
-            }
-        }
     }
 
     return .ok;
@@ -164,6 +163,13 @@ fn connect() void {
     };
     if (Core.init(gpa, dvui.io, data_dir, .{ .sqlite_diagnostics = &diags })) |c| {
         core.?.* = c;
+        core.?.p2p.addEventTrigger(.{
+            .ctx = dvui.currentWindow(),
+            .triggerFn = p2pEventTrigger,
+        }) catch |err| {
+            std.log.err("Failed to add p2p event trigger: {t}", .{err});
+            dvui.toast(@src(), .{ .message = "Failed to add p2p event trigger" });
+        };
         core.?.setupP2p() catch |err| {
             std.log.err("Failed to setup p2p: {t}", .{err});
             dvui.toast(@src(), .{ .message = "Failed to setup p2p" });

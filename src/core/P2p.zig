@@ -19,6 +19,18 @@ pub const Event = union(enum) {
 };
 pub const EventQueue = std.Io.Queue(Event);
 
+/// A trigger to be called when a new event happens.
+/// This prevents the need to poll the queue manually.
+/// Note that the event is not passed, the queue must be drained still.
+pub const EventTrigger = struct {
+    ctx: ?*anyopaque = null,
+    triggerFn: *const fn (ctx: ?*anyopaque) void,
+
+    pub fn trigger(self: EventTrigger) void {
+        self.triggerFn(self.ctx);
+    }
+};
+
 gpa: std.mem.Allocator,
 io: std.Io,
 endpoint: iroh.Endpoint,
@@ -29,6 +41,7 @@ connection_mutex: std.Io.Mutex = .init,
 connection: ?iroh.Connection = null,
 events: []Event,
 event_queue: EventQueue,
+event_triggers: std.ArrayList(EventTrigger),
 
 pub fn init(gpa: std.mem.Allocator, io: std.Io) !Self {
     var endpoint: iroh.Endpoint = try .init(gpa, ALPN);
@@ -43,6 +56,7 @@ pub fn init(gpa: std.mem.Allocator, io: std.Io) !Self {
         .io = io,
         .events = events,
         .event_queue = .init(events),
+        .event_triggers = .empty,
     };
 }
 
@@ -52,11 +66,23 @@ pub fn deinit(self: *Self) void {
     };
     self.endpoint.deinit();
     self.gpa.free(self.events);
+    self.event_triggers.deinit(self.gpa);
     // self.event_queue.close(self.io); // not really necessary
 }
 
 pub fn getCore(self: *const Self) *const Core {
     return @fieldParentPtr("p2p", self);
+}
+
+pub fn addEventTrigger(self: *Self, trigger: EventTrigger) !void {
+    try self.event_triggers.append(self.gpa, trigger);
+}
+
+fn pushEvent(self: *Self, event: Event) !void {
+    try self.event_queue.putOneUncancelable(self.io, event);
+    for (self.event_triggers.items) |*trigger| {
+        trigger.trigger();
+    }
 }
 
 pub fn drainEvents(self: *Self, buffer: []Event) ![]Event {
@@ -86,16 +112,10 @@ fn acceptLoop(self: *Self) void {
     std.log.info("Listening for connections...", .{});
     connect: while (self.is_running.load(.seq_cst)) {
         if (self.endpoint.accept()) |conn| {
-            // defer conn.close();
             std.log.info("Received connection!", .{});
 
             var n_conns = self.connections_received.fetchAdd(1, .seq_cst);
-            defer {
-                n_conns = self.connections_received.fetchSub(1, .seq_cst);
-                self.event_queue.putOneUncancelable(self.io, .{ .disconnected = n_conns }) catch {};
-            }
-
-            self.event_queue.putOneUncancelable(self.io, .{ .connected = n_conns }) catch {};
+            self.pushEvent(.{ .connected = n_conns }) catch {};
 
             if (self.connection_mutex.lock(self.io)) {
                 self.connection = conn;
@@ -119,10 +139,11 @@ fn acceptLoop(self: *Self) void {
                     continue :receive;
                 };
                 std.log.info("Received stream!", .{});
-                self.event_queue.putOneUncancelable(self.io, .stream_received) catch {};
+                self.pushEvent(.stream_received) catch {};
+
                 defer {
                     stream.deinit();
-                    self.event_queue.putOneUncancelable(self.io, .stream_closed) catch {};
+                    self.pushEvent(.stream_closed) catch {};
                 }
 
                 // On error downstream, we enter the while loop again,
@@ -133,10 +154,12 @@ fn acceptLoop(self: *Self) void {
                     // TODO On timeout break connection
                     if (stream.read(&recv_buf, .{ .timeout_ms = 5000 }) catch continue :receive) |msg| {
                         std.log.info("Got message: {s}", .{msg});
-                        self.event_queue.putOneUncancelable(self.io, .{ .message = .{ .buf = recv_buf, .len = msg.len } }) catch {};
+                        self.pushEvent(.{ .message = .{ .buf = recv_buf, .len = msg.len } }) catch {};
                     } else {
-                        conn.close();
                         std.log.info("Stream EOF", .{});
+                        conn.close();
+                        n_conns = self.connections_received.fetchSub(1, .seq_cst);
+                        self.pushEvent(.{ .disconnected = n_conns }) catch {};
                         continue :connect;
                     }
                 }
