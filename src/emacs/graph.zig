@@ -53,6 +53,7 @@ pub const Funcs = struct {
         errdefer c_allocator.destroy(graph_renderer);
         graph_renderer.* = GraphRenderer.init(.{
             .gpa = core.gpa,
+            .io = core.io,
             .graph_options = .{},
             .view_width = view_width,
             .view_height = view_height,
@@ -83,7 +84,7 @@ pub const Funcs = struct {
     pub fn resize(ctx: *Context, graph_data: EmacsValue, width: u32, height: u32) !void {
         const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *GraphRenderer);
         const canvas_spec = try ctx.env.plistGet(graph_data, "canvas", ctx.arena, EmacsValue);
-        try gr.resize(width, height);
+        _ = try gr.resize(width, height);
         try ctx.env.plistSet(graph_data, "width", gr.view_width);
         try ctx.env.plistSet(graph_data, "height", gr.view_height);
         _ = try ctx.env.funcall1(ctx.env.intern("canvas-refresh"), canvas_spec);
@@ -102,7 +103,7 @@ pub const Funcs = struct {
             return error.DifferentBuffers;
         }
 
-        try gr.resize(view_width, view_height);
+        _ = try gr.resize(view_width, view_height);
     }
 
     pub fn mouseDown(ctx: *Context, graph_data: EmacsValue, x: f32, y: f32, button: u32) !void {
@@ -111,7 +112,7 @@ pub const Funcs = struct {
             const canvas_spec = try ctx.env.plistGet(graph_data, "canvas", ctx.arena, EmacsValue);
             _ = try ctx.env.funcall1(ctx.env.intern("canvas-refresh"), canvas_spec);
         }
-        ctx.env.message("DOWN: {}", gr.state);
+        ctx.env.message("DOWN: {}", .{gr.state});
     }
     
     pub fn mouseUp(ctx: *Context, graph_data: EmacsValue, x: f32, y: f32) !void {
@@ -120,7 +121,7 @@ pub const Funcs = struct {
             const canvas_spec = try ctx.env.plistGet(graph_data, "canvas", ctx.arena, EmacsValue);
             _ = try ctx.env.funcall1(ctx.env.intern("canvas-refresh"), canvas_spec);
         }
-        ctx.env.message("UP: {}", gr.state);
+        ctx.env.message("UP: {}", .{gr.state});
     }
     
     pub fn mouseMove(ctx: *Context, graph_data: EmacsValue, x: f32, y: f32) !void {
@@ -129,12 +130,12 @@ pub const Funcs = struct {
             const canvas_spec = try ctx.env.plistGet(graph_data, "canvas", ctx.arena, EmacsValue);
             _ = try ctx.env.funcall1(ctx.env.intern("canvas-refresh"), canvas_spec);
         }
-        ctx.env.message("MOVE: {}", gr.state);
+        ctx.env.message("MOVE: {}", .{gr.state});
     }
 
     pub fn mouseScroll(ctx: *Context, graph_data: EmacsValue, factor: f32) !void {
         const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *GraphRenderer);
-        try gr.mouseScroll(factor);
+        _ = try gr.mouseScroll(factor);
         const canvas_spec = try ctx.env.plistGet(graph_data, "canvas", ctx.arena, EmacsValue);
         _ = try ctx.env.funcall1(ctx.env.intern("canvas-refresh"), canvas_spec);
     }
@@ -143,7 +144,7 @@ pub const Funcs = struct {
     pub fn pan(ctx: *Context, graph_data: EmacsValue, dx: f32, dy: f32) !void {
         const gr = try ctx.env.plistGet(graph_data, "graph-ptr", ctx.arena, *GraphRenderer);
         const canvas_spec = try ctx.env.plistGet(graph_data, "canvas", ctx.arena, EmacsValue);
-        try gr.pan(dx, dy);
+        _ = try gr.pan(dx, dy);
         _ = try ctx.env.funcall1(ctx.env.intern("canvas-refresh"), canvas_spec);
     }
 
@@ -154,7 +155,7 @@ pub const Funcs = struct {
         const canvas_spec = try ctx.env.plistGet(graph_data, "canvas", ctx.arena, EmacsValue);
         const fx: ?f32 = if (focus_x >= 0 and focus_y >= 0) focus_x else null;
         const fy: ?f32 = if (focus_x >= 0 and focus_y >= 0) focus_y else null;
-        try gr.zoomBy(factor, fx, fy);
+        _ = try gr.zoomBy(factor, fx, fy);
         _ = try ctx.env.funcall1(ctx.env.intern("canvas-refresh"), canvas_spec);
     }
 

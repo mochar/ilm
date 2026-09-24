@@ -5,6 +5,7 @@ const sqlite = @import("sqlite");
 const sdl = @import("sdl-backend");
 const ilm = @import("ilm");
 const Core = ilm.Core;
+const androidLogFn = @import("android.zig").logFn;
 const ContentView = @import("ContentView.zig");
 const SetupView = @import("SetupView.zig");
 
@@ -21,6 +22,7 @@ pub const dvui_app: dvui.App = .{
     .deinitFn = appDeinit,
 };
 pub const main = dvui.App.main;
+
 export fn dvui_main() callconv(.c) void { // For android
     // Not init passed by main so make a ourselves
     var environ_map = std.process.Environ.Map.init(gpa);
@@ -36,9 +38,12 @@ export fn dvui_main() callconv(.c) void { // For android
 
     _ = dvui.App.main(real_init) catch {};
 }
+
 pub const panic = dvui.App.panic;
+
 pub const std_options: std.Options = .{
-    .logFn = dvui.App.logFn,
+    // .logFn = dvui.App.logFn,
+    .logFn = if (builtin.abi.isAndroid()) androidLogFn else std.log.defaultLog,
 };
 
 var gpa_instance = std.heap.DebugAllocator(.{

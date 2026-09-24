@@ -11,7 +11,11 @@ const Node = graphviz.Node;
 const plutovg = @import("plutovg");
 const Self = @This();
 
+const log = std.log.scoped(.graph_renderer);
+
 gpa: std.mem.Allocator,
+/// For getting time to limit render fps
+io: std.Io,
 graph: Graph,
 padding: f32,
 hovered: ?Node = null,
@@ -32,6 +36,9 @@ camera: Camera,
 /// If true, buffer allocation is managed internally.
 managed: bool,
 
+const TARGET_FPS = 60;
+const FRAMES_NS = 1_000_000_000 / TARGET_FPS;
+
 const Camera = struct {
     /// Center of the camera in world coordinates
     center_x: f32 = 0.0,
@@ -43,13 +50,15 @@ const Camera = struct {
 pub const MouseButton = enum { left, right, middle };
 
 const State = struct {
+    dirty: bool = false,
+    last_render_ns: i96 = 0,
     mouse: struct {
         /// Which button is currently pressed
         down: ?MouseButton = null,
         last_pos: [2]f32 = .{ 0.0, 0.0 },
         last_click: ?struct {
             pos: [2]f32,
-            time_ns: i128,
+            time_ns: i96,
         } = null,
         drag: ?struct {
             // start_pos: [2]f32 = .{ 0.0, 0.0 },
@@ -63,6 +72,7 @@ const State = struct {
 
 pub const Options = struct {
     gpa: std.mem.Allocator,
+    io: std.Io,
     graph_options: Graph.Options = .{},
     padding: f32 = 20.0,
     /// Viewport width in pixels. If 0, uses buffer_stride.
@@ -111,6 +121,7 @@ pub fn init(options: Options) !Self {
 
     return .{
         .gpa = gpa,
+        .io = options.io,
         .graph = graph,
         .padding = options.padding,
         .highlighted = .init(gpa),
@@ -153,6 +164,9 @@ pub fn mouseMove(self: *Self, screen_x: f32, screen_y: f32) !bool {
     defer self.state.mouse.last_pos = .{ screen_x, screen_y };
     if (self.state.mouse.down == null) {
         if (self.getNodeAt(screen_x, screen_y)) |node| {
+            if (self.hovered != null and self.hovered.?.cnode == node.cnode) {
+                return false;
+            }
             self.hovered = node;
             try self.render();
             return true;
@@ -167,11 +181,12 @@ pub fn mouseMove(self: *Self, screen_x: f32, screen_y: f32) !bool {
     if (self.state.mouse.drag) |drag| {
         switch (drag.mode) {
             .pan_camera => {
-                try self.pan(screen_x - last_pos[0], screen_y - last_pos[1]);
+                return try self.pan(screen_x - last_pos[0], screen_y - last_pos[1]);
             },
-            .drag_node => {},
+            .drag_node => {
+                return false;
+            },
         }
-        return true;
     }
 
     if (self.getNodeAt(screen_x, screen_y)) |node| {
@@ -179,7 +194,7 @@ pub fn mouseMove(self: *Self, screen_x: f32, screen_y: f32) !bool {
     } else {
         self.state.mouse.drag = .{ .mode = .pan_camera };
     }
-    return true;
+    return false;
 }
 
 pub fn mouseUp(self: *Self, screen_x: f32, screen_y: f32) !bool {
@@ -191,11 +206,7 @@ pub fn mouseUp(self: *Self, screen_x: f32, screen_y: f32) !bool {
     if (!was_dragging) {
         // Register mouse click.
 
-        // Get time in nanoseconds.
-        // std.Io.Clock.real.now needs std.Io instance...
-        var ts: std.c.timespec = undefined;
-        _ = std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts);
-        const now_ns = @as(i128, ts.sec) * std.time.ns_per_s + ts.nsec;
+        const now_ns = std.Io.Clock.real.now(self.io).nanoseconds;
 
         if (self.state.mouse.last_click) |last_click| {
             // Check if its a double click.
@@ -215,11 +226,16 @@ pub fn mouseUp(self: *Self, screen_x: f32, screen_y: f32) !bool {
         };
     }
 
+    if (self.shouldRender()) {
+        try self.render();
+        return true;
+    }
+
     return false;
 }
 
-pub fn mouseScroll(self: *Self, factor: f32) !void {
-    try self.zoomBy(factor, self.state.mouse.last_pos[0], self.state.mouse.last_pos[1]);
+pub fn mouseScroll(self: *Self, factor: f32) !bool {
+    return try self.zoomBy(factor, self.state.mouse.last_pos[0], self.state.mouse.last_pos[1]);
 }
 
 /// Layout graph with aspect ratio set to match current viewport.
@@ -255,14 +271,14 @@ pub fn fitToGraph(self: *Self) void {
 }
 
 /// Move camera by a delta in screen pixels (e.g. from mouse drag).
-pub fn pan(self: *Self, delta_screen_x: f32, delta_screen_y: f32) !void {
+pub fn pan(self: *Self, delta_screen_x: f32, delta_screen_y: f32) !bool {
     self.camera.center_x -= delta_screen_x / self.camera.zoom;
     self.camera.center_y += delta_screen_y / self.camera.zoom;
-    try self.render();
+    return try self.tryRender();
 }
 
 /// Zoom camera by a multiplication factor, optionally centered at a screen focus coordinate.
-pub fn zoomBy(self: *Self, factor: f32, screen_focus_x: ?f32, screen_focus_y: ?f32) !void {
+pub fn zoomBy(self: *Self, factor: f32, screen_focus_x: ?f32, screen_focus_y: ?f32) !bool {
     const old_zoom = self.camera.zoom;
     const new_zoom = std.math.clamp(old_zoom * factor, 0.001, 1000.0);
     if (screen_focus_x != null and screen_focus_y != null) {
@@ -277,7 +293,7 @@ pub fn zoomBy(self: *Self, factor: f32, screen_focus_x: ?f32, screen_focus_y: ?f
     } else {
         self.camera.zoom = new_zoom;
     }
-    try self.render();
+    return try self.tryRender();
 }
 
 /// Convert screen pixel coordinates (origin at top-left of viewport) to world coordinates.
@@ -306,8 +322,27 @@ pub fn getNodeAt(self: *const Self, screen_x: f32, screen_y: f32) ?Node {
     return self.graph.getNodeAt(world_pt.x, world_pt.y);
 }
 
+pub fn shouldRender(self: *const Self) bool {
+    const now_ns = std.Io.Clock.real.now(self.io).nanoseconds;
+    return self.state.dirty and (now_ns - self.state.last_render_ns) > FRAMES_NS;
+}
+
+/// Mark as dirty (should render) and try to render if FPS allows.
+pub fn tryRender(self: *Self) !bool {
+    self.state.dirty = true;
+    if (self.shouldRender()) {
+        try self.render();
+        return true;
+    }
+    return false;
+}
+
 /// Render the graph in the pixel buffer using current camera transformation.
 pub fn render(self: *Self) !void {
+    defer {
+        self.state.last_render_ns = std.Io.Clock.real.now(self.io).nanoseconds;
+        self.state.dirty = false;
+    }
     const graph = &self.graph;
     const canvas = &self.canvas;
 

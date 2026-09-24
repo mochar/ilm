@@ -9,8 +9,12 @@ const GraphRenderer = ilm.GraphRenderer;
 const Id = ilm.Id;
 const Self = @This();
 
+const log = std.log.scoped(.concepts_view);
+
 const MAX_GRAPH_WIDTH: u32 = 2048;
 const MAX_GRAPH_HEIGHT: u32 = 2048;
+
+var debug_window: bool = false;
 
 core: *Core,
 arena: std.heap.ArenaAllocator,
@@ -31,6 +35,7 @@ pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
 
     const graph_renderer = try GraphRenderer.init(.{
         .gpa = gpa,
+        .io = core.io,
         .graph_options = .{},
         .buffer_stride = MAX_GRAPH_WIDTH,
         .buffer_height = MAX_GRAPH_HEIGHT,
@@ -108,6 +113,25 @@ pub fn render(self: *Self) void {
         self.renderGraph();
         self.renderSidebar(is_wide);
     }
+
+    if (debug_window) {
+        const os_win = dvui.osWindow(
+            @src(),
+            .{ .title = "Child os window (or so I hope)", .size = .{ .w = 500, .h = 300 } },
+            .{ .open_flag = &debug_window },
+        );
+        defer os_win.deinit();
+
+        const b = dvui.box(@src(), .{}, .{ .background = true, .corners = .{
+            .tl = .square,
+            .tr = .square,
+            .br = .default,
+            .bl = .default,
+        }, .expand = .both });
+        defer b.deinit();
+
+        dvui.structUI(@src(), "state", &self.graph_renderer.state, 3, .{}, .{ .expand = .both });
+    }
 }
 
 fn renderSidebar(self: *Self, is_wide: bool) void {
@@ -157,7 +181,7 @@ fn renderGraph(self: *Self) void {
     });
     defer texture_box.deinit();
 
-    _ = dvui.spacer(@src(), .{ .expand = .both });
+    // _ = dvui.spacer(@src(), .{ .expand = .both });
 
     // Get available width and height and clamp it to max graph dimensions
     const rs = texture_box.data().contentRectScale();
@@ -178,7 +202,6 @@ fn renderGraph(self: *Self) void {
     if (self.rendered_width > 0 and self.rendered_height > 0) {
         const u_scale = @as(f32, @floatFromInt(self.rendered_width)) / @as(f32, @floatFromInt(MAX_GRAPH_WIDTH));
         const v_scale = @as(f32, @floatFromInt(self.rendered_height)) / @as(f32, @floatFromInt(MAX_GRAPH_HEIGHT));
-        // std.debug.print("rs.r: {d}x{d}, rendered: {d}x{d}, MAX: {d}x{d}, uv: {d}x{d}\n", .{rs.r.w, rs.r.h, self.rendered_width, self.rendered_height, MAX_GRAPH_WIDTH, MAX_GRAPH_HEIGHT, u_scale, v_scale});
 
         dvui.renderTexture(self.graph_texture, rs, .{
             .uv = .{ .x = 0, .y = 0, .w = u_scale, .h = v_scale },
@@ -204,12 +227,14 @@ fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void {
 
                 switch (me.action) {
                     .press => {
-                        const btn: ?GraphRenderer.MouseButton = switch (me.button) {
-                            .left, .touch0 => .left,
+                        log.info("Press: {t}", .{me.button});
+                        var btn: ?GraphRenderer.MouseButton = switch (me.button) {
+                            .left, .touch0, .touch1 => .left,
                             .right => .right,
                             .middle => .middle,
                             else => null,
                         };
+                        if (me.button.touch()) btn = .left;
                         if (btn) |b| {
                             e.handle(@src(), wd);
                             dvui.captureMouse(wd, e.num);
@@ -221,6 +246,7 @@ fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void {
                         }
                     },
                     .release => {
+                        log.info("Release: {t}", .{me.button});
                         if (dvui.captured(wd.id)) {
                             e.handle(@src(), wd);
                             dvui.captureMouse(null, e.num);
@@ -234,8 +260,9 @@ fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void {
                         }
                     },
                     .motion => {
-                        // if (dvui.captured(wd.id)) {
-                        if (true) {
+                        log.info("Motion", .{});
+                        if (dvui.captured(wd.id)) {
+                        // if (true) {
                             e.handle(@src(), wd);
                             if (self.graph_renderer.mouseMove(x, y)) |rerender| {
                                 if (rerender) self.syncGraphTexture();
@@ -245,16 +272,24 @@ fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void {
                         }
                     },
                     .wheel_y => {
+                        log.info("Wheel_y: {d}", .{me.action.wheel_y});
                         e.handle(@src(), wd);
                         const factor: f32 = @exp(me.action.wheel_y / 180);
-                        self.graph_renderer.mouseScroll(factor) catch |err| {
-                            // self.graph_renderer.zoomBy(factor, x, y) catch |err| {
+                        if (self.graph_renderer.mouseScroll(factor)) |rerender| {
+                            if (rerender) self.syncGraphTexture();
+                        } else |err| {
                             self.toastErr(@src(), err, "Failed to zoom graph", .{});
-                        };
-                        self.syncGraphTexture();
+                        }
                     },
+                    // always called once per frame
                     .position => {
-                        if (self.graph_renderer.getNodeAt(x, y) != null) {
+                        log.info("Position", .{});
+                        // because of fps limit, we need to "flush" the render
+                        if (self.graph_renderer.shouldRender()) {
+                            self.graph_renderer.render() catch {};
+                            self.syncGraphTexture();
+                        }
+                        if (self.graph_renderer.hovered != null) {
                             dvui.cursorSet(.hand);
                         }
                     },
