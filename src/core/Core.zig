@@ -1,4 +1,5 @@
 const std = @import("std");
+const known_folders = @import("known-folders");
 const iroh = @import("iroh");
 const sqlite = @import("sqlite");
 const database = @import("database.zig");
@@ -13,16 +14,32 @@ data_dir: []const u8,
 db: sqlite.Db,
 p2p: P2p,
 
+// fn getDefaultDataDir(io: std.Io, alloc: std.mem.Allocator, environ: *std.process.Environ.Map) ?[]const u8 {
+//     std.process.Environ.createMap(.empty, alloc)
+//     // known_folders.getPath(io, alloc, environ, .data)
+// }
+
 pub const Options = struct {
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    data_dir: []const u8,
     sqlite_diagnostics: ?*sqlite.Diagnostics = null,
 };
 
-pub fn init(gpa: std.mem.Allocator, io: std.Io, data_dir: []const u8, options: Options) !Core {
-    const db_path = try std.fs.path.joinZ(gpa, &.{ data_dir, "ilm.db" });
+pub fn init(opts: Options) !Core {
+    const gpa = opts.gpa;
+    const io = opts.io;
+    
+    const data_dir = gpa.dupe(u8, opts.data_dir) catch @panic("OOM");
+    errdefer gpa.free(data_dir);
+
+    // Load sqlite database
+    const db_path = try std.fs.path.joinZ(opts.gpa, &.{ data_dir, "ilm.db" });
     defer gpa.free(db_path);
-    var db = try database.getDb(.{ .path = db_path, .diags = options.sqlite_diagnostics });
+    var db = try database.getDb(.{ .path = db_path, .diags = opts.sqlite_diagnostics });
     errdefer db.deinit();
 
+    // Setup secret key
     const dir = try std.Io.Dir.createDirPathOpen(.cwd(), io, data_dir, .{});
     defer dir.close(io);
     const secret_key = blk: {
@@ -50,7 +67,7 @@ pub fn init(gpa: std.mem.Allocator, io: std.Io, data_dir: []const u8, options: O
     return .{
         .gpa = gpa,
         .io = io,
-        .data_dir = gpa.dupe(u8, data_dir) catch @panic("OOM"),
+        .data_dir = data_dir,
         .db = db,
         .p2p = p2p,
     };

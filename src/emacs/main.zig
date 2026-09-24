@@ -42,7 +42,12 @@ pub const Funcs = struct {
     pub fn init(ctx: *Context, data_dir: []const u8) !*Core {
         var diags: sqlite.Diagnostics = .{};
         const core = try c_allocator.create(Core);
-        core.* = Core.init(gpa, io.io(), data_dir, .{ .sqlite_diagnostics = &diags }) catch |err| {
+        core.* = Core.init(.{
+            .gpa = gpa,
+            .io = io.io(),
+            .data_dir = data_dir,
+            .sqlite_diagnostics = &diags,
+        }) catch |err| {
             if (diags.err) |sqlite_err| {
                 ctx.setError("Failed to init: {t}: {s}", .{ err, sqlite_err.message });
             } else {

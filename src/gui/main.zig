@@ -155,7 +155,7 @@ pub fn connect(data_dir: []const u8) void {
     core = gpa.create(Core) catch {
         return dvui.toast(@src(), .{ .message = "Failed to allocate Core" });
     };
-    if (Core.init(gpa, dvui.io, data_dir, .{ .sqlite_diagnostics = &diags })) |c| {
+    if (Core.init(.{ .gpa = gpa, .io = dvui.io, .data_dir = data_dir, .sqlite_diagnostics = &diags })) |c| {
         core.?.* = c;
         core.?.p2p.addEventTrigger(.{
             .ctx = dvui.currentWindow(),

@@ -8,7 +8,7 @@ pub fn main(init: std.process.Init) !void {
     const data_path = (try known_folders.getPath(init.io, init.gpa, init.environ_map, .data)) orelse return error.FolderNotFound;
     defer init.gpa.free(data_path);
 
-    var core = try Core.init(init.gpa, init.io, data_path, .{});
+    var core = try Core.init(.{ .gpa = init.gpa, .io = init.io, .data_dir = data_path });
     defer core.deinit();
     core.setupP2p() catch |err| {
         std.log.err("Failed to setup p2p: {t}", .{err});
