@@ -3,10 +3,10 @@ const builtin = @import("builtin");
 const dvui = @import("dvui");
 const sqlite = @import("sqlite");
 const sdl = @import("sdl-backend");
-
 const ilm = @import("ilm");
 const Core = ilm.Core;
-const Content = @import("Content.zig");
+const ContentView = @import("ContentView.zig");
+const SetupView = @import("SetupView.zig");
 
 pub const dvui_app: dvui.App = .{
     .config = .{
@@ -41,12 +41,21 @@ pub const std_options: std.Options = .{
     .logFn = dvui.App.logFn,
 };
 
-var gpa_instance = std.heap.DebugAllocator(.{}){};
+var gpa_instance = std.heap.DebugAllocator(.{
+    .never_unmap = true,
+    .retain_metadata = true,
+}){};
 const gpa = gpa_instance.allocator();
 var frame_arena_allocator: std.heap.ArenaAllocator = .init(gpa);
 const arena = frame_arena_allocator.allocator();
 
-var content: ?Content = null;
+const View = union(enum) {
+    main: void,
+    content: ContentView,
+    setup: SetupView,
+};
+
+var view: View = .main;
 var core: ?*Core = null;
 /// Holds copied-over events from the p2p event queue. See p2pEventTrigger.
 var p2p_event_queue: [32]ilm.P2p.Event = undefined;
@@ -72,17 +81,43 @@ fn p2pEventTrigger(window_opaque: ?*anyopaque) void {
     }
 }
 
+fn switchView(new_view: View) void {
+    switch (view) {
+        .main => {},
+        inline else => |*v| v.deinit(),
+    }
+    view = new_view;
+}
+
 // Runs before the first frame, after backend and dvui.Window.init()
 // - runs between win.begin()/win.end()
 pub fn appInit(win: *dvui.Window) !void {
     _ = win;
-    connect();
+
+    var data_dir: ?[]const u8 = null;
+    if (builtin.abi == .android) {
+        if (sdl.c.SDL_GetPrefPath("org.libsdl", "ilm")) |c_str| {
+            data_dir = std.mem.span(c_str);
+        } else {
+            dvui.toast(@src(), .{ .message = "Failed to find prefpath" });
+            return;
+        }
+    }
+
+    if (data_dir) |dir| {
+        connect(dir);
+    } else {
+        switchView(.{ .setup = .init(gpa) });
+    }
 }
 
 // Run as app is shutting down before dvui.Window.deinit()
 pub fn appDeinit(win: *dvui.Window) void {
     _ = win;
-    if (content) |*c| c.deinit();
+    switch (view) {
+        .main => {},
+        inline else => |*v| v.deinit(),
+    }
     if (core) |c| {
         c.deinit();
         gpa.destroy(c);
@@ -100,62 +135,21 @@ pub fn appFrame() !dvui.App.Result {
     );
     scaler.deinit();
 
-    if (menu()) |res| return res;
+    // if (menu()) |res| return res;
 
     var box = dvui.box(@src(), .{}, .{ .expand = .both });
     defer box.deinit();
 
-    if (content) |*c| {
-        if (c.render()) |res| return res;
+    switch (view) {
+        .main => {},
+        inline else => |*v| v.render(),
     }
 
     return .ok;
 }
 
-pub fn menu() ?dvui.App.Result {
-    var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{ .style = .window, .background = true, .expand = .horizontal });
-    defer hbox.deinit();
-
-    var m = dvui.menu(@src(), .horizontal, .{});
-    defer m.deinit();
-
-    if (dvui.menuItemLabel(@src(), "File", .{ .submenu = true }, .{ .tag = "first-focusable" })) |r| {
-        var fw = dvui.floatingMenu(@src(), .{ .from = r }, .{});
-        defer fw.deinit();
-
-        if (dvui.menuItemLabel(@src(), "Close Menu", .{}, .{ .expand = .horizontal }) != null) {
-            m.close();
-        }
-
-        if (dvui.backend.kind != .web) {
-            if (dvui.menuItemLabel(@src(), "Exit", .{}, .{ .expand = .horizontal }) != null) {
-                return .close;
-            }
-        }
-    }
-
-    if (dvui.menuItemLabel(@src(), "Connect", .{ .submenu = true }, .{})) |_| {
-        connect();
-    }
-
-    return null;
-}
-
-fn connect() void {
-    if (content) |*c| c.deinit();
+pub fn connect(data_dir: []const u8) void {
     if (core) |c| c.deinit();
-
-    var data_dir: []const u8 = undefined;
-    if (builtin.abi == .android) {
-        if (sdl.c.SDL_GetPrefPath("org.libsdl", "ilm")) |c_str| {
-            data_dir = std.mem.span(c_str);
-        } else {
-            dvui.toast(@src(), .{ .message = "Failed to find prefpath" });
-            return;
-        }
-    } else {
-        data_dir = "/home/mochar/tmp/ilm/";
-    }
 
     var diags: sqlite.Diagnostics = .{};
     core = gpa.create(Core) catch {
@@ -174,8 +168,8 @@ fn connect() void {
             std.log.err("Failed to setup p2p: {t}", .{err});
             dvui.toast(@src(), .{ .message = "Failed to setup p2p" });
         };
-        if (Content.init(gpa, core.?)) |con| {
-            content = con;
+        if (ContentView.init(gpa, core.?)) |con| {
+            switchView(.{ .content = con });
             dvui.toast(@src(), .{ .message = "Connected!" });
         } else |_| {
             dvui.toast(@src(), .{ .message = "Content init failed" });

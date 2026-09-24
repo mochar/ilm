@@ -3,10 +3,17 @@ const c = @import("c");
 
 /// 32-byte secret key.
 pub const SecretKey = struct {
+    pub const KEY_LEN = 32;
+    pub const HEX_LEN = 64;
+    
     ptr: *c.SecretKey_t,
 
     pub fn generate() SecretKey {
         return .{ .ptr = c.secret_key_generate() orelse @panic("failed to generate secret key") };
+    }
+
+    pub fn default() SecretKey {
+        return .{ .ptr = c.secret_key_default() orelse @panic("failed to create secret key") };
     }
 
     pub fn deinit(self: *const SecretKey) void {
@@ -19,7 +26,7 @@ pub const SecretKey = struct {
     }
 
     /// Returns the 64-character hex-encoded string representation
-    pub fn asHex(self: *const SecretKey) [64]u8 {
+    pub fn asHex(self: *const SecretKey) [HEX_LEN]u8 {
         const c_str = c.secret_key_as_base32(self.ptr) orelse @panic("secret_key_as_base32 returned null");
         defer c.rust_free_string(c_str);
 
@@ -34,6 +41,25 @@ pub const SecretKey = struct {
         const c_str = c.secret_key_as_base32(self.ptr) orelse return error.OutOfMemory;
         defer c.rust_free_string(c_str);
         return allocator.dupe(u8, std.mem.span(c_str));
+    }
+    
+    /// Return a SecretKey from a hex encoded string.
+    pub fn fromHex(hex_str: []const u8) !SecretKey {
+        if (hex_str.len != 64) return error.InvalidLength;
+
+        // Copy as zero terminated
+        var buf: [65]u8 = undefined;
+        var alloc = std.heap.FixedBufferAllocator.init(&buf);
+        _ = alloc.allocator().dupeZ(u8, hex_str) catch unreachable;
+
+        var secret_key = SecretKey.default();
+        errdefer secret_key.deinit();
+
+        if (c.secret_key_from_base32(&buf, @ptrCast(&secret_key.ptr)) != 0) {
+            return error.InvalidKey;
+        }
+
+        return secret_key;
     }
 };
 
@@ -203,25 +229,37 @@ pub const Endpoint = struct {
         }
     };
 
+    pub const Options = struct {
+        gpa: std.mem.Allocator,
+        alpn: []const u8,
+        /// Transfer ownership, do not free!
+        secret_key: ?SecretKey = null,
+    };
+
     /// ALPN is assumed to be a static slice or with lifetime longer than this.
-    pub fn init(gpa: std.mem.Allocator, alpn: []const u8) !Endpoint {
+    pub fn init(opts: Options) !Endpoint {
         var alpn_slice: c.slice_ref_uint8_t = undefined;
-        alpn_slice.ptr = alpn.ptr;
-        alpn_slice.len = alpn.len;
+        alpn_slice.ptr = opts.alpn.ptr;
+        alpn_slice.len = opts.alpn.len;
 
         var config = c.endpoint_config_default();
         defer c.endpoint_config_free(config);
         c.endpoint_config_add_alpn(&config, alpn_slice);
         config.discovery_cfg = c.DISCOVERY_CONFIG_ALL;
+        if (opts.secret_key) |secret_key| {
+            // Note: I get a double free error when freeing secret key
+            // afterwards, so it seems to be consumed by iroh already.
+            config.secret_key = secret_key.ptr;
+        }
 
         const endpoint = c.endpoint_default() orelse unreachable;
         const bind_res = c.endpoint_bind(&config, null, null, &endpoint);
         if (bind_res != 0) return error.BindFailed;
 
         return .{
-            .gpa = gpa,
+            .gpa = opts.gpa,
             .ptr = endpoint,
-            .alpn = alpn,
+            .alpn = opts.alpn,
             .alpn_slice = alpn_slice,
             .state = .bound,
         };

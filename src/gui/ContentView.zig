@@ -23,7 +23,7 @@ pub fn deinit(self: *Self) void {
     self.concepts_view.deinit();
 }
 
-pub fn render(self: *Self) ?dvui.App.Result {
+pub fn render(self: *Self) void {
     {
         var tabs = dvui.tabs(@src(), .{}, .{ .expand = .horizontal });
         defer tabs.deinit();
@@ -63,6 +63,4 @@ pub fn render(self: *Self) ?dvui.App.Result {
             else => {},
         }
     }
-
-    return null;
 }

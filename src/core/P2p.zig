@@ -43,8 +43,8 @@ events: []Event,
 event_queue: EventQueue,
 event_triggers: std.ArrayList(EventTrigger),
 
-pub fn init(gpa: std.mem.Allocator, io: std.Io) !Self {
-    var endpoint: iroh.Endpoint = try .init(gpa, ALPN);
+pub fn init(gpa: std.mem.Allocator, io: std.Io, secret_key: iroh.SecretKey) !Self {
+    var endpoint: iroh.Endpoint = try .init(.{ .gpa = gpa, .alpn = ALPN, .secret_key = secret_key });
     errdefer endpoint.deinit();
 
     const events = try gpa.alloc(Event, EVENT_QUEUE_SIZE);

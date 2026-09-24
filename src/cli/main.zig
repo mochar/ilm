@@ -61,7 +61,7 @@ fn connect(endpoint_id: []const u8, gpa: std.mem.Allocator) !void {
     const addr: iroh.EndpointAddr = .fromPublicKey(&public_key);
     defer addr.deinit();
 
-    var endpoint: iroh.Endpoint = try .init(gpa, ilm.P2p.ALPN);
+    var endpoint: iroh.Endpoint = try .init(.{ .gpa = gpa, .alpn = ilm.P2p.ALPN });
     defer endpoint.deinit();
 
     var conn = try endpoint.connect(&addr);
