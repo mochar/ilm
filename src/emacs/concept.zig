@@ -35,7 +35,7 @@ pub const Funcs = struct {
     }
 
     pub fn getAncestors(ctx: *Context, core: *Core, ids: []Id, direct_only: bool) ![]ConceptAncestor {
-        return try ilm.concept.getAncestors(core, ctx.arena, ids, direct_only);
+        return try ilm.concept.getAncestors(core, ctx.arena, .{ .ids = ids, .direct_only = direct_only });
     }
 
     pub fn setGraph(ctx: *Context, core: *Core, graph_data: EmacsValue, concept_id: Id) !void {
@@ -60,7 +60,7 @@ pub const Funcs = struct {
             return ctx.setError("Failed to add graph highlight: {t}", .{err});
         };
 
-        const ancestors = try ilm.concept.getAncestors(core, ctx.arena, &ids, false);
+        const ancestors = try ilm.concept.getAncestors(core, ctx.arena, .{ .ids = &ids });
         for (ancestors) |*ancestor| {
             graph.addNode(ancestor.id.uuid, ancestor.name) catch |err| {
                 return ctx.setError("Failed to add node: {t}", .{err});

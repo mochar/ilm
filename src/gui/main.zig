@@ -107,7 +107,8 @@ pub fn appInit(win: *dvui.Window) !void {
     if (data_dir) |dir| {
         connect(dir);
     } else {
-        switchView(.{ .setup = .init(gpa) });
+        connect("/home/mochar/tmp/ilm/");
+        // switchView(.{ .setup = .init(gpa) });
     }
 }
 

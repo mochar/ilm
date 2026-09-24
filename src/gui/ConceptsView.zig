@@ -50,7 +50,9 @@ pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
     };
     self.getConcepts();
     if (self.concepts.len > 0) {
-        self.selectConcept(&self.concepts[0]);
+        // self.selectConcept(&self.concepts[0]);
+        self.updateGraphContent();
+        self.updateGraphTexture();
     }
     return self;
 }
@@ -115,63 +117,76 @@ fn renderSidebar(self: *Self, is_wide: bool) void {
     });
     defer scroll.deinit();
 
+    const selected_id: ?u128 = if (self.selected) |c| c.id.uuid else null;
     for (self.concepts, 0..) |*concept, i| {
-        var c_box = dvui.box(@src(), .{ .dir = .horizontal }, .{ .id_extra = i, .expand = .horizontal });
+        const is_selected = concept.id.uuid == selected_id;
+        var c_box = dvui.box(
+            @src(),
+            .{ .dir = .horizontal },
+            .{
+                .id_extra = i,
+                .expand = .horizontal,
+                .background = true,
+                .style = if (is_selected) .highlight else null,
+            },
+        );
         defer c_box.deinit();
-        if (dvui.labelClick(@src(), "{s}", .{concept.name}, .{}, .{})) {
-            self.selectConcept(concept);
+        if (dvui.labelClick(@src(), "{s}", .{concept.name}, .{}, .{ .expand = .both })) {
+            if (is_selected) self.unselect() else self.selectConcept(concept);
         }
     }
 }
 
 fn renderGraph(self: *Self) void {
-    if (self.selected) |concept| {
-        var vbox = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .both });
-        defer vbox.deinit();
+    var vbox = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .both });
+    defer vbox.deinit();
 
-        {
-            var tl = dvui.textLayout(@src(), .{}, .{ .expand = .horizontal, .font = .theme(.title) });
-            defer tl.deinit();
+    {
+        var tl = dvui.textLayout(@src(), .{}, .{ .expand = .horizontal, .font = .theme(.title) });
+        defer tl.deinit();
+        if (self.selected) |concept| {
             tl.format("{s}", .{concept.name}, .{});
-        }
-
-        var texture_box = dvui.box(@src(), .{}, .{
-            .expand = .both,
-            .min_size_content = .{ .w = 100, .h = 100 },
-        });
-        defer texture_box.deinit();
-
-        _ = dvui.spacer(@src(), .{ .expand = .both });
-
-        // Get available width and height and clamp it to max graph dimensions
-        const rs = texture_box.data().contentRectScale();
-        const target_w = std.math.clamp(@as(u32, @intFromFloat(@max(1.0, rs.r.w))), 1, @max(1, MAX_GRAPH_WIDTH));
-        const target_h = std.math.clamp(@as(u32, @intFromFloat(@max(1.0, rs.r.h))), 1, @max(1, MAX_GRAPH_HEIGHT));
-
-        // Update graph renderer and texture if the available space has changed
-        if (target_w != self.rendered_width or target_h != self.rendered_height) {
-            self.rendered_width = target_w;
-            self.rendered_height = target_h;
-            self.updateGraphTexture();
-        }
-
-        self.handleEvents(texture_box.data(), rs);
-
-            // Render the graph texture. Set uv to only view the rendered part of
-            // the buffer.
-            if (self.rendered_width > 0 and self.rendered_height > 0) {
-                const u_scale = @as(f32, @floatFromInt(self.rendered_width)) / @as(f32, @floatFromInt(MAX_GRAPH_WIDTH));
-                const v_scale = @as(f32, @floatFromInt(self.rendered_height)) / @as(f32, @floatFromInt(MAX_GRAPH_HEIGHT));
-                // std.debug.print("rs.r: {d}x{d}, rendered: {d}x{d}, MAX: {d}x{d}, uv: {d}x{d}\n", .{rs.r.w, rs.r.h, self.rendered_width, self.rendered_height, MAX_GRAPH_WIDTH, MAX_GRAPH_HEIGHT, u_scale, v_scale});
-
-                dvui.renderTexture(self.graph_texture, rs, .{
-                    .uv = .{ .x = 0, .y = 0, .w = u_scale, .h = v_scale },
-                }) catch |err| {
-                    return self.toastErr(@src(), err, "Failed to render graph texture", .{});
-                };
-            }
+        } else {
+            tl.format("All concepts", .{}, .{});
         }
     }
+
+    var texture_box = dvui.box(@src(), .{}, .{
+        .expand = .both,
+        .min_size_content = .{ .w = 100, .h = 100 },
+    });
+    defer texture_box.deinit();
+
+    _ = dvui.spacer(@src(), .{ .expand = .both });
+
+    // Get available width and height and clamp it to max graph dimensions
+    const rs = texture_box.data().contentRectScale();
+    const target_w = std.math.clamp(@as(u32, @intFromFloat(@max(1.0, rs.r.w))), 1, @max(1, MAX_GRAPH_WIDTH));
+    const target_h = std.math.clamp(@as(u32, @intFromFloat(@max(1.0, rs.r.h))), 1, @max(1, MAX_GRAPH_HEIGHT));
+
+    // Update graph renderer and texture if the available space has changed
+    if (target_w != self.rendered_width or target_h != self.rendered_height) {
+        self.rendered_width = target_w;
+        self.rendered_height = target_h;
+        self.updateGraphTexture();
+    }
+
+    self.handleEvents(texture_box.data(), rs);
+
+    // Render the graph texture. Set uv to only view the rendered part of
+    // the buffer.
+    if (self.rendered_width > 0 and self.rendered_height > 0) {
+        const u_scale = @as(f32, @floatFromInt(self.rendered_width)) / @as(f32, @floatFromInt(MAX_GRAPH_WIDTH));
+        const v_scale = @as(f32, @floatFromInt(self.rendered_height)) / @as(f32, @floatFromInt(MAX_GRAPH_HEIGHT));
+        // std.debug.print("rs.r: {d}x{d}, rendered: {d}x{d}, MAX: {d}x{d}, uv: {d}x{d}\n", .{rs.r.w, rs.r.h, self.rendered_width, self.rendered_height, MAX_GRAPH_WIDTH, MAX_GRAPH_HEIGHT, u_scale, v_scale});
+
+        dvui.renderTexture(self.graph_texture, rs, .{
+            .uv = .{ .x = 0, .y = 0, .w = u_scale, .h = v_scale },
+        }) catch |err| {
+            return self.toastErr(@src(), err, "Failed to render graph texture", .{});
+        };
+    }
+}
 
 fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void {
     for (dvui.events()) |*e| {
@@ -269,33 +284,34 @@ fn selectConcept(self: *Self, concept: *Concept) void {
     self.updateGraphTexture();
 }
 
+fn unselect(self: *Self) void {
+    if (self.selected == null) return;
+    self.selected = null;
+    self.updateGraphContent();
+    self.updateGraphTexture();
+}
+
 /// Replace the graph nodes and edges with that of self.selected
 fn updateGraphContent(self: *Self) void {
     self.graph_renderer.clear();
-    var graph = &self.graph_renderer.graph;
+    const graph = &self.graph_renderer.graph;
+    const arena = self.arena.allocator();
 
+    // Fill graph
     if (self.selected) |concept| {
-        const ids: [1]Id = .{concept.id};
-        graph.addNode(concept.id.uuid, concept.name) catch |err| {
-            return self.toastErr(@src(), err, "Failed to add node", .{});
-        };
         self.graph_renderer.highlighted.put(concept.id.uuid, {}) catch |err| {
             return self.toastErr(@src(), err, "Failed to add graph highlight", .{});
         };
-        const ancestors = ilm.concept.getAncestors(self.core, self.arena.allocator(), &ids, false) catch |err| {
-            return self.toastErr(@src(), err, "Failed to get ancestors", .{});
+        ilm.concept.fillAncestorGraph(self.core, graph, arena, concept) catch |err| {
+            return self.toastErr(@src(), err, "Failed to fill graph ({t})", .{err});
         };
-        for (ancestors) |*ancestor| {
-            graph.addNode(ancestor.id.uuid, ancestor.name) catch |err| {
-                return self.toastErr(@src(), err, "Failed to add node", .{});
-            };
-        }
-        for (ancestors) |*ancestor| {
-            graph.addEdge(ancestor.id.uuid, ancestor.child_id.uuid) catch |err| {
-                return self.toastErr(@src(), err, "Failed to add edge", .{});
-            };
-        }
+    } else {
+        ilm.concept.fillFullGraph(self.core, graph, arena, self.concepts) catch |err| {
+            return self.toastErr(@src(), err, "Failed to fill graph ({t})", .{err});
+        };
     }
+
+    // Render
     self.graph_renderer.layout("neato") catch |err| {
         return self.toastErr(@src(), err, "Failed to layout graph", .{});
     };

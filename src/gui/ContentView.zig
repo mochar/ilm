@@ -27,11 +27,12 @@ pub fn render(self: *Self) void {
     {
         var tabs = dvui.tabs(@src(), .{}, .{ .expand = .horizontal });
         defer tabs.deinit();
-        if (tabs.addTabLabel(true, "Concepts", .{})) {
-            self.tab = 0;
-        }
-        if (tabs.addTabLabel(true, "Info", .{})) {
-            self.tab = 1;
+        const tab_names: [2][]const u8 = .{"Concepts", "Info"};
+        for (tab_names, 0..) |tab_name, tab_index| {
+            const is_selected = self.tab == tab_index;
+            if (tabs.addTabLabel(true, tab_name, .{.style = if (is_selected) .content else null })) {
+                self.tab = tab_index;
+            }
         }
     }
 

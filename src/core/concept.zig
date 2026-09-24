@@ -3,6 +3,7 @@ const log = std.log;
 const Core = @import("Core.zig");
 const sqlite = @import("sqlite");
 const Id = @import("database.zig").Id;
+const Graph = @import("graphviz").Graph;
 
 pub const Concept = struct {
     id: Id,
@@ -16,6 +17,8 @@ pub const ConceptAncestor = struct {
     depth: usize,
     is_direct: bool,
 };
+
+// ** DB operations
 
 pub fn add(core: *Core, name: []const u8, parent_ids: []const Id) !Id {
     var diags: sqlite.Diagnostics = .{};
@@ -162,13 +165,19 @@ pub fn getById(core: *Core, allocator: std.mem.Allocator, ids: []const Id) ![]Co
 ///
 /// NOTE: Direct parents (depth = 1) will be included even if marked as redundant
 /// in `concept_rel`.
-pub fn getAncestors(core: *Core, allocator: std.mem.Allocator, ids: []const Id, direct_only: bool) ![]ConceptAncestor {
-    if (ids.len == 0) return &.{};
-
+pub fn getAncestors(
+    core: *Core,
+    allocator: std.mem.Allocator,
+    opts: struct {
+        ids: ?[]const Id = null,
+        direct_only: bool = false,
+    },
+) ![]ConceptAncestor {
     var query_builder: std.ArrayList(u8) = .empty;
     defer query_builder.deinit(allocator);
 
-    if (direct_only) {
+    if (opts.direct_only) {
+        const ids = opts.ids orelse &.{};
         try query_builder.appendSlice(allocator,
             \\SELECT c.id, c.name, cr.child_id, 1 AS depth, 1 AS is_direct
             \\FROM concept_rel cr
@@ -188,14 +197,16 @@ pub fn getAncestors(core: *Core, allocator: std.mem.Allocator, ids: []const Id, 
             \\WITH RECURSIVE ancestors(id, child_id, depth) AS (
             \\    SELECT parent_id, child_id, 1
             \\    FROM concept_rel
-            \\    WHERE child_id IN (
         );
-        for (0..ids.len) |i| {
-            if (i > 0) try query_builder.appendSlice(allocator, ", ");
-            try query_builder.appendSlice(allocator, "?");
+        if (opts.ids) |ids| {
+            try query_builder.appendSlice(allocator, "\nWHERE child_id IN (");
+            for (0..ids.len) |i| {
+                if (i > 0) try query_builder.appendSlice(allocator, ", ");
+                try query_builder.appendSlice(allocator, "?");
+            }
+            try query_builder.appendSlice(allocator, "\n)");
         }
         try query_builder.appendSlice(allocator,
-            \\    )
             \\    UNION ALL
             \\    SELECT cr.parent_id, a.child_id, a.depth + 1
             \\    FROM concept_rel cr
@@ -211,10 +222,14 @@ pub fn getAncestors(core: *Core, allocator: std.mem.Allocator, ids: []const Id, 
 
     var diags: sqlite.Diagnostics = .{};
     const query: []const u8 = query_builder.items;
-    var stmt = try core.db.prepareDynamicWithDiags(query, .{ .diags = &diags });
+    var stmt = core.db.prepareDynamicWithDiags(query, .{ .diags = &diags }) catch |err| {
+        log.err("SQLite prepare failed: {s}", .{diags.message});
+        return err;
+    };
+
     defer stmt.deinit();
 
-    var iter = try stmt.iteratorAlloc(ConceptAncestor, allocator, ids);
+    var iter = try stmt.iteratorAlloc(ConceptAncestor, allocator, opts.ids orelse &.{});
     var rows: std.ArrayList(ConceptAncestor) = .empty;
     defer rows.deinit(allocator);
     while (try iter.nextAlloc(allocator, .{ .diags = &diags })) |row| {
@@ -223,6 +238,106 @@ pub fn getAncestors(core: *Core, allocator: std.mem.Allocator, ids: []const Id, 
     const result = try rows.toOwnedSlice(allocator);
 
     return result;
+}
+
+/// Get concepts with no parent concepts.
+pub fn getRoots(core: *Core, allocator: std.mem.Allocator) ![]Concept {
+    // A concept has no ancestors if it never appears as a child_id in concept_rel
+    const query =
+        \\SELECT c.id, c.name
+        \\FROM concept c
+        \\WHERE NOT EXISTS (
+        \\    SELECT 1 FROM concept_rel cr WHERE cr.child_id = c.id
+        \\)
+        \\ORDER BY c.name
+    ;
+
+    var diags: sqlite.Diagnostics = .{};
+    var stmt = core.db.prepareDynamicWithDiags(query, .{ .diags = &diags }) catch |err| {
+        log.err("SQLite prepare failed: {s}", .{diags.message});
+        return err;
+    };
+    defer stmt.deinit();
+
+    var iter = try stmt.iteratorAlloc(Concept, allocator, .{});
+
+    var rows: std.ArrayList(Concept) = .empty;
+    defer rows.deinit(allocator);
+
+    while (try iter.nextAlloc(allocator, .{ .diags = &diags })) |row| {
+        try rows.append(allocator, row);
+    }
+
+    return try rows.toOwnedSlice(allocator);
+}
+
+pub const Relation = struct {
+    parent_id: Id,
+    child_id: Id,
+};
+
+pub fn getRelations(core: *Core, alloc: std.mem.Allocator) ![]Relation {
+    var diags: sqlite.Diagnostics = .{};
+    var stmt = core.db.prepareWithDiags(
+        "SELECT parent_id, child_id FROM concept_rel",
+        .{ .diags = &diags },
+    ) catch |err| {
+        log.err("SQLite prepare failed: {s}", .{diags.message});
+        return err;
+    };
+    defer stmt.deinit();
+
+    var iter = try stmt.iteratorAlloc(Relation, alloc, .{});
+    var rows: std.ArrayList(Relation) = .empty;
+    defer rows.deinit(alloc);
+    while (try iter.nextAlloc(alloc, .{ .diags = &diags })) |row| {
+        try rows.append(alloc, row);
+    }
+    const result = try rows.toOwnedSlice(alloc);
+
+    return result;
+}
+
+// ** Graph
+
+pub fn fillAncestorGraph(core: *Core, graph: *Graph, alloc: std.mem.Allocator, concept: *Concept) !void {
+    graph.addNode(concept.id.uuid, concept.name) catch |err| {
+        log.err("Failed to add concept node ({t})", .{err});
+        return err;
+    };
+    const ancestors = getAncestors(core, alloc, .{ .ids = &.{concept.id} }) catch |err| {
+        log.err("Failed to get ancestors ({t})", .{err});
+        return err;
+    };
+    for (ancestors) |*ancestor| {
+        graph.addNode(ancestor.id.uuid, ancestor.name) catch |err| {
+            log.err("Failed to add concept node ({t})", .{err});
+            return err;
+        };
+    }
+    for (ancestors) |*ancestor| {
+        graph.addEdge(ancestor.id.uuid, ancestor.child_id.uuid) catch |err| {
+            log.err("Failed to add concept edge ({t})", .{err});
+            return err;
+        };
+    }
+}
+
+pub fn fillFullGraph(core: *Core, graph: *Graph, alloc: std.mem.Allocator, all_concepts: ?[]Concept) !void {
+    const concepts = all_concepts orelse try getAll(core, alloc);
+    for (concepts) |*concept| {
+        graph.addNode(concept.id.uuid, concept.name) catch |err| {
+            log.err("Failed to add concept node ({t})", .{err});
+            return err;
+        };
+    }
+    const relations = try getRelations(core, alloc);
+    for (relations) |*relation| {
+        graph.addEdge(relation.parent_id.uuid, relation.child_id.uuid) catch |err| {
+            log.err("Failed to add concept edge ({t})", .{err});
+            return err;
+        };
+    }
 }
 
 // ** Tests
