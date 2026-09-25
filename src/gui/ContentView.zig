@@ -27,13 +27,18 @@ pub fn render(self: *Self) void {
     {
         var tabs = dvui.tabs(@src(), .{}, .{ .expand = .horizontal });
         defer tabs.deinit();
-        const tab_names: [2][]const u8 = .{"Concepts", "Info"};
+
+        const tab_names: [2][]const u8 = .{ "Concepts", "Info" };
         for (tab_names, 0..) |tab_name, tab_index| {
             const is_selected = self.tab == tab_index;
-            if (tabs.addTabLabel(true, tab_name, .{.style = if (is_selected) .content else null })) {
+            if (tabs.addTabLabel(true, tab_name, .{ .style = if (is_selected) .content else null })) {
                 self.tab = tab_index;
             }
         }
+
+        _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+
+        dvui.label(@src(), "FPS: {d}", .{dvui.currentWindow().FPS()}, .{});
     }
 
     {

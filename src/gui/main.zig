@@ -51,8 +51,6 @@ var gpa_instance = std.heap.DebugAllocator(.{
     .retain_metadata = true,
 }){};
 const gpa = gpa_instance.allocator();
-var frame_arena_allocator: std.heap.ArenaAllocator = .init(gpa);
-const arena = frame_arena_allocator.allocator();
 
 const View = union(enum) {
     main: void,
@@ -77,8 +75,10 @@ fn p2pEventTrigger(window_opaque: ?*anyopaque) void {
                 .stream_received => dvui.toast(@src(), .{ .window = window, .message = "Stream received to p2p client" }),
                 .stream_closed => dvui.toast(@src(), .{ .window = window, .message = "Stream closed to p2p client" }),
                 .message => |payload| {
+                    const arena = dvui.currentWindow().lifo();
                     const msg = payload.buf[0..payload.len];
                     const txt = std.fmt.allocPrint(arena, "Recieved p2p msg: {s}", .{msg}) catch "OOM";
+                    defer arena.free(txt);
                     dvui.toast(@src(), .{ .window = window, .message = txt });
                 },
             }
@@ -131,17 +131,12 @@ pub fn appDeinit(win: *dvui.Window) void {
 }
 
 pub fn appFrame() !dvui.App.Result {
-    // TODO Use max capacity, see DVUI Window.zig for example
-    defer _ = frame_arena_allocator.reset(.retain_capacity);
-
     var scaler = dvui.scale(
         @src(),
         .{ .scale = &dvui.currentWindow().content_scale, .pinch_zoom = .global },
         .{ .rect = .cast(dvui.windowRect()) },
     );
     scaler.deinit();
-
-    // if (menu()) |res| return res;
 
     var box = dvui.box(@src(), .{}, .{ .expand = .both });
     defer box.deinit();
@@ -150,7 +145,7 @@ pub fn appFrame() !dvui.App.Result {
         .main => {},
         inline else => |*v| v.render(),
     }
-
+    
     return .ok;
 }
 

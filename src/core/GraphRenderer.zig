@@ -152,52 +152,52 @@ pub fn clear(self: *Self) void {
     self.state = .{};
 }
 
-pub fn mouseDown(self: *Self, screen_x: f32, screen_y: f32, button: MouseButton) !bool {
+pub fn mouseDown(self: *Self, screen_x: f32, screen_y: f32, button: MouseButton) bool {
     self.state.mouse.last_pos = .{ screen_x, screen_y };
     self.state.mouse.down = button;
     self.state.mouse.drag = null;
-    return false;
+    return self.state.dirty;
 }
 
-pub fn mouseMove(self: *Self, screen_x: f32, screen_y: f32) !bool {
+pub fn mouseMove(self: *Self, screen_x: f32, screen_y: f32) bool {
     const last_pos = self.state.mouse.last_pos;
     defer self.state.mouse.last_pos = .{ screen_x, screen_y };
+
     if (self.state.mouse.down == null) {
+        // No mouse button down, so we react on hover events.
         if (self.getNodeAt(screen_x, screen_y)) |node| {
-            if (self.hovered != null and self.hovered.?.cnode == node.cnode) {
-                return false;
+            if (self.hovered == null or self.hovered.?.cnode != node.cnode) {
+                self.hovered = node;
+                self.state.dirty = true;
             }
-            self.hovered = node;
-            try self.render();
-            return true;
-        }
-        if (self.hovered != null) {
+        } else if (self.hovered != null) {
             self.hovered = null;
-            try self.render();
-            return true;
+            self.state.dirty = true;
         }
-        return false;
-    }
-    if (self.state.mouse.drag) |drag| {
+    } else if (self.state.mouse.drag) |drag| {
+        // We are in the middle of dragging
         switch (drag.mode) {
             .pan_camera => {
-                return try self.pan(screen_x - last_pos[0], screen_y - last_pos[1]);
+                self.pan(screen_x - last_pos[0], screen_y - last_pos[1]);
             },
             .drag_node => {
                 return false;
             },
         }
-    }
-
-    if (self.getNodeAt(screen_x, screen_y)) |node| {
-        self.state.mouse.drag = .{ .mode = .{ .drag_node = node } };
     } else {
-        self.state.mouse.drag = .{ .mode = .pan_camera };
+        // Mouse button down but not dragging yet -> start dragging
+        if (self.getNodeAt(screen_x, screen_y)) |node| {
+            self.state.mouse.drag = .{ .mode = .{ .drag_node = node } };
+        } else {
+            self.state.mouse.drag = .{ .mode = .pan_camera };
+        }
+        self.state.dirty = true;
     }
-    return false;
+    
+    return self.state.dirty;
 }
 
-pub fn mouseUp(self: *Self, screen_x: f32, screen_y: f32) !bool {
+pub fn mouseUp(self: *Self, screen_x: f32, screen_y: f32) bool {
     self.state.mouse.last_pos = .{ screen_x, screen_y };
     const was_dragging = self.state.mouse.drag != null;
     self.state.mouse.drag = null;
@@ -205,7 +205,6 @@ pub fn mouseUp(self: *Self, screen_x: f32, screen_y: f32) !bool {
 
     if (!was_dragging) {
         // Register mouse click.
-
         const now_ns = std.Io.Clock.real.now(self.io).nanoseconds;
 
         if (self.state.mouse.last_click) |last_click| {
@@ -216,7 +215,6 @@ pub fn mouseUp(self: *Self, screen_x: f32, screen_y: f32) !bool {
             if (dt_ns <= 400 * std.time.ns_per_ms and (dx * dx + dy * dy <= 25.0)) {
                 self.state.mouse.last_click = null;
                 self.fitToGraph();
-                try self.render();
                 return true;
             }
         }
@@ -226,16 +224,12 @@ pub fn mouseUp(self: *Self, screen_x: f32, screen_y: f32) !bool {
         };
     }
 
-    if (self.shouldRender()) {
-        try self.render();
-        return true;
-    }
-
-    return false;
+    return self.state.dirty;
 }
 
-pub fn mouseScroll(self: *Self, factor: f32) !bool {
-    return try self.zoomBy(factor, self.state.mouse.last_pos[0], self.state.mouse.last_pos[1]);
+pub fn mouseScroll(self: *Self, factor: f32) bool {
+    self.zoomBy(factor, self.state.mouse.last_pos[0], self.state.mouse.last_pos[1]);
+    return self.state.dirty;
 }
 
 /// Layout graph with aspect ratio set to match current viewport.
@@ -245,16 +239,18 @@ pub fn layout(self: *Self, engine: []const u8) !void {
         self.graph.setRatio(target_ratio);
     }
     try self.graph.layout(engine);
+    self.state.dirty = true;
 }
 
 /// Resize the visible viewport dimensions within buffer bounds, and rerender.
-pub fn resize(self: *Self, width: u32, height: u32) !void {
+pub fn resize(self: *Self, width: u32, height: u32) void {
     const max_w: u32 = @intCast(self.stride);
     const max_h: u32 = @intCast(self.height);
     self.view_width = @max(1, @min(width, max_w));
     self.view_height = @max(1, @min(height, max_h));
     self.graph.setRatio(@as(f32, @floatFromInt(self.view_height)) / @as(f32, @floatFromInt(self.view_width)));
-    try self.render();
+
+    self.state.dirty = true;
 }
 
 /// Fit camera to current graph's bounding box and center it in the viewport.
@@ -268,17 +264,19 @@ pub fn fitToGraph(self: *Self) void {
     self.camera.zoom = @min(vw / gw, vh / gh);
     self.camera.center_x = bb.centerX();
     self.camera.center_y = bb.centerY();
+
+    self.state.dirty = true;
 }
 
 /// Move camera by a delta in screen pixels (e.g. from mouse drag).
-pub fn pan(self: *Self, delta_screen_x: f32, delta_screen_y: f32) !bool {
+pub fn pan(self: *Self, delta_screen_x: f32, delta_screen_y: f32) void {
     self.camera.center_x -= delta_screen_x / self.camera.zoom;
     self.camera.center_y += delta_screen_y / self.camera.zoom;
-    return try self.tryRender();
+    self.state.dirty = true;
 }
 
 /// Zoom camera by a multiplication factor, optionally centered at a screen focus coordinate.
-pub fn zoomBy(self: *Self, factor: f32, screen_focus_x: ?f32, screen_focus_y: ?f32) !bool {
+pub fn zoomBy(self: *Self, factor: f32, screen_focus_x: ?f32, screen_focus_y: ?f32) void {
     const old_zoom = self.camera.zoom;
     const new_zoom = std.math.clamp(old_zoom * factor, 0.001, 1000.0);
     if (screen_focus_x != null and screen_focus_y != null) {
@@ -293,7 +291,7 @@ pub fn zoomBy(self: *Self, factor: f32, screen_focus_x: ?f32, screen_focus_y: ?f
     } else {
         self.camera.zoom = new_zoom;
     }
-    return try self.tryRender();
+    self.state.dirty = true;
 }
 
 /// Convert screen pixel coordinates (origin at top-left of viewport) to world coordinates.
@@ -325,16 +323,6 @@ pub fn getNodeAt(self: *const Self, screen_x: f32, screen_y: f32) ?Node {
 pub fn shouldRender(self: *const Self) bool {
     const now_ns = std.Io.Clock.real.now(self.io).nanoseconds;
     return self.state.dirty and (now_ns - self.state.last_render_ns) > FRAMES_NS;
-}
-
-/// Mark as dirty (should render) and try to render if FPS allows.
-pub fn tryRender(self: *Self) !bool {
-    self.state.dirty = true;
-    if (self.shouldRender()) {
-        try self.render();
-        return true;
-    }
-    return false;
 }
 
 /// Render the graph in the pixel buffer using current camera transformation.

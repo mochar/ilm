@@ -10,7 +10,7 @@ const emacs = @import("emacs.zig");
 const Context = emacs.Context;
 const EmacsValue = emacs.EmacsValue;
 
-const refreshGraph = @import("graph.zig").refreshGraph;
+const layoutGraph = @import("graph.zig").layoutGraph;
 
 pub const Funcs = struct {
     pub fn add(_: *Context, core: *Core, name: []u8, parent_ids: []Id) !Id.StrT {
@@ -73,6 +73,6 @@ pub const Funcs = struct {
         }
 
         const canvas_spec = try ctx.env.plistGet(graph_data, "canvas", ctx.arena, EmacsValue);
-        try refreshGraph(ctx, gr, canvas_spec);
+        try layoutGraph(ctx, gr, canvas_spec);
     }
 };

@@ -7,6 +7,7 @@ const Core = ilm.Core;
 const Concept = ilm.concept.Concept;
 const GraphRenderer = ilm.GraphRenderer;
 const Id = ilm.Id;
+const utils = @import("utils.zig");
 const Self = @This();
 
 const log = std.log.scoped(.concepts_view);
@@ -18,7 +19,6 @@ var debug_window: bool = false;
 
 core: *Core,
 arena: std.heap.ArenaAllocator,
-render_arena: std.heap.ArenaAllocator,
 concepts: []Concept = &.{},
 selected: ?*Concept = null,
 graph_renderer: GraphRenderer,
@@ -29,9 +29,6 @@ rendered_height: u32 = 0,
 pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
     var arena = std.heap.ArenaAllocator.init(gpa);
     errdefer arena.deinit();
-
-    const render_arena = std.heap.ArenaAllocator.init(gpa);
-    errdefer render_arena.deinit();
 
     const graph_renderer = try GraphRenderer.init(.{
         .gpa = gpa,
@@ -49,13 +46,11 @@ pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
     var self: Self = .{
         .core = core,
         .arena = arena,
-        .render_arena = render_arena,
         .graph_renderer = graph_renderer,
         .graph_texture = graph_texture,
     };
     self.getConcepts();
     if (self.concepts.len > 0) {
-        // self.selectConcept(&self.concepts[0]);
         self.updateGraphContent();
         self.updateGraphTexture();
     }
@@ -65,13 +60,6 @@ pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
 pub fn deinit(self: *Self) void {
     self.graph_renderer.deinit();
     self.arena.deinit();
-    self.render_arena.deinit();
-}
-
-fn toastErr(self: *Self, src: std.builtin.SourceLocation, err: anyerror, comptime fmt: []const u8, args: anytype) void {
-    const msg = std.fmt.allocPrint(self.render_arena.allocator(), "{t}: " ++ fmt, .{err} ++ args) catch "An error occurred";
-    dvui.toast(src, .{ .message = msg });
-    dvui.logError(src, err, fmt, args);
 }
 
 fn getConcepts(self: *Self) void {
@@ -89,8 +77,6 @@ fn getConcepts(self: *Self) void {
 }
 
 pub fn render(self: *Self) void {
-    defer _ = self.render_arena.reset(.retain_capacity);
-
     {
         var tl = dvui.textLayout(@src(), .{}, .{ .expand = .horizontal, .font = .theme(.title) });
         defer tl.deinit();
@@ -195,7 +181,7 @@ fn renderGraph(self: *Self) void {
         self.updateGraphTexture();
     }
 
-    self.handleEvents(texture_box.data(), rs);
+    self.handleGraphEvents(texture_box.data(), rs);
 
     // Render the graph texture. Set uv to only view the rendered part of
     // the buffer.
@@ -206,12 +192,21 @@ fn renderGraph(self: *Self) void {
         dvui.renderTexture(self.graph_texture, rs, .{
             .uv = .{ .x = 0, .y = 0, .w = u_scale, .h = v_scale },
         }) catch |err| {
-            return self.toastErr(@src(), err, "Failed to render graph texture", .{});
+            return utils.toastErr(@src(), err, "Failed to render graph texture", .{});
         };
     }
 }
 
-fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void {
+/// React to mouse, touch and key events on the graph.
+///
+/// Since DVUI exposes all the events that occured within a frame,
+/// rerendering the graph immediately will cause frequent rerenders
+/// making it slow. Instead the events only update the internal state
+/// of the graph renderer (such as mouse position) and then mark it as
+/// dirty. DVUI's "position" event is always exposed once per frame,
+/// which we then use to check if the graph is dirty, and if so
+/// rerender.
+fn handleGraphEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void {
     for (dvui.events()) |*e| {
         if (!dvui.eventMatchSimple(e, wd)) continue;
 
@@ -238,11 +233,7 @@ fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void {
                         if (btn) |b| {
                             e.handle(@src(), wd);
                             dvui.captureMouse(wd, e.num);
-                            if (self.graph_renderer.mouseDown(x, y, b)) |rerender| {
-                                if (rerender) self.syncGraphTexture();
-                            } else |err| {
-                                self.toastErr(@src(), err, "Failed mouse down", .{});
-                            }
+                            _ = self.graph_renderer.mouseDown(x, y, b);
                         }
                     },
                     .release => {
@@ -252,40 +243,29 @@ fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void {
                             dvui.captureMouse(null, e.num);
                             if (self.graph_renderer.hovered) |node| {
                                 self.selectConceptById(node.getId() catch unreachable);
-                            } else if (self.graph_renderer.mouseUp(x, y)) |rerender| {
-                                if (rerender) self.syncGraphTexture();
-                            } else |err| {
-                                self.toastErr(@src(), err, "Failed mouse up", .{});
                             }
+                            _ = self.graph_renderer.mouseUp(x, y);
                         }
                     },
                     .motion => {
                         log.info("Motion", .{});
-                        if (dvui.captured(wd.id)) {
-                        // if (true) {
-                            e.handle(@src(), wd);
-                            if (self.graph_renderer.mouseMove(x, y)) |rerender| {
-                                if (rerender) self.syncGraphTexture();
-                            } else |err| {
-                                self.toastErr(@src(), err, "Failed mouse move", .{});
-                            }
-                        }
+                        e.handle(@src(), wd);
+                        _ = self.graph_renderer.mouseMove(x, y);
                     },
                     .wheel_y => {
                         log.info("Wheel_y: {d}", .{me.action.wheel_y});
                         e.handle(@src(), wd);
                         const factor: f32 = @exp(me.action.wheel_y / 180);
-                        if (self.graph_renderer.mouseScroll(factor)) |rerender| {
-                            if (rerender) self.syncGraphTexture();
-                        } else |err| {
-                            self.toastErr(@src(), err, "Failed to zoom graph", .{});
-                        }
+                        _ = self.graph_renderer.mouseScroll(factor);
                     },
-                    // always called once per frame
                     .position => {
                         log.info("Position", .{});
-                        // because of fps limit, we need to "flush" the render
-                        if (self.graph_renderer.shouldRender()) {
+                        // This event gets called once per frame at
+                        // the end of the frame. We use this to check
+                        // if the renderer is dirty, and if so to
+                        // render the new graph and sync it to the
+                        // texture.
+                        if (self.graph_renderer.state.dirty) {
                             self.graph_renderer.render() catch {};
                             self.syncGraphTexture();
                         }
@@ -335,43 +315,41 @@ fn updateGraphContent(self: *Self) void {
     // Fill graph
     if (self.selected) |concept| {
         self.graph_renderer.highlighted.put(concept.id.uuid, {}) catch |err| {
-            return self.toastErr(@src(), err, "Failed to add graph highlight", .{});
+            return utils.toastErr(@src(), err, "Failed to add graph highlight", .{});
         };
         ilm.concept.fillAncestorGraph(self.core, graph, arena, concept) catch |err| {
-            return self.toastErr(@src(), err, "Failed to fill graph ({t})", .{err});
+            return utils.toastErr(@src(), err, "Failed to fill graph ({t})", .{err});
         };
     } else {
         ilm.concept.fillFullGraph(self.core, graph, arena, self.concepts) catch |err| {
-            return self.toastErr(@src(), err, "Failed to fill graph ({t})", .{err});
+            return utils.toastErr(@src(), err, "Failed to fill graph ({t})", .{err});
         };
     }
 
     // Render
     self.graph_renderer.layout("neato") catch |err| {
-        return self.toastErr(@src(), err, "Failed to layout graph", .{});
+        return utils.toastErr(@src(), err, "Failed to layout graph", .{});
     };
     self.graph_renderer.fitToGraph();
     self.graph_renderer.render() catch |err| {
-        return self.toastErr(@src(), err, "Failed to render graph", .{});
+        return utils.toastErr(@src(), err, "Failed to render graph", .{});
     };
 }
 
 fn syncGraphTexture(self: *Self) void {
     if (self.rendered_width == 0 or self.rendered_height == 0) return;
     self.graph_texture.updateSubRect(self.graph_renderer.buffer.ptr, 0, 0, self.rendered_width, self.rendered_height) catch |err| {
-        return self.toastErr(@src(), err, "Failed to update graph texture", .{});
+        return utils.toastErr(@src(), err, "Failed to update graph texture", .{});
     };
 }
 
 /// Compute new layout, render to buffer, and update the texture
 fn updateGraphTexture(self: *Self) void {
     if (self.rendered_width == 0 or self.rendered_height == 0) return;
-    self.graph_renderer.resize(self.rendered_width, self.rendered_height) catch |err| {
-        return self.toastErr(@src(), err, "Failed to resize graph", .{});
-    };
+    self.graph_renderer.resize(self.rendered_width, self.rendered_height);
     self.graph_renderer.fitToGraph();
     self.graph_renderer.render() catch |err| {
-        return self.toastErr(@src(), err, "Failed to render graph", .{});
+        return utils.toastErr(@src(), err, "Failed to render graph", .{});
     };
     self.syncGraphTexture();
 }
