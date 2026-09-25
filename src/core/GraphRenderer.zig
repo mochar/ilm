@@ -45,6 +45,9 @@ const Camera = struct {
     center_y: f32 = 0.0,
     /// Zoom scale factor (1.0 = 100%)
     zoom: f32 = 1.0,
+    // TODO Make these relative to content density (graph width height in px)
+    max_zoom: f32 = 10.0,
+    min_zoom: f32 = 0.5,
 };
 
 pub const MouseButton = enum { left, right, middle };
@@ -278,7 +281,7 @@ pub fn pan(self: *Self, delta_screen_x: f32, delta_screen_y: f32) void {
 /// Zoom camera by a multiplication factor, optionally centered at a screen focus coordinate.
 pub fn zoomBy(self: *Self, factor: f32, screen_focus_x: ?f32, screen_focus_y: ?f32) void {
     const old_zoom = self.camera.zoom;
-    const new_zoom = std.math.clamp(old_zoom * factor, 0.001, 1000.0);
+    const new_zoom = std.math.clamp(old_zoom * factor, self.camera.min_zoom, self.camera.max_zoom);
     if (screen_focus_x != null and screen_focus_y != null) {
         const focus_x = screen_focus_x.?;
         const focus_y = screen_focus_y.?;
