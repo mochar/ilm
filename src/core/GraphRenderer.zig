@@ -6,8 +6,8 @@
 const std = @import("std");
 const c = @import("c");
 const graphviz = @import("graphviz");
-const Graph = graphviz.Graph;
-const Node = graphviz.Node;
+pub const Graph = graphviz.Graph;
+pub const Node = graphviz.Node;
 const plutovg = @import("plutovg");
 const Self = @This();
 
