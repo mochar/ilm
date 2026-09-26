@@ -37,6 +37,7 @@ pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
         .io = core.io,
         .max_width = MAX_GRAPH_WIDTH,
         .max_height = MAX_GRAPH_HEIGHT,
+        .src = @src(),
     });
     errdefer graph_view.deinit();
 
@@ -186,15 +187,17 @@ fn selectConceptById(graph_view: *GraphView, id: u128) void {
 }
 
 fn selectConcept(self: *Self, concept: *Concept) void {
+    self.graph_view.animateToNode(concept.id.uuid) catch {};
     if (self.selected == concept) return;
     self.selected = concept;
-    self.updateGraphContent();
+    // self.updateGraphContent();
 }
 
 fn unselect(self: *Self) void {
+    self.graph_view.animateFitToGraph() catch {};
     if (self.selected == null) return;
     self.selected = null;
-    self.updateGraphContent();
+    // self.updateGraphContent();
 }
 
 /// Replace the graph nodes and edges with that of self.selected
@@ -207,18 +210,21 @@ fn updateGraphContent(self: *Self) void {
     _ = self.graph_arena.reset(.retain_capacity);
 
     // Fill graph
-    if (self.selected) |concept| {
-        renderer.highlighted.put(concept.id.uuid, {}) catch |err| {
-            return utils.toastErr(@src(), err, "Failed to add graph highlight", .{});
-        };
-        ilm.concept.fillAncestorGraph(self.core, graph, arena, concept) catch |err| {
-            return utils.toastErr(@src(), err, "Failed to fill graph ({t})", .{err});
-        };
-    } else {
-        ilm.concept.fillFullGraph(self.core, graph, arena, self.all_concepts) catch |err| {
-            return utils.toastErr(@src(), err, "Failed to fill graph ({t})", .{err});
-        };
-    }
+    // if (self.selected) |concept| {
+    //     renderer.highlighted.put(concept.id.uuid, {}) catch |err| {
+    //         return utils.toastErr(@src(), err, "Failed to add graph highlight", .{});
+    //     };
+    //     ilm.concept.fillAncestorGraph(self.core, graph, arena, concept) catch |err| {
+    //         return utils.toastErr(@src(), err, "Failed to fill graph ({t})", .{err});
+    //     };
+    // } else {
+    //     ilm.concept.fillFullGraph(self.core, graph, arena, self.all_concepts) catch |err| {
+    //         return utils.toastErr(@src(), err, "Failed to fill graph ({t})", .{err});
+    //     };
+    // }
+    ilm.concept.fillFullGraph(self.core, graph, arena, self.all_concepts) catch |err| {
+        return utils.toastErr(@src(), err, "Failed to fill graph ({t})", .{err});
+    };
 
     // Render
     renderer.layout("neato") catch |err| {

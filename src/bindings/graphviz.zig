@@ -43,6 +43,20 @@ pub const Node = struct {
         return std.fmt.parseInt(u128, name, 16);
     }
 
+    pub fn getInfo(node: *const Node) *c.Agnodeinfo_t {
+        return nodeInfo(node.cnode);
+    }
+
+    pub fn getPos(node: *const Node) [2]f64 {
+        const info = node.getInfo();
+        return .{ info.coord.x, info.coord.y };
+    }
+
+    pub fn getPosF32(node: *const Node) [2]f32 {
+        const pos = node.getPos();
+        return .{ @floatCast(pos[0]), @floatCast(pos[1]) };
+    }
+
     /// Convert uuid to 0-terminated name string for use in graphviz.
     ///
     /// Since graphviz uses u32 ids internally, we instead use the name to identify

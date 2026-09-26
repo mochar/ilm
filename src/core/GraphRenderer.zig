@@ -71,6 +71,13 @@ const State = struct {
             },
         } = null,
     } = .{},
+    animateTarget: ?struct {
+        start_time: std.Io.Timestamp,
+        duration: std.Io.Duration,
+        x: f32,
+        y: f32,
+        zoom: f32,
+    } = null,
 };
 
 pub const Options = struct {
@@ -196,7 +203,7 @@ pub fn mouseMove(self: *Self, screen_x: f32, screen_y: f32) bool {
         }
         self.state.dirty = true;
     }
-    
+
     return self.state.dirty;
 }
 
@@ -256,18 +263,25 @@ pub fn resize(self: *Self, width: u32, height: u32) void {
     self.state.dirty = true;
 }
 
-/// Fit camera to current graph's bounding box and center it in the viewport.
-pub fn fitToGraph(self: *Self) void {
+fn graphFittedCamera(self: *const Self) Camera {
     const bb = self.graph.boundingBox();
     const gw = bb.width();
     const gh = bb.height();
     const vw = @max(1.0, @as(f32, @floatFromInt(self.view_width)) - self.padding * 2.0);
     const vh = @max(1.0, @as(f32, @floatFromInt(self.view_height)) - self.padding * 2.0);
+    return .{
+        .zoom = @min(vw / gw, vh / gh),
+        .center_x = bb.centerX(),
+        .center_y = bb.centerY(),
+    };
+}
 
-    self.camera.zoom = @min(vw / gw, vh / gh);
-    self.camera.center_x = bb.centerX();
-    self.camera.center_y = bb.centerY();
-
+/// Fit camera to current graph's bounding box and center it in the viewport.
+pub fn fitToGraph(self: *Self) void {
+    const cam = self.graphFittedCamera();
+    self.camera.zoom = cam.zoom;
+    self.camera.center_x = cam.center_x;
+    self.camera.center_y = cam.center_y;
     self.state.dirty = true;
 }
 
@@ -323,9 +337,49 @@ pub fn getNodeAt(self: *const Self, screen_x: f32, screen_y: f32) ?Node {
     return self.graph.getNodeAt(world_pt.x, world_pt.y);
 }
 
+pub fn animateToNode(self: *Self, node_id: u128, duration: std.Io.Duration) !void {
+    const node = self.graph.getNode(node_id) orelse return error.NodeNotFound;
+    const pos = node.getPosF32();
+    self.state.animateTarget = .{
+        .start_time = .now(self.io, .real),
+        .duration = duration,
+        .x = pos[0],
+        .y = pos[1],
+        .zoom = 3.0,
+    };
+}
+
+pub fn animateFitToGraph(self: *Self, duration: std.Io.Duration) !void {
+    const cam = self.graphFittedCamera();
+    self.state.animateTarget = .{
+        .start_time = .now(self.io, .real),
+        .duration = duration,
+        .x = cam.center_x,
+        .y = cam.center_y,
+        .zoom = cam.zoom,
+    };
+}
+
+/// Check if the graph requires a rererender. Conditions:
+///   - Frame time
+///   - State is dirty
+///   - Animating
 pub fn shouldRender(self: *const Self) bool {
-    const now_ns = std.Io.Clock.real.now(self.io).nanoseconds;
-    return self.state.dirty and (now_ns - self.state.last_render_ns) > FRAMES_NS;
+    // const now_ns = std.Io.Clock.real.now(self.io).nanoseconds;
+    // if ((now_ns - self.state.last_render_ns) < FRAMES_NS) return false;
+    if (self.state.dirty) return true;
+    if (self.state.animateTarget != null) return true;
+    return false;
+}
+
+/// Render the graph if required, see shouldRender.
+/// Returns whether we decided to render or not.
+pub fn tryRender(self: *Self) !bool {
+    if (self.shouldRender()) {
+        try self.render();
+        return true;
+    }
+    return false;
 }
 
 /// Render the graph in the pixel buffer using current camera transformation.
@@ -334,11 +388,22 @@ pub fn render(self: *Self) !void {
         self.state.last_render_ns = std.Io.Clock.real.now(self.io).nanoseconds;
         self.state.dirty = false;
     }
+
     const graph = &self.graph;
     const canvas = &self.canvas;
-
     const render_w = self.view_width;
     const render_h = self.view_height;
+
+    // Update camera if animating
+    if (self.state.animateTarget) |target| {
+        const sinceStart = target.start_time.untilNow(self.io, .real);
+        const div = @as(f32, @floatFromInt(sinceStart.toMilliseconds())) / @as(f32, @floatFromInt(target.duration.toMilliseconds()));
+        const progress = @min(1.0, div);
+        self.camera.center_x = target.x - (1 - progress) * (target.x - self.camera.center_x);
+        self.camera.center_y = target.y - (1 - progress) * (target.y - self.camera.center_y);
+        self.camera.zoom = target.zoom - (1 - progress) * (target.zoom - self.camera.zoom);
+        if (progress == 1.0) self.state.animateTarget = null;
+    }
 
     // Clear background (dark theme background)
     canvas.save();

@@ -21,12 +21,21 @@ rendered_width: u32 = 0,
 rendered_height: u32 = 0,
 on_node_select: ?SelectFn = null,
 
+/// We need an id for the animation, which we in turn need to update
+/// the graph during animations.
+animation_id: dvui.Id,
+animation_duration: std.Io.Duration,
+
 pub const Options = struct {
+    /// Together with extra_id must be unique per instance
+    src: std.builtin.SourceLocation,
+    extra_id: usize = 0,
     gpa: std.mem.Allocator,
     io: std.Io,
     max_width: u32 = 2048,
     max_height: u32 = 2048,
     on_node_select: ?SelectFn = null,
+    animation_duration: std.Io.Duration = .fromMilliseconds(3000),
 };
 
 pub fn init(opts: Options) !Self {
@@ -51,6 +60,8 @@ pub fn init(opts: Options) !Self {
         .max_width = opts.max_width,
         .max_height = opts.max_height,
         .on_node_select = opts.on_node_select,
+        .animation_id = .extendId(null, opts.src, opts.extra_id),
+        .animation_duration = opts.animation_duration,
     };
 }
 
@@ -63,9 +74,29 @@ pub fn graph(self: *Self) *Graph {
     return &self.renderer.graph;
 }
 
+pub fn animateToNode(self: *Self, node_id: u128) !void {
+    try self.renderer.animateToNode(node_id, self.animation_duration);
+    dvui.animation(self.animation_id, "_", .{
+        .end_time = @intCast(self.animation_duration.toMicroseconds()),
+    });
+}
+
+pub fn animateFitToGraph(self: *Self) !void {
+    try self.renderer.animateFitToGraph(self.animation_duration);
+    dvui.animation(self.animation_id, "_", .{
+        .end_time = @intCast(self.animation_duration.toMicroseconds()),
+    });
+}
+
 pub fn render(self: *Self) !void {
     var vbox = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .both });
     defer vbox.deinit();
+
+    // By retrieving the animation, dvui takes note of it and
+    // schedules a rerender if the animatino is ongoing. Normally the
+    // idea is to use the animation value of the returned Animation,
+    // but GraphRenderer handles that internally.
+    _ = dvui.animationGet(self.animation_id, "_");
 
     var texture_box = dvui.box(@src(), .{}, .{
         .expand = .both,
@@ -78,14 +109,19 @@ pub fn render(self: *Self) !void {
     const target_w = std.math.clamp(@as(u32, @intFromFloat(@max(1.0, rs.r.w))), 1, @max(1, self.max_width));
     const target_h = std.math.clamp(@as(u32, @intFromFloat(@max(1.0, rs.r.h))), 1, @max(1, self.max_height));
 
+    self.handleEvents(texture_box.data(), rs);
+
     // Update graph renderer and texture if the available space has changed
     if (target_w != self.rendered_width or target_h != self.rendered_height) {
         self.rendered_width = target_w;
         self.rendered_height = target_h;
         try self.update();
+    } else {
+        // Otherwise render if state has changed
+        if (self.renderer.tryRender() catch false) {
+            try self.syncTexture();
+        }
     }
-
-    self.handleEvents(texture_box.data(), rs);
 
     // Render the graph texture. Set uv to only view the rendered part
     // of the buffer.
@@ -115,6 +151,7 @@ pub fn render(self: *Self) !void {
         defer b.deinit();
 
         dvui.structUI(@src(), "state", &self.renderer.state, 3, .{}, .{ .expand = .both });
+        dvui.structUI(@src(), "camera", &self.renderer.camera, 3, .{}, .{ .expand = .both });
     }
 }
 
@@ -124,9 +161,7 @@ pub fn render(self: *Self) !void {
 /// rerendering the graph immediately will cause frequent rerenders
 /// making it slow. Instead the events only update the internal state
 /// of the graph renderer (such as mouse position) and then mark it as
-/// dirty. DVUI's "position" event is always exposed once per frame,
-/// which we then use to check if the graph is dirty, and if so
-/// rerender.
+/// dirty.
 fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void {
     for (dvui.events()) |*e| {
         if (!dvui.eventMatchSimple(e, wd)) continue;
@@ -177,22 +212,13 @@ fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void {
                         _ = self.renderer.mouseMove(x, y);
                     },
                     .wheel_y => {
-                        log.info("Wheel_y: {d}", .{me.action.wheel_y});
+                        // log.info("Wheel_y: {d}", .{me.action.wheel_y});
                         e.handle(@src(), wd);
                         const factor: f32 = @exp(me.action.wheel_y / 180);
                         _ = self.renderer.mouseScroll(factor);
                     },
                     .position => {
                         // log.info("Position", .{});
-                        // This event gets called once per frame at
-                        // the end of the frame. We use this to check
-                        // if the renderer is dirty, and if so to
-                        // render the new graph and sync it to the
-                        // texture.
-                        if (self.renderer.state.dirty) {
-                            self.renderer.render() catch continue;
-                            self.syncTexture() catch continue;
-                        }
                         if (self.renderer.hovered != null) {
                             dvui.cursorSet(.hand);
                         }
