@@ -98,6 +98,9 @@ fn switchView(new_view: View) void {
 // - runs between win.begin()/win.end()
 pub fn appInit(win: *dvui.Window) !void {
     _ = win;
+    // win.backend.impl.touch_mouse_events = true;
+    // _ = sdl.c.SDL_SetHint(sdl.c.SDL_HINT_TOUCH_MOUSE_EVENTS, "1");
+    // _ = sdl.c.SDL_SetHint(sdl.c.SDL_HINT_MOUSE_TOUCH_EVENTS, "1");
 
     var data_dir: ?[]const u8 = null;
     if (builtin.abi == .android) {

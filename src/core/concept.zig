@@ -1,5 +1,6 @@
 const std = @import("std");
-const log = std.log;
+const Allocator = std.mem.Allocator;
+const log = std.log.scoped(.concept);
 const Core = @import("Core.zig");
 const sqlite = @import("sqlite");
 const Id = @import("database.zig").Id;
@@ -110,51 +111,61 @@ pub fn removeParent(core: *Core, child_id: Id, parent_id: Id) !void {
     );
 }
 
-pub fn getAll(core: *Core, allocator: std.mem.Allocator) ![]Concept {
+fn queryConcepts(alloc: Allocator, stmt: anytype, values: anytype) ![]Concept {
+    var diags: sqlite.Diagnostics = .{};
+    var iter = try stmt.iteratorAlloc(Concept, alloc, values);
+    var rows: std.ArrayList(Concept) = .empty;
+    defer rows.deinit(alloc);
+    while (try iter.nextAlloc(alloc, .{ .diags = &diags })) |row| {
+        try rows.append(alloc, row);
+    }
+    return try rows.toOwnedSlice(alloc);
+}
+
+pub fn getAll(core: *Core, alloc: Allocator) ![]Concept {
     var diags: sqlite.Diagnostics = .{};
     var stmt = try core.db.prepareWithDiags(
         "SELECT id, name FROM concept ORDER BY name",
         .{ .diags = &diags },
     );
     defer stmt.deinit();
-
-    var iter = try stmt.iteratorAlloc(Concept, allocator, .{});
-    var rows: std.ArrayList(Concept) = .empty;
-    defer rows.deinit(allocator);
-    while (try iter.nextAlloc(allocator, .{ .diags = &diags })) |row| {
-        try rows.append(allocator, row);
-    }
-    const result = try rows.toOwnedSlice(allocator);
-
-    return result;
+    return try queryConcepts(alloc, &stmt, .{});
 }
 
-pub fn getById(core: *Core, allocator: std.mem.Allocator, ids: []const Id) ![]Concept {
+pub fn getById(core: *Core, alloc: Allocator, ids: []const Id) ![]Concept {
     if (ids.len == 0) return &.{};
 
+    var arena_alloc: std.heap.ArenaAllocator = .init(alloc);
+    defer arena_alloc.deinit();
+    const arena = arena_alloc.allocator();
+
     var query_builder: std.ArrayList(u8) = .empty;
-    defer query_builder.deinit(allocator);
-    try query_builder.appendSlice(allocator, "SELECT id, name FROM concept WHERE id IN (");
+    defer query_builder.deinit(arena);
+    try query_builder.appendSlice(arena, "SELECT id, name FROM concept WHERE id IN (");
     for (0..ids.len) |i| {
-        if (i > 0) try query_builder.appendSlice(allocator, ", ");
-        try query_builder.appendSlice(allocator, "?");
+        if (i > 0) try query_builder.appendSlice(arena, ", ");
+        try query_builder.appendSlice(arena, "?");
     }
-    try query_builder.appendSlice(allocator, ")");
+    try query_builder.appendSlice(arena, ")");
 
     var diags: sqlite.Diagnostics = .{};
     const query: []const u8 = query_builder.items;
     var stmt = try core.db.prepareDynamicWithDiags(query, .{ .diags = &diags });
     defer stmt.deinit();
 
-    var iter = try stmt.iteratorAlloc(Concept, allocator, ids);
-    var rows: std.ArrayList(Concept) = .empty;
-    defer rows.deinit(allocator);
-    while (try iter.nextAlloc(allocator, .{ .diags = &diags })) |row| {
-        try rows.append(allocator, row);
-    }
-    const result = try rows.toOwnedSlice(allocator);
+    return try queryConcepts(alloc, &stmt, .{});
+}
 
-    return result;
+pub fn getByNameMatch(core: *Core, alloc: Allocator, substr: []const u8) ![]Concept {
+    const query =
+        \\SELECT id, name
+        \\FROM concept
+        \\WHERE instr(name, ?) > 0
+    ;
+    var diags: sqlite.Diagnostics = .{};
+    var stmt = try core.db.prepareWithDiags(query, .{ .diags = &diags });
+    defer stmt.deinit();
+    return try queryConcepts(alloc, &stmt, .{substr});
 }
 
 /// Retrieve the hierarchy of ancestors for a set of concepts.
@@ -323,15 +334,15 @@ pub fn fillAncestorGraph(core: *Core, graph: *Graph, alloc: std.mem.Allocator, c
     }
 }
 
-pub fn fillFullGraph(core: *Core, graph: *Graph, alloc: std.mem.Allocator, all_concepts: ?[]Concept) !void {
-    const concepts = all_concepts orelse try getAll(core, alloc);
+pub fn fillFullGraph(core: *Core, graph: *Graph, arena: Allocator, all_concepts: ?[]Concept) !void {
+    const concepts = all_concepts orelse try getAll(core, arena);
     for (concepts) |*concept| {
         graph.addNode(concept.id.uuid, concept.name) catch |err| {
             log.err("Failed to add concept node ({t})", .{err});
             return err;
         };
     }
-    const relations = try getRelations(core, alloc);
+    const relations = try getRelations(core, arena);
     for (relations) |*relation| {
         graph.addEdge(relation.parent_id.uuid, relation.child_id.uuid) catch |err| {
             log.err("Failed to add concept edge ({t})", .{err});

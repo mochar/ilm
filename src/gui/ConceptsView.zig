@@ -18,18 +18,24 @@ const MAX_GRAPH_HEIGHT: u32 = 2048;
 var debug_window: bool = false;
 
 core: *Core,
-arena: std.heap.ArenaAllocator,
-concepts: []Concept = &.{},
+gpa: std.mem.Allocator,
+all_concepts: []Concept = &.{},
 selected: ?*Concept = null,
+
+search_query: std.ArrayList(u8) = .empty,
+// Matched concepts (the structs themselves and the strings within)
+// are allocated using this arena. It is reset each time the search
+// query is changed.
+search_arena: std.heap.ArenaAllocator,
+matched_concepts: []Concept = &.{},
+
+graph_arena: std.heap.ArenaAllocator,
 graph_renderer: GraphRenderer,
 graph_texture: dvui.Texture,
 rendered_width: u32 = 0,
 rendered_height: u32 = 0,
 
 pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
-    var arena = std.heap.ArenaAllocator.init(gpa);
-    errdefer arena.deinit();
-
     const graph_renderer = try GraphRenderer.init(.{
         .gpa = gpa,
         .io = core.io,
@@ -45,12 +51,14 @@ pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
 
     var self: Self = .{
         .core = core,
-        .arena = arena,
+        .gpa = gpa,
+        .search_arena = std.heap.ArenaAllocator.init(gpa),
+        .graph_arena = std.heap.ArenaAllocator.init(gpa),
         .graph_renderer = graph_renderer,
         .graph_texture = graph_texture,
     };
-    self.getConcepts();
-    if (self.concepts.len > 0) {
+    self.getAllConcepts();
+    if (self.all_concepts.len > 0) {
         self.updateGraphContent();
         self.updateGraphTexture();
     }
@@ -59,30 +67,34 @@ pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
 
 pub fn deinit(self: *Self) void {
     self.graph_renderer.deinit();
-    self.arena.deinit();
+    self.graph_arena.deinit();
+    self.gpa.free(self.all_concepts);
+    self.search_query.deinit(self.gpa);
+    self.search_arena.deinit();
 }
 
-fn getConcepts(self: *Self) void {
-    var arena_instance: std.heap.ArenaAllocator = .init(self.arena.allocator());
-    const arena = arena_instance.allocator();
-    defer arena_instance.deinit();
-
-    if (ilm.concept.getAll(self.core, arena)) |concepts| {
-        self.concepts = self.arena.allocator().dupe(Concept, concepts) catch {
-            return dvui.toast(@src(), .{ .message = "Failed to allocate concepts" });
-        };
+fn getAllConcepts(self: *Self) void {
+    if (ilm.concept.getAll(self.core, self.gpa)) |concepts| {
+        self.gpa.free(self.all_concepts);
+        self.all_concepts = concepts;
     } else |_| {
-        dvui.toast(@src(), .{ .message = "Failed to get concepts" });
+        dvui.toast(@src(), .{ .message = "Failed to get all concepts" });
+    }
+}
+
+fn getMatchedConcepts(self: *Self) void {
+    log.info("Getting matching concepts", .{});
+    const query = self.search_query.items;
+    _ = self.search_arena.reset(.retain_capacity);
+    if (ilm.concept.getByNameMatch(self.core, self.search_arena.allocator(), query)) |concepts| {
+        self.matched_concepts = concepts;
+    } else |_| {
+        self.matched_concepts = &.{};
+        dvui.toast(@src(), .{ .message = "Failed to get matched concepts" });
     }
 }
 
 pub fn render(self: *Self) void {
-    {
-        var tl = dvui.textLayout(@src(), .{}, .{ .expand = .horizontal, .font = .theme(.title) });
-        defer tl.deinit();
-        tl.format("Found {d} concepts", .{self.concepts.len}, .{});
-    }
-
     const win_rect = dvui.windowRect();
     const is_wide = win_rect.w > win_rect.h;
     var hbox = dvui.box(@src(), .{
@@ -121,46 +133,72 @@ pub fn render(self: *Self) void {
 }
 
 fn renderSidebar(self: *Self, is_wide: bool) void {
-    var scroll = dvui.scrollArea(@src(), .{}, .{
+    const box_width = dvui.currentWindow().rectScale().r.w*0.3;
+    var box = dvui.box(@src(), .{}, .{
+        .background = true,
         .expand = if (is_wide) .vertical else .both,
-        .min_size_content = .{ .w = 200 },
+        .min_size_content = .width(box_width),
+        .max_size_content = .width(box_width),
     });
+    defer box.deinit();
+
+    var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+    var search_entry = dvui.textEntry(
+        @src(),
+        .{
+            .placeholder = "Search",
+            .text = .{
+                .array_list = .{
+                    .allocator = self.gpa,
+                    .backing = &self.search_query,
+                },
+            },
+        },
+        .{ .expand = .horizontal },
+    );
+    const search_changed = search_entry.text_changed;
+    search_entry.deinit();
+    defer if (search_changed) {
+        log.info("Search changed to: {s}", .{self.search_query.items});
+        self.getMatchedConcepts();
+    };
+
+    if (self.search_query.items.len == 0)
+        dvui.label(@src(), "{d}", .{ self.all_concepts.len }, .{ .gravity_y = 0.5 })
+    else
+        dvui.label(@src(), "{d}/{d}", .{ self.matched_concepts.len, self.all_concepts.len }, .{ .gravity_y = 0.5 });
+    hbox.deinit();
+
+    var scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both });
     defer scroll.deinit();
 
     const selected_id: ?u128 = if (self.selected) |c| c.id.uuid else null;
-    for (self.concepts, 0..) |*concept, i| {
+    const concepts = if (self.search_query.items.len == 0) self.all_concepts else self.matched_concepts;
+    for (concepts, 0..) |*concept, i| {
+        _ = i;
         const is_selected = concept.id.uuid == selected_id;
         var c_box = dvui.box(
             @src(),
             .{ .dir = .horizontal },
             .{
-                .id_extra = i,
+                // .id_extra = i,
+                .id_extra = @truncate(concept.id.uuid),
                 .expand = .horizontal,
                 .background = true,
                 .style = if (is_selected) .highlight else null,
             },
         );
-        defer c_box.deinit();
         if (dvui.labelClick(@src(), "{s}", .{concept.name}, .{}, .{ .expand = .both })) {
             if (is_selected) self.unselect() else self.selectConcept(concept);
         }
+        c_box.deinit();
     }
 }
 
 fn renderGraph(self: *Self) void {
     var vbox = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .both });
     defer vbox.deinit();
-
-    {
-        var tl = dvui.textLayout(@src(), .{}, .{ .expand = .horizontal, .font = .theme(.title) });
-        defer tl.deinit();
-        if (self.selected) |concept| {
-            tl.format("{s}", .{concept.name}, .{});
-        } else {
-            tl.format("All concepts", .{}, .{});
-        }
-    }
-
+    
     var texture_box = dvui.box(@src(), .{}, .{
         .expand = .both,
         .min_size_content = .{ .w = 100, .h = 100 },
@@ -222,7 +260,7 @@ fn handleGraphEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void
 
                 switch (me.action) {
                     .press => {
-                        log.info("Press: {t}", .{me.button});
+                        // log.info("Press: {t}", .{me.button});
                         var btn: ?GraphRenderer.MouseButton = switch (me.button) {
                             .left, .touch0, .touch1 => .left,
                             .right => .right,
@@ -237,7 +275,7 @@ fn handleGraphEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void
                         }
                     },
                     .release => {
-                        log.info("Release: {t}", .{me.button});
+                        // log.info("Release: {t}", .{me.button});
                         if (dvui.captured(wd.id)) {
                             e.handle(@src(), wd);
                             dvui.captureMouse(null, e.num);
@@ -248,7 +286,7 @@ fn handleGraphEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void
                         }
                     },
                     .motion => {
-                        log.info("Motion", .{});
+                        // log.info("Motion", .{});
                         e.handle(@src(), wd);
                         _ = self.graph_renderer.mouseMove(x, y);
                     },
@@ -259,7 +297,7 @@ fn handleGraphEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void
                         _ = self.graph_renderer.mouseScroll(factor);
                     },
                     .position => {
-                        log.info("Position", .{});
+                        // log.info("Position", .{});
                         // This event gets called once per frame at
                         // the end of the frame. We use this to check
                         // if the renderer is dirty, and if so to
@@ -283,7 +321,7 @@ fn handleGraphEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void
 
 fn selectConceptById(self: *Self, id: u128) void {
     if (self.selected) |s| if (s.id.uuid == id) return;
-    for (self.concepts) |*concept| {
+    for (self.all_concepts) |*concept| {
         if (concept.id.uuid == id) {
             self.selectConcept(concept);
             return;
@@ -310,7 +348,7 @@ fn unselect(self: *Self) void {
 fn updateGraphContent(self: *Self) void {
     self.graph_renderer.clear();
     const graph = &self.graph_renderer.graph;
-    const arena = self.arena.allocator();
+    const arena = self.graph_arena.allocator();
 
     // Fill graph
     if (self.selected) |concept| {
@@ -321,7 +359,7 @@ fn updateGraphContent(self: *Self) void {
             return utils.toastErr(@src(), err, "Failed to fill graph ({t})", .{err});
         };
     } else {
-        ilm.concept.fillFullGraph(self.core, graph, arena, self.concepts) catch |err| {
+        ilm.concept.fillFullGraph(self.core, graph, arena, self.all_concepts) catch |err| {
             return utils.toastErr(@src(), err, "Failed to fill graph ({t})", .{err});
         };
     }
