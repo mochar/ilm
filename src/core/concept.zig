@@ -79,6 +79,29 @@ pub fn add(core: *Core, name: []const u8, parent_ids: []const Id) !Id {
     return id;
 }
 
+// TODO Validate that rename actually happened (in case concept not found in db)
+pub fn rename(core: *Core, id: Id, name: []const u8) !void {
+    var diags: sqlite.Diagnostics = .{};
+
+    var stmt = core.db.prepareWithDiags(
+        \\UPDATE concept
+        \\SET name = ?
+        \\WHERE id = ?
+    , .{ .diags = &diags }) catch |err| {
+        log.err("SQLite prepare failed: {s}", .{diags.message});
+        return err;
+    };
+    defer stmt.deinit();
+
+    stmt.exec(
+        .{ .diags = &diags },
+        .{ .name = name, .id = id.asBlob() },
+    ) catch |err| {
+        log.err("SQLite exec failed: {s}", .{diags.message});
+        return err;
+    };
+}
+
 pub fn addParent(core: *Core, child_id: Id, parent_id: Id) !void {
     var diags: sqlite.Diagnostics = .{};
     var stmt = try core.db.prepareWithDiags(
@@ -147,13 +170,13 @@ pub fn getById(core: *Core, alloc: Allocator, ids: []const Id) ![]Concept {
         try query_builder.appendSlice(arena, "?");
     }
     try query_builder.appendSlice(arena, ")");
+    const query: []const u8 = query_builder.items;
 
     var diags: sqlite.Diagnostics = .{};
-    const query: []const u8 = query_builder.items;
     var stmt = try core.db.prepareDynamicWithDiags(query, .{ .diags = &diags });
     defer stmt.deinit();
 
-    return try queryConcepts(alloc, &stmt, .{});
+    return try queryConcepts(alloc, &stmt, ids);
 }
 
 pub fn getByNameMatch(core: *Core, alloc: Allocator, substr: []const u8) ![]Concept {
@@ -178,46 +201,46 @@ pub fn getByNameMatch(core: *Core, alloc: Allocator, substr: []const u8) ![]Conc
 /// in `concept_rel`.
 pub fn getAncestors(
     core: *Core,
-    allocator: std.mem.Allocator,
+    alloc: std.mem.Allocator,
     opts: struct {
         ids: ?[]const Id = null,
         direct_only: bool = false,
     },
 ) ![]ConceptAncestor {
     var query_builder: std.ArrayList(u8) = .empty;
-    defer query_builder.deinit(allocator);
+    defer query_builder.deinit(alloc);
 
     if (opts.direct_only) {
         const ids = opts.ids orelse &.{};
-        try query_builder.appendSlice(allocator,
+        try query_builder.appendSlice(alloc,
             \\SELECT c.id, c.name, cr.child_id, 1 AS depth, 1 AS is_direct
             \\FROM concept_rel cr
             \\JOIN concept c ON cr.parent_id = c.id
             \\WHERE cr.child_id IN (
         );
         for (0..ids.len) |i| {
-            if (i > 0) try query_builder.appendSlice(allocator, ", ");
-            try query_builder.appendSlice(allocator, "?");
+            if (i > 0) try query_builder.appendSlice(alloc, ", ");
+            try query_builder.appendSlice(alloc, "?");
         }
-        try query_builder.appendSlice(allocator,
+        try query_builder.appendSlice(alloc,
             \\)
             \\ORDER BY cr.child_id, c.name
         );
     } else {
-        try query_builder.appendSlice(allocator,
+        try query_builder.appendSlice(alloc,
             \\WITH RECURSIVE ancestors(id, child_id, depth) AS (
             \\    SELECT parent_id, child_id, 1
             \\    FROM concept_rel
         );
         if (opts.ids) |ids| {
-            try query_builder.appendSlice(allocator, "\nWHERE child_id IN (");
+            try query_builder.appendSlice(alloc, "\nWHERE child_id IN (");
             for (0..ids.len) |i| {
-                if (i > 0) try query_builder.appendSlice(allocator, ", ");
-                try query_builder.appendSlice(allocator, "?");
+                if (i > 0) try query_builder.appendSlice(alloc, ", ");
+                try query_builder.appendSlice(alloc, "?");
             }
-            try query_builder.appendSlice(allocator, "\n)");
+            try query_builder.appendSlice(alloc, "\n)");
         }
-        try query_builder.appendSlice(allocator,
+        try query_builder.appendSlice(alloc,
             \\    UNION ALL
             \\    SELECT cr.parent_id, a.child_id, a.depth + 1
             \\    FROM concept_rel cr
@@ -230,23 +253,22 @@ pub fn getAncestors(
             \\ORDER BY a.child_id, depth, c.name
         );
     }
+    const query: []const u8 = query_builder.items;
 
     var diags: sqlite.Diagnostics = .{};
-    const query: []const u8 = query_builder.items;
     var stmt = core.db.prepareDynamicWithDiags(query, .{ .diags = &diags }) catch |err| {
         log.err("SQLite prepare failed: {s}", .{diags.message});
         return err;
     };
-
     defer stmt.deinit();
 
-    var iter = try stmt.iteratorAlloc(ConceptAncestor, allocator, opts.ids orelse &.{});
+    var iter = try stmt.iteratorAlloc(ConceptAncestor, alloc, opts.ids orelse &.{});
     var rows: std.ArrayList(ConceptAncestor) = .empty;
-    defer rows.deinit(allocator);
-    while (try iter.nextAlloc(allocator, .{ .diags = &diags })) |row| {
-        try rows.append(allocator, row);
+    defer rows.deinit(alloc);
+    while (try iter.nextAlloc(alloc, .{ .diags = &diags })) |row| {
+        try rows.append(alloc, row);
     }
-    const result = try rows.toOwnedSlice(allocator);
+    const result = try rows.toOwnedSlice(alloc);
 
     return result;
 }

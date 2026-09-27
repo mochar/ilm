@@ -54,9 +54,7 @@ pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
     };
 
     self.getAllConcepts();
-    if (self.all_concepts.len > 0) {
-        self.updateGraphContent();
-    }
+    self.updateGraphContent(.reset);
     return self;
 }
 
@@ -184,23 +182,17 @@ fn renderSearch(self: *Self) void {
 
 fn renderConceptView(self: *Self) void {
     if (self.selected) |*selected| {
-        const concept = selected.concept;
+        // const concept = selected.concept;
         var view = selected.view;
-
-        {
-            var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
-            defer hbox.deinit();
-            if (dvui.buttonIcon(@src(), "back", dvui.entypo.back, .{}, .{}, .{ .gravity_y = 0.5 })) {
-                self.unselect();
-            }
-            var tl = dvui.textLayout(@src(), .{}, .{ .expand = .horizontal, .gravity_y = 0.5, .font = .theme(.title) });
-            defer tl.deinit();
-            tl.addText(concept.name, .{});
-        }
 
         if (view.render()) |action| {
             switch (action) {
+                .quit => self.unselect(),
                 .node_select => |id| self.selectConceptById(id),
+                .rename => {
+                    self.getAllConcepts();
+                    self.updateGraphContent(.retain_state);
+                },
             }
         }
     }
@@ -240,7 +232,7 @@ fn selectConcept(self: *Self, concept: *Concept) void {
     const view = self.gpa.create(ConceptView) catch @panic("OOM");
     errdefer self.gpa.destroy(view);
     view.* = ConceptView.init(.{
-        .concept = concept,
+        .concept_id = concept.id,
         .core = self.core,
         .gpa = self.core.gpa,
         .io = self.core.io,
@@ -251,7 +243,7 @@ fn selectConcept(self: *Self, concept: *Concept) void {
         return;
     };
     self.selected = .{ .concept = concept, .view = view };
-    
+
     self.graph_view.animateToNode(concept.id.uuid) catch {};
     self.graph_view.renderer.highlighted.put(concept.id.uuid, {}) catch {};
 }
@@ -267,12 +259,16 @@ fn unselect(self: *Self) void {
 }
 
 /// Replace the graph nodes and edges with that of self.selected
-fn updateGraphContent(self: *Self) void {
+fn updateGraphContent(self: *Self, how: enum { reset, retain_state }) void {
     var renderer = &self.graph_view.renderer;
     const graph = self.graph_view.graph();
     const arena = self.graph_arena.allocator();
 
-    renderer.clear();
+    switch (how) {
+        .reset => renderer.clear(),
+        .retain_state => renderer.graph.clear(),
+    }
+
     _ = self.graph_arena.reset(.retain_capacity);
 
     ilm.concept.fillFullGraph(self.core, graph, arena, self.all_concepts) catch |err| {
@@ -281,7 +277,7 @@ fn updateGraphContent(self: *Self) void {
     renderer.layout("neato") catch |err| {
         return utils.toastErr(@src(), err, "Failed to layout graph", .{});
     };
-    self.graph_view.update() catch |err| {
+    self.graph_view.renderGraph() catch |err| {
         return utils.toastErr(@src(), err, "Failed to update graph", .{});
     };
 }

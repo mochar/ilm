@@ -115,7 +115,7 @@ pub fn render(self: *Self, opts: dvui.Options) !?Action {
     if (target_w != self.rendered_width or target_h != self.rendered_height) {
         self.rendered_width = target_w;
         self.rendered_height = target_h;
-        try self.update();
+        try self.updateGraph();
     } else {
         // Otherwise render if state has changed
         if (self.renderer.tryRender() catch false) {
@@ -234,10 +234,14 @@ fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) ?Action {
 }
 
 /// Compute new layout, render to buffer, and update the texture
-pub fn update(self: *Self) !void {
+pub fn updateGraph(self: *Self) !void {
     if (self.rendered_width == 0 or self.rendered_height == 0) return;
     self.renderer.resize(self.rendered_width, self.rendered_height);
     self.renderer.fitToGraph();
+    try self.renderGraph();
+}
+
+pub fn renderGraph(self: *Self) !void {
     try self.renderer.render();
     try self.syncTexture();
 }
