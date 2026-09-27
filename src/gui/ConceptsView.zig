@@ -229,6 +229,7 @@ fn selectConcept(self: *Self, concept: *Concept) void {
     if (self.selected) |*selected| {
         if (selected.concept == concept) return;
         selected.view.deinit();
+        self.gpa.destroy(selected.view);
         self.selected = null;
     }
 
