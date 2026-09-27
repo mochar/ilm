@@ -233,7 +233,7 @@ fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) ?Action {
     return action;
 }
 
-/// Compute new layout, render to buffer, and update the texture
+/// Refit the graph and rerender
 pub fn updateGraph(self: *Self) !void {
     if (self.rendered_width == 0 or self.rendered_height == 0) return;
     self.renderer.resize(self.rendered_width, self.rendered_height);
@@ -241,11 +241,13 @@ pub fn updateGraph(self: *Self) !void {
     try self.renderGraph();
 }
 
+/// Render to buffer and update the texture
 pub fn renderGraph(self: *Self) !void {
     try self.renderer.render();
     try self.syncTexture();
 }
 
+/// Update texture to match renderer buffer
 fn syncTexture(self: *Self) !void {
     if (self.rendered_width == 0 or self.rendered_height == 0) return;
     self.texture.updateSubRect(self.renderer.buffer.ptr, 0, 0, self.rendered_width, self.rendered_height) catch |err| {

@@ -89,6 +89,8 @@ pub const Action = union(enum) {
     node_select: u128,
     quit: void,
     rename: void,
+    new: Id,
+    delete: void,
 };
 
 pub fn render(self: *Self) ?Action {
@@ -166,8 +168,33 @@ pub fn render(self: *Self) ?Action {
         },
         .{ .expand = .horizontal },
     )) {
-        dvui.toast(@src(), .{ .message = "kek" });
-        // dvui.dialog(src: SourceLocation, user_struct: anytype, opts: DialogOptions)
+        if (ilm.concept.add(
+            self.core,
+            std.fmt.allocPrint(self.arena.allocator(), "{s} child", .{self.concept.name}) catch @panic("OOM"),
+            &.{self.concept.id},
+        )) |child_id| {
+            return .{ .new = child_id };
+        } else |err| {
+            utils.toastErr(@src(), err, "Failed to create child node", .{});
+        }
+    }
+
+    if (dvui.buttonLabelAndIcon(
+        @src(),
+        .{
+            .label = "Delete concept",
+            .tvg_bytes = dvui.entypo.trash,
+        },
+        .{
+            .expand = .horizontal,
+            .color_fill = .red,
+        },
+    )) {
+        if (ilm.concept.delete(self.core, self.concept.id)) {
+            return .delete;
+        } else |err| {
+            utils.toastErr(@src(), err, "Failed to delete node", .{});
+        }
     }
 
     return action;

@@ -102,6 +102,53 @@ pub fn rename(core: *Core, id: Id, name: []const u8) !void {
     };
 }
 
+// TODO Validate that delete actually happened (in case concept not found in db)
+pub fn delete(core: *Core, id: Id) !void {
+    var diags: sqlite.Diagnostics = .{};
+    var savepoint = try core.db.savepoint("delconcept");
+    defer savepoint.rollback();
+
+    {
+        var stmt = core.db.prepareWithDiags(
+            \\DELETE FROM concept
+            \\WHERE id = ?
+        , .{ .diags = &diags }) catch |err| {
+            log.err("SQLite prepare failed: {s}", .{diags.message});
+            return err;
+        };
+        defer stmt.deinit();
+
+        stmt.exec(
+            .{ .diags = &diags },
+            .{ .id = id.asBlob() },
+        ) catch |err| {
+            log.err("SQLite exec failed: {s}", .{diags.message});
+            return err;
+        };
+    }
+
+    {
+        var stmt = core.db.prepareWithDiags(
+            \\DELETE FROM concept_rel
+            \\WHERE parent_id = ? OR child_id = ?
+        , .{ .diags = &diags }) catch |err| {
+            log.err("SQLite prepare failed: {s}", .{diags.message});
+            return err;
+        };
+        defer stmt.deinit();
+
+        stmt.exec(
+            .{ .diags = &diags },
+            .{ id.asBlob(), id.asBlob() },
+        ) catch |err| {
+            log.err("SQLite exec failed: {s}", .{diags.message});
+            return err;
+        };
+    }
+    
+    savepoint.commit();
+}
+
 pub fn addParent(core: *Core, child_id: Id, parent_id: Id) !void {
     var diags: sqlite.Diagnostics = .{};
     var stmt = try core.db.prepareWithDiags(

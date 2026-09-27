@@ -193,6 +193,16 @@ fn renderConceptView(self: *Self) void {
                     self.getAllConcepts();
                     self.updateGraphContent(.retain_state);
                 },
+                .new => |id| {
+                    self.getAllConcepts();
+                    self.updateGraphContent(.retain_state);
+                    self.selectConceptById(id.uuid);
+                },
+                .delete => {
+                    self.getAllConcepts();
+                    self.updateGraphContent(.reset);
+                    self.unselect();
+                },
             }
         }
     }
