@@ -88,8 +88,8 @@ pub const Action = union(enum) {
     node_select: u128,
 };
 
-pub fn render(self: *Self) !?Action {
-    var vbox = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .both });
+pub fn render(self: *Self, opts: dvui.Options) !?Action {
+    var vbox = dvui.box(@src(), .{ .dir = .vertical }, opts);
     defer vbox.deinit();
 
     // By retrieving the animation, dvui takes note of it and

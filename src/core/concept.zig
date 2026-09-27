@@ -287,18 +287,43 @@ pub const Relation = struct {
     child_id: Id,
 };
 
-pub fn getRelations(core: *Core, alloc: std.mem.Allocator) ![]Relation {
+pub fn getRelations(core: *Core, alloc: Allocator, ids: ?[]const Id) ![]Relation {
+    var query_builder: std.ArrayList(u8) = .empty;
+    defer query_builder.deinit(alloc);
+
+    if (ids) |idss| {
+        if (idss.len == 0) return &.{};
+        try query_builder.appendSlice(alloc, "WITH id_list(id) AS ( VALUES ");
+        for (0..idss.len) |i| {
+            if (i > 0) try query_builder.appendSlice(alloc, ", ");
+            try query_builder.appendSlice(alloc, "(?)");
+        }
+        try query_builder.appendSlice(alloc, ")\n");
+    }
+    try query_builder.appendSlice(alloc,
+        \\SELECT parent_id, child_id
+        \\FROM concept_rel cr
+    );
+    if (ids != null) {
+        try query_builder.appendSlice(alloc,
+            \\
+            \\JOIN id_list l1 ON cr.parent_id = l1.id
+            \\JOIN id_list l2 ON cr.child_id  = l2.id
+        );
+    }
+    const query = query_builder.items;
+
     var diags: sqlite.Diagnostics = .{};
-    var stmt = core.db.prepareWithDiags(
-        "SELECT parent_id, child_id FROM concept_rel",
-        .{ .diags = &diags },
-    ) catch |err| {
+    var stmt = core.db.prepareDynamicWithDiags(query, .{ .diags = &diags }) catch |err| {
         log.err("SQLite prepare failed: {s}", .{diags.message});
         return err;
     };
     defer stmt.deinit();
 
-    var iter = try stmt.iteratorAlloc(Relation, alloc, .{});
+    var iter = if (ids) |idss|
+        try stmt.iteratorAlloc(Relation, alloc, idss)
+    else
+        try stmt.iteratorAlloc(Relation, alloc, .{});
     var rows: std.ArrayList(Relation) = .empty;
     defer rows.deinit(alloc);
     while (try iter.nextAlloc(alloc, .{ .diags = &diags })) |row| {
@@ -311,23 +336,32 @@ pub fn getRelations(core: *Core, alloc: std.mem.Allocator) ![]Relation {
 
 // ** Graph
 
-pub fn fillAncestorGraph(core: *Core, graph: *Graph, alloc: std.mem.Allocator, concept: *Concept) !void {
+pub fn fillAncestorGraph(core: *Core, graph: *Graph, alloc: Allocator, concept: *Concept) !void {
+    var ids: std.ArrayList(Id) = .empty;
+    defer ids.deinit(alloc);
+
     graph.addNode(concept.id.uuid, concept.name) catch |err| {
         log.err("Failed to add concept node ({t})", .{err});
         return err;
     };
+    try ids.append(alloc, concept.id);
     const ancestors = getAncestors(core, alloc, .{ .ids = &.{concept.id} }) catch |err| {
         log.err("Failed to get ancestors ({t})", .{err});
         return err;
     };
+    defer alloc.free(ancestors);
     for (ancestors) |*ancestor| {
         graph.addNode(ancestor.id.uuid, ancestor.name) catch |err| {
             log.err("Failed to add concept node ({t})", .{err});
             return err;
         };
+        try ids.append(alloc, ancestor.id);
     }
-    for (ancestors) |*ancestor| {
-        graph.addEdge(ancestor.id.uuid, ancestor.child_id.uuid) catch |err| {
+
+    const relations = try getRelations(core, alloc, ids.items);
+    defer alloc.free(relations);
+    for (relations) |*relation| {
+        graph.addEdge(relation.parent_id.uuid, relation.child_id.uuid) catch |err| {
             log.err("Failed to add concept edge ({t})", .{err});
             return err;
         };
@@ -342,7 +376,7 @@ pub fn fillFullGraph(core: *Core, graph: *Graph, arena: Allocator, all_concepts:
             return err;
         };
     }
-    const relations = try getRelations(core, arena);
+    const relations = try getRelations(core, arena, null);
     for (relations) |*relation| {
         graph.addEdge(relation.parent_id.uuid, relation.child_id.uuid) catch |err| {
             log.err("Failed to add concept edge ({t})", .{err});

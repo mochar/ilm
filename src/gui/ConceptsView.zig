@@ -7,6 +7,7 @@ const Concept = ilm.concept.Concept;
 const Id = ilm.Id;
 
 const GraphView = @import("GraphView.zig");
+const ConceptView = @import("ConceptView.zig");
 const utils = @import("utils.zig");
 const Self = @This();
 
@@ -18,7 +19,10 @@ const MAX_GRAPH_HEIGHT: u32 = 2048;
 core: *Core,
 gpa: std.mem.Allocator,
 all_concepts: []Concept = &.{},
-selected: ?*Concept = null,
+selected: ?struct {
+    concept: *Concept,
+    view: *ConceptView,
+} = null,
 
 search_query: std.ArrayList(u8) = .empty,
 /// Matched concepts (the structs themselves and the strings within)
@@ -62,6 +66,10 @@ pub fn deinit(self: *Self) void {
     self.gpa.free(self.all_concepts);
     self.search_query.deinit(self.gpa);
     self.search_arena.deinit();
+    if (self.selected) |*s| {
+        s.view.deinit();
+        self.gpa.destroy(s.view);
+    }
 }
 
 fn getAllConcepts(self: *Self) void {
@@ -113,7 +121,14 @@ fn renderSidebar(self: *Self, is_wide: bool) void {
         .max_size_content = .width(box_width),
     });
     defer box.deinit();
+    if (self.selected == null) {
+        self.renderSearch();
+    } else {
+        self.renderConceptView();
+    }
+}
 
+fn renderSearch(self: *Self) void {
     var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
     var search_entry = dvui.textEntry(
         @src(),
@@ -144,7 +159,7 @@ fn renderSidebar(self: *Self, is_wide: bool) void {
     var scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both });
     defer scroll.deinit();
 
-    const selected_id: ?u128 = if (self.selected) |c| c.id.uuid else null;
+    const selected_id: ?u128 = if (self.selected) |s| s.concept.id.uuid else null;
     const concepts = if (self.search_query.items.len == 0) self.all_concepts else self.matched_concepts;
     for (concepts, 0..) |*concept, i| {
         _ = i;
@@ -167,8 +182,28 @@ fn renderSidebar(self: *Self, is_wide: bool) void {
     }
 }
 
+fn renderConceptView(self: *Self) void {
+    if (self.selected) |*selected| {
+        const concept = selected.concept;
+        var view = selected.view;
+
+        {
+            var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+            defer hbox.deinit();
+            if (dvui.buttonIcon(@src(), "back", dvui.entypo.back, .{}, .{}, .{ .gravity_y = 0.5 })) {
+                self.unselect();
+            }
+            var tl = dvui.textLayout(@src(), .{}, .{ .expand = .horizontal, .gravity_y = 0.5, .font = .theme(.title) });
+            defer tl.deinit();
+            tl.addText(concept.name, .{});
+        }
+
+        view.render();
+    }
+}
+
 fn renderGraph(self: *Self) void {
-    if (self.graph_view.render() catch |err| {
+    if (self.graph_view.render(.{ .expand = .both }) catch |err| {
         return utils.toastErr(@src(), err, "Failed to render graph", .{});
     }) |action| {
         switch (action) {
@@ -178,7 +213,7 @@ fn renderGraph(self: *Self) void {
 }
 
 fn selectConceptById(self: *Self, id: u128) void {
-    if (self.selected) |s| if (s.id.uuid == id) return;
+    if (self.selected) |s| if (s.concept.id.uuid == id) return;
     for (self.all_concepts) |*concept| {
         if (concept.id.uuid == id) {
             self.selectConcept(concept);
@@ -190,16 +225,36 @@ fn selectConceptById(self: *Self, id: u128) void {
 
 fn selectConcept(self: *Self, concept: *Concept) void {
     self.graph_view.animateToNode(concept.id.uuid) catch {};
-    if (self.selected == concept) return;
-    self.selected = concept;
-    // self.updateGraphContent();
+
+    if (self.selected) |*selected| {
+        if (selected.concept == concept) return;
+        selected.view.deinit();
+        self.selected = null;
+    }
+
+    const view = self.gpa.create(ConceptView) catch @panic("OOM");
+    errdefer self.gpa.destroy(view);
+    view.* = ConceptView.init(.{
+        .concept = concept,
+        .core = self.core,
+        .gpa = self.core.gpa,
+        .io = self.core.io,
+    }) catch |err| {
+        log.err("Error init concept view: {t}", .{err});
+        utils.toastErr(@src(), err, "Error init concept view", .{});
+        self.selected = null;
+        return;
+    };
+    self.selected = .{ .concept = concept, .view = view };
 }
 
 fn unselect(self: *Self) void {
     self.graph_view.animateFitToGraph() catch {};
-    if (self.selected == null) return;
-    self.selected = null;
-    // self.updateGraphContent();
+    if (self.selected) |*selected| {
+        selected.view.deinit();
+        self.gpa.destroy(selected.view);
+        self.selected = null;
+    }
 }
 
 /// Replace the graph nodes and edges with that of self.selected
@@ -211,24 +266,9 @@ fn updateGraphContent(self: *Self) void {
     renderer.clear();
     _ = self.graph_arena.reset(.retain_capacity);
 
-    // Fill graph
-    // if (self.selected) |concept| {
-    //     renderer.highlighted.put(concept.id.uuid, {}) catch |err| {
-    //         return utils.toastErr(@src(), err, "Failed to add graph highlight", .{});
-    //     };
-    //     ilm.concept.fillAncestorGraph(self.core, graph, arena, concept) catch |err| {
-    //         return utils.toastErr(@src(), err, "Failed to fill graph ({t})", .{err});
-    //     };
-    // } else {
-    //     ilm.concept.fillFullGraph(self.core, graph, arena, self.all_concepts) catch |err| {
-    //         return utils.toastErr(@src(), err, "Failed to fill graph ({t})", .{err});
-    //     };
-    // }
     ilm.concept.fillFullGraph(self.core, graph, arena, self.all_concepts) catch |err| {
         return utils.toastErr(@src(), err, "Failed to fill graph ({t})", .{err});
     };
-
-    // Render
     renderer.layout("neato") catch |err| {
         return utils.toastErr(@src(), err, "Failed to layout graph", .{});
     };

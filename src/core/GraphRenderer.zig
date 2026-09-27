@@ -166,6 +166,7 @@ pub fn mouseDown(self: *Self, screen_x: f32, screen_y: f32, button: MouseButton)
     self.state.mouse.last_pos = .{ screen_x, screen_y };
     self.state.mouse.down = button;
     self.state.mouse.drag = null;
+    self.state.animateTarget = null;
     return self.state.dirty;
 }
 
@@ -239,6 +240,7 @@ pub fn mouseUp(self: *Self, screen_x: f32, screen_y: f32) bool {
 
 pub fn mouseScroll(self: *Self, factor: f32) bool {
     self.zoomBy(factor, self.state.mouse.last_pos[0], self.state.mouse.last_pos[1]);
+    self.state.animateTarget = null;
     return self.state.dirty;
 }
 
