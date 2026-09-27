@@ -48,7 +48,6 @@ pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
         .graph_view = graph_view,
         .graph_arena = .init(gpa),
     };
-    self.graph_view.on_node_select = selectConceptById;
 
     self.getAllConcepts();
     if (self.all_concepts.len > 0) {
@@ -169,13 +168,16 @@ fn renderSidebar(self: *Self, is_wide: bool) void {
 }
 
 fn renderGraph(self: *Self) void {
-    self.graph_view.render() catch |err| {
-        utils.toastErr(@src(), err, "Failed to render graph", .{});
-    };
+    if (self.graph_view.render() catch |err| {
+        return utils.toastErr(@src(), err, "Failed to render graph", .{});
+    }) |action| {
+        switch (action) {
+            .node_select => |id| self.selectConceptById(id),
+        }
+    }
 }
 
-fn selectConceptById(graph_view: *GraphView, id: u128) void {
-    const self: *Self = @fieldParentPtr("graph_view", graph_view);
+fn selectConceptById(self: *Self, id: u128) void {
     if (self.selected) |s| if (s.id.uuid == id) return;
     for (self.all_concepts) |*concept| {
         if (concept.id.uuid == id) {

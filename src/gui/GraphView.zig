@@ -9,7 +9,6 @@ const Node = GraphRenderer.Node;
 const log = std.log.scoped(.graph_view);
 
 const Self = @This();
-const SelectFn = *const fn (*Self, u128) void;
 
 var debug_window: bool = false;
 
@@ -19,7 +18,6 @@ max_width: u32,
 max_height: u32,
 rendered_width: u32 = 0,
 rendered_height: u32 = 0,
-on_node_select: ?SelectFn = null,
 
 /// We need an id for the animation, which we in turn need to update
 /// the graph during animations.
@@ -34,7 +32,6 @@ pub const Options = struct {
     io: std.Io,
     max_width: u32 = 2048,
     max_height: u32 = 2048,
-    on_node_select: ?SelectFn = null,
     animation_duration: std.Io.Duration = .fromMilliseconds(3000),
 };
 
@@ -59,7 +56,6 @@ pub fn init(opts: Options) !Self {
         .texture = texture,
         .max_width = opts.max_width,
         .max_height = opts.max_height,
-        .on_node_select = opts.on_node_select,
         .animation_id = .extendId(null, opts.src, opts.extra_id),
         .animation_duration = opts.animation_duration,
     };
@@ -88,7 +84,11 @@ pub fn animateFitToGraph(self: *Self) !void {
     });
 }
 
-pub fn render(self: *Self) !void {
+pub const Action = union(enum) {
+    node_select: u128,
+};
+
+pub fn render(self: *Self) !?Action {
     var vbox = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .both });
     defer vbox.deinit();
 
@@ -109,7 +109,7 @@ pub fn render(self: *Self) !void {
     const target_w = std.math.clamp(@as(u32, @intFromFloat(@max(1.0, rs.r.w))), 1, @max(1, self.max_width));
     const target_h = std.math.clamp(@as(u32, @intFromFloat(@max(1.0, rs.r.h))), 1, @max(1, self.max_height));
 
-    self.handleEvents(texture_box.data(), rs);
+    const action = self.handleEvents(texture_box.data(), rs);
 
     // Update graph renderer and texture if the available space has changed
     if (target_w != self.rendered_width or target_h != self.rendered_height) {
@@ -153,6 +153,8 @@ pub fn render(self: *Self) !void {
         dvui.structUI(@src(), "state", &self.renderer.state, 3, .{}, .{ .expand = .both });
         dvui.structUI(@src(), "camera", &self.renderer.camera, 3, .{}, .{ .expand = .both });
     }
+
+    return action;
 }
 
 /// React to mouse, touch and key events on the graph.
@@ -162,7 +164,8 @@ pub fn render(self: *Self) !void {
 /// making it slow. Instead the events only update the internal state
 /// of the graph renderer (such as mouse position) and then mark it as
 /// dirty.
-fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void {
+fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) ?Action {
+    var action: ?Action = null;
     for (dvui.events()) |*e| {
         if (!dvui.eventMatchSimple(e, wd)) continue;
 
@@ -198,10 +201,8 @@ fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void {
                             e.handle(@src(), wd);
                             dvui.captureMouse(null, e.num);
                             if (self.renderer.hovered) |*node| {
-                                if (self.on_node_select) |on_select| {
-                                    const id = node.getId() catch unreachable;
-                                    on_select(self, id);
-                                }
+                                const id = node.getId() catch unreachable;
+                                action = .{ .node_select = id };
                             }
                             _ = self.renderer.mouseUp(x, y);
                         }
@@ -229,6 +230,7 @@ fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) void {
             else => {},
         }
     }
+    return action;
 }
 
 /// Compute new layout, render to buffer, and update the texture
