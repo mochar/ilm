@@ -138,7 +138,7 @@ pub fn render(self: *Self, opts: dvui.Options) !?Action {
         const debug_win = dvui.osWindow(
             @src(),
             .{ .title = "Graph", .size = .{ .w = 500, .h = 300 } },
-            .{ .open_flag = &debug_window },
+            .{ .open_flag = &debug_window, .id_extra = self.animation_id.asUsize(), },
         );
         defer debug_win.deinit();
 

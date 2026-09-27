@@ -198,7 +198,11 @@ fn renderConceptView(self: *Self) void {
             tl.addText(concept.name, .{});
         }
 
-        view.render();
+        if (view.render()) |action| {
+            switch (action) {
+                .node_select => |id| self.selectConceptById(id),
+            }
+        }
     }
 }
 
@@ -224,13 +228,13 @@ fn selectConceptById(self: *Self, id: u128) void {
 }
 
 fn selectConcept(self: *Self, concept: *Concept) void {
-    self.graph_view.animateToNode(concept.id.uuid) catch {};
-
     if (self.selected) |*selected| {
         if (selected.concept == concept) return;
+        // TODO Duplicate code in unselect()
         selected.view.deinit();
         self.gpa.destroy(selected.view);
         self.selected = null;
+        self.graph_view.renderer.highlighted.clearRetainingCapacity();
     }
 
     const view = self.gpa.create(ConceptView) catch @panic("OOM");
@@ -247,20 +251,24 @@ fn selectConcept(self: *Self, concept: *Concept) void {
         return;
     };
     self.selected = .{ .concept = concept, .view = view };
+    
+    self.graph_view.animateToNode(concept.id.uuid) catch {};
+    self.graph_view.renderer.highlighted.put(concept.id.uuid, {}) catch {};
 }
 
 fn unselect(self: *Self) void {
-    self.graph_view.animateFitToGraph() catch {};
     if (self.selected) |*selected| {
         selected.view.deinit();
         self.gpa.destroy(selected.view);
         self.selected = null;
     }
+    self.graph_view.animateFitToGraph() catch {};
+    self.graph_view.renderer.highlighted.clearRetainingCapacity();
 }
 
 /// Replace the graph nodes and edges with that of self.selected
 fn updateGraphContent(self: *Self) void {
-    var renderer = self.graph_view.renderer;
+    var renderer = &self.graph_view.renderer;
     const graph = self.graph_view.graph();
     const arena = self.graph_arena.allocator();
 

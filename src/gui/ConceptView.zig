@@ -50,7 +50,7 @@ pub fn deinit(self: *Self) void {
 }
 
 pub fn updateGraph(self: *Self) !void {
-    var renderer = self.graph_view.renderer;
+    var renderer = &self.graph_view.renderer;
     const graph = self.graph_view.graph();
     const arena = self.graph_arena.allocator();
 
@@ -64,7 +64,11 @@ pub fn updateGraph(self: *Self) !void {
     try self.graph_view.update();
 }
 
-pub fn render(self: *Self) void {
+pub const Action = union(enum) {
+    node_select: u128,
+};
+
+pub fn render(self: *Self) ?Action {
     var box = dvui.box(@src(), .{}, .{ .expand = .both });
     defer box.deinit();
 
@@ -72,10 +76,12 @@ pub fn render(self: *Self) void {
         .expand = .ratio,
         .margin = .all(10.0),
     }) catch |err| {
-        return utils.toastErr(@src(), err, "Failed to render graph", .{});
+        utils.toastErr(@src(), err, "Failed to render graph", .{});
+        return null;
     }) |action| {
         switch (action) {
-            .node_select => {},
+            .node_select => |id| return .{ .node_select = id },
         }
     }
+    return null;
 }
