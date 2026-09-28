@@ -12,6 +12,7 @@ gpa: std.mem.Allocator,
 io: std.Io,
 data_dir: []const u8,
 db: sqlite.Db,
+db_pub: *database.EventPub,
 p2p: P2p,
 
 // fn getDefaultDataDir(io: std.Io, alloc: std.mem.Allocator, environ: *std.process.Environ.Map) ?[]const u8 {
@@ -38,6 +39,10 @@ pub fn init(opts: Options) !Core {
     defer gpa.free(db_path);
     var db = try database.getDb(.{ .path = db_path, .diags = opts.sqlite_diagnostics });
     errdefer db.deinit();
+
+    // Setup db event publisher
+    var db_pub = try database.EventPub.create(gpa, db.db);
+    errdefer db_pub.destroy();
 
     // Setup secret key
     const dir = try std.Io.Dir.createDirPathOpen(.cwd(), io, data_dir, .{});
@@ -69,6 +74,7 @@ pub fn init(opts: Options) !Core {
         .io = io,
         .data_dir = data_dir,
         .db = db,
+        .db_pub = db_pub,
         .p2p = p2p,
     };
 }

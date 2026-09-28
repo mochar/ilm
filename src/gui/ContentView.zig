@@ -9,7 +9,7 @@ const PeersView = @import("PeersView.zig");
 
 gpa: std.mem.Allocator,
 core: *Core,
-concepts_view: ConceptsView,
+concepts_view: *ConceptsView,
 peers_view: PeersView,
 tab: usize = 1,
 
@@ -17,13 +17,13 @@ pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
     return .{
         .gpa = gpa,
         .core = core,
-        .concepts_view = try .init(gpa, core),
+        .concepts_view = try .create(gpa, core),
         .peers_view = try .init(core, gpa),
     };
 }
 
 pub fn deinit(self: *Self) void {
-    self.concepts_view.deinit();
+    self.concepts_view.destroy();
     self.peers_view.deinit();
 }
 

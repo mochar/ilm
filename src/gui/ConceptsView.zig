@@ -35,7 +35,10 @@ graph_view: GraphView,
 /// To allocate graph content, reset every time we fill the graph.
 graph_arena: std.heap.ArenaAllocator,
 
-pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
+pub fn create(gpa: std.mem.Allocator, core: *Core) !*Self {
+    var self = try gpa.create(Self);
+    errdefer gpa.destroy(self);
+    
     var graph_view: GraphView = try .init(.{
         .gpa = gpa,
         .io = core.io,
@@ -45,20 +48,23 @@ pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
     });
     errdefer graph_view.deinit();
 
-    var self: Self = .{
+    self.* = .{
         .core = core,
         .gpa = gpa,
         .search_arena = .init(gpa),
         .graph_view = graph_view,
         .graph_arena = .init(gpa),
     };
+    errdefer self.destroy();
+    
+    try core.db_pub.subscribe(.{.cb = dbEventCallback, .ctx = @ptrCast(self) });
 
     self.getAllConcepts();
     self.updateGraphContent(.reset);
     return self;
 }
 
-pub fn deinit(self: *Self) void {
+pub fn destroy(self: *Self) void {
     self.graph_view.deinit();
     self.graph_arena.deinit();
     self.gpa.free(self.all_concepts);
@@ -67,6 +73,18 @@ pub fn deinit(self: *Self) void {
     if (self.selected) |*s| {
         s.view.deinit();
         self.gpa.destroy(s.view);
+    }
+}
+
+fn dbEventCallback(self_opaque: *anyopaque, event: ilm.database.EventPub.Event) void {
+    const self: *Self = @ptrCast(@alignCast(self_opaque));
+    // _ = self;
+    const win = dvui.currentWindow();
+    dvui.toast(@src(), .{ .window = win, .message = std.fmt.allocPrint(win.arena(), "Concepts: {d}", .{self.all_concepts.len}) catch "OOM" });
+    const msg = std.fmt.allocPrint(win.arena(), "DB event: {t}, {s}, {d}", .{event.op, event.table.name(), event.rowid}) catch "OOM";
+    dvui.toast(@src(), .{ .window = win, .message = msg });
+
+    if (std.mem.eql(u8, event.table.name(), "concept")) {
     }
 }
 

@@ -1,4 +1,5 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 pub const sqlite = @import("sqlite");
 pub const Diagnostics = sqlite.Diagnostics;
 const uuid = @import("uuid");
@@ -81,7 +82,7 @@ pub const Id = struct {
         return sqlite.Blob{ .data = std.mem.asBytes(&self.uuid) };
     }
 
-    pub fn bindField(self: Id, allocator: std.mem.Allocator) !BaseType {
+    pub fn bindField(self: Id, allocator: Allocator) !BaseType {
         // Since self is passed by value and sqlite.Blob only holds a reference,
         // need to allocate on heap. For this reason, prefer to do it manually:
         //   try stmt.exec(.{ .diags = diags }, .{ .id = id.asBlob(), .name = name });
@@ -89,13 +90,13 @@ pub const Id = struct {
         return .{ .data = bytes };
     }
 
-    pub fn readField(_: std.mem.Allocator, blob: BaseType) !Id {
+    pub fn readField(_: Allocator, blob: BaseType) !Id {
         const uuid_int = std.mem.bytesAsValue(u128, blob.data);
         return .{ .uuid = uuid_int.* };
     }
 };
 
-pub fn queryAll(comptime T: type, alloc: std.mem.Allocator, stmt: anytype, values: anytype) ![]T {
+pub fn queryAll(comptime T: type, alloc: Allocator, stmt: anytype, values: anytype) ![]T {
     var diags: sqlite.Diagnostics = .{};
     var iter = try stmt.iteratorAlloc(T, alloc, values);
     var rows: std.ArrayList(T) = .empty;
@@ -105,3 +106,86 @@ pub fn queryAll(comptime T: type, alloc: std.mem.Allocator, stmt: anytype, value
     }
     return try rows.toOwnedSlice(alloc);
 }
+
+/// Publishes database update events to subscribers.
+pub const EventPub = struct {
+    pub const Callback = *const fn (*anyopaque, Event) void;
+
+    pub const Subscriber = struct {
+        ctx: *anyopaque,
+        cb: Callback,
+    };
+
+    pub const Event = struct {
+        table: struct {
+            buf: [64]u8,
+            len: u8,
+
+            pub fn name(self: *const @This()) []const u8 {
+                return self.buf[0..self.len];
+            }
+        },
+        op: enum(c_int) {
+            insert = sqlite.c.SQLITE_INSERT,
+            delete = sqlite.c.SQLITE_DELETE,
+            update = sqlite.c.SQLITE_UPDATE,
+        },
+        /// https://sqlite.org/lang_createtable.html#rowid
+        rowid: i64,
+    };
+
+    gpa: Allocator,
+    // For pointer stability cannot pass reference to the sqlite.Db
+    // struct. Since it only contains the *c.sqlite3 handle as a
+    // field, i could just copy it...
+    db: *sqlite.c.sqlite3,
+    subscribers: std.ArrayList(Subscriber) = .empty,
+
+    pub fn create(gpa: Allocator, db: *sqlite.c.sqlite3) !*EventPub {
+        const self = try gpa.create(EventPub);
+        self.* = .{ .db = db, .gpa = gpa, .subscribers = .empty };
+        _ = sqlite.c.sqlite3_update_hook(db, sqliteUpdateHook, @ptrCast(self));
+        return self;
+    }
+
+    pub fn destroy(self: *EventPub) void {
+        self.subscribers.deinit(self.gpa);
+        _ = sqlite.c.sqlite3_update_hook(self.db, null, null);
+        self.gpa.destroy(self);
+    }
+
+    /// https://sqlite.org/c3ref/update_hook.html
+    fn sqliteUpdateHook(
+        eventpub: ?*anyopaque,
+        op: c_int,
+        db: [*c]const u8,
+        table_c: [*c]const u8,
+        rowid: c_longlong,
+    ) callconv(.c) void {
+        _ = db;
+        const self: *EventPub = @ptrCast(@alignCast(eventpub));
+
+        const table = std.mem.span(table_c);
+        var table_buf: [64]u8 = undefined;
+        const table_len = @min(table.len, 64);
+        @memcpy(table_buf[0..table_len], table[0..table_len]);
+
+        const event: Event = .{
+            .op = @enumFromInt(op),
+            .table = .{ .buf = table_buf, .len = @intCast(table_len) },
+            .rowid = @intCast(rowid),
+        };
+
+        self.publish(event);
+    }
+
+    fn publish(self: *EventPub, event: Event) void {
+        for (self.subscribers.items) |*sub| {
+            sub.cb(sub.ctx, event);
+        }
+    }
+
+    pub fn subscribe(self: *EventPub, data: Subscriber) Allocator.Error!void {
+        try self.subscribers.append(self.gpa, data);
+    }
+};
