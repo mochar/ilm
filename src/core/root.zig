@@ -5,6 +5,7 @@ pub const Id = database.Id;
 pub const concept = @import("concept.zig");
 pub const GraphRenderer = @import("GraphRenderer.zig");
 pub const P2p = @import("P2p.zig");
+pub const peer = @import("p2p/peer.zig");
 
 test {
     _ = @import("concept.zig");

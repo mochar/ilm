@@ -4,6 +4,8 @@ const ilm = @import("ilm");
 const Core = @import("ilm").Core;
 const iroh = @import("iroh");
 
+const log = std.log.scoped(.cli);
+
 pub fn main(init: std.process.Init) !void {
     const data_path = (try known_folders.getPath(init.io, init.gpa, init.environ_map, .data)) orelse return error.FolderNotFound;
     defer init.gpa.free(data_path);
@@ -11,12 +13,12 @@ pub fn main(init: std.process.Init) !void {
     var core = try Core.init(.{ .gpa = init.gpa, .io = init.io, .data_dir = data_path });
     defer core.deinit();
     core.setupP2p() catch |err| {
-        std.log.err("Failed to setup p2p: {t}", .{err});
+        log.err("Failed to setup p2p: {t}", .{err});
     };
 
     // const secret_key = iroh.SecretKey.generate();
     // defer secret_key.deinit();
-    // std.log.info("Secret key hex: {s}", .{secret_key.asHex()});
+    // log.info("Secret key hex: {s}", .{secret_key.asHex()});
 
     var read_buf: [1024]u8 = undefined;
     var stdin_reader = std.Io.File.stdin().reader(init.io, &read_buf);
@@ -61,19 +63,19 @@ fn connect(endpoint_id: []const u8, gpa: std.mem.Allocator) !void {
     const addr: iroh.EndpointAddr = .fromPublicKey(&public_key);
     defer addr.deinit();
 
-    var endpoint: iroh.Endpoint = try .init(.{ .gpa = gpa, .alpn = ilm.P2p.ALPN });
+    var endpoint: iroh.Endpoint = try .init(.{ .gpa = gpa, .alpn = &ilm.P2p.ALPN });
     defer endpoint.deinit();
 
-    var conn = try endpoint.connect(&addr);
+    var conn = try endpoint.connect(.{ .addr = &addr });
     defer conn.wait_close() catch {};
-    std.log.info("Connected! Creating send stream...", .{});
+    log.info("Connected! Creating send stream...", .{});
 
-    var stream = try conn.createSendStream();
-    defer stream.finish();
-    std.log.info("Sending message...", .{});
+    var streams = try conn.openBiStream();
+    defer streams.deinit();
+    log.info("Sending message...", .{});
 
-    try stream.write("Hallo lol", .{ .timeout_ms = 5000 });
-    std.log.info("Message send! Closing.", .{});
+    try streams.send.write("Hallo lol", .{ .timeout_ms = 5000 });
+    log.info("Message send! Closing.", .{});
 
-    try stream.write("DONE", .{ .timeout_ms = 5000 });
+    try streams.send.write("DONE", .{ .timeout_ms = 5000 });
 }

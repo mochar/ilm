@@ -81,3 +81,12 @@ BEGIN
           AND NOT (cr.parent_id = NEW.parent_id AND cr.child_id = NEW.child_id)
     );
 END;
+
+
+---
+--- Peers
+---
+CREATE TABLE IF NOT EXISTS peer (
+    id   BLOB PRIMARY KEY, -- endpoint id
+    name TEXT NOT NULL
+);

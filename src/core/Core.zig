@@ -84,7 +84,7 @@ pub fn isValid(core: *Core) bool {
 }
 
 pub fn setupP2p(core: *Core) !void {
-    core.p2p.spawnListenThread() catch |err| {
+    core.p2p.spawnListenThread(core) catch |err| {
         std.log.err("Failed to spawn thread: {t}", .{err});
         return err;
     };

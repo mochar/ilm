@@ -1,11 +1,14 @@
 const std = @import("std");
+const sqlite = @import("sqlite");
 const c = @import("c");
+
+const log = std.log.scoped(.iroh);
 
 /// 32-byte secret key.
 pub const SecretKey = struct {
     pub const KEY_LEN = 32;
     pub const HEX_LEN = 64;
-    
+
     ptr: *c.SecretKey_t,
 
     pub fn generate() SecretKey {
@@ -42,7 +45,7 @@ pub const SecretKey = struct {
         defer c.rust_free_string(c_str);
         return allocator.dupe(u8, std.mem.span(c_str));
     }
-    
+
     /// Return a SecretKey from a hex encoded string.
     pub fn fromHex(hex_str: []const u8) !SecretKey {
         if (hex_str.len != 64) return error.InvalidLength;
@@ -66,6 +69,9 @@ pub const SecretKey = struct {
 /// Alias of EndpointId.
 /// 32-byte public key / NodeId.
 pub const PublicKey = struct {
+    pub const KEY_LEN = 32;
+    pub const HEX_LEN = 64;
+
     key: c.PublicKey_t,
 
     pub const PublicKeyError = error{
@@ -92,18 +98,14 @@ pub const PublicKey = struct {
 
     /// Returns the raw 32-byte public key array.
     pub fn bytes(self: *const PublicKey) *const [32]u8 {
-        return &self.key.key;
+        return &self.key.key.idx;
     }
 
     /// Returns the 64-character hex-encoded string representation
     pub fn toHex(self: *const PublicKey) [64:0]u8 {
         const c_str = c.public_key_as_base32(&self.key) orelse @panic("secret_key_as_base32 returned null");
         defer c.rust_free_string(c_str);
-
-        // var result: [64:0]u8 = undefined;
-        // @memcpy(&result, c_str[0..64]);
         const result: [64:0]u8 = c_str[0..64 :0].*;
-
         return result;
     }
 
@@ -121,7 +123,7 @@ pub const PublicKey = struct {
 
         const errno = c.public_key_from_base32(&buf, &public_key.key);
         if (checkErrorResult(errno)) |err| {
-            std.log.err("Invalid endpoint id ({t}): {s}", .{ err, hex_str });
+            log.err("Invalid endpoint id ({t}): {s}", .{ err, hex_str });
             return err;
         }
 
@@ -140,6 +142,10 @@ pub const EndpointAddr = struct {
     pub fn fromPublicKey(public_key: *const PublicKey) EndpointAddr {
         const addr = c.endpoint_addr_new(public_key.key);
         return .fromAddr(addr);
+    }
+
+    pub fn copy(self: *const EndpointAddr) EndpointAddr {
+        return .fromPublicKey(&self.id);
     }
 
     pub fn deinit(self: *const EndpointAddr) void {
@@ -206,11 +212,21 @@ pub fn checkEndpointResult(result: c_int) ?EndpointError {
     };
 }
 
+pub const Alpn = struct {
+    alpn: []const u8,
+
+    pub fn slice(self: *const Alpn) c.slice_ref_uint8_t {
+        var alpn_slice: c.slice_ref_uint8_t = undefined;
+        alpn_slice.ptr = self.alpn.ptr;
+        alpn_slice.len = self.alpn.len;
+        return alpn_slice;
+    }
+};
+
 pub const Endpoint = struct {
     gpa: std.mem.Allocator,
     ptr: *c.Endpoint_t,
-    alpn: []const u8,
-    alpn_slice: c.slice_ref_uint8_t,
+    alpn: *const Alpn,
     state: union(enum) {
         bound: void,
         online: OnlineState,
@@ -218,6 +234,8 @@ pub const Endpoint = struct {
 
     pub const OnlineState = struct {
         addr: EndpointAddr,
+        /// Note this just addr.id.toHex(), but stored here for
+        /// convenience.
         id: [64:0]u8,
         relay_url: []const u8,
         ticket: []const u8,
@@ -231,28 +249,25 @@ pub const Endpoint = struct {
 
     pub const Options = struct {
         gpa: std.mem.Allocator,
-        alpn: []const u8,
+        alpn: *const Alpn,
         /// Transfer ownership, do not free!
         secret_key: ?SecretKey = null,
     };
 
-    /// ALPN is assumed to be a static slice or with lifetime longer than this.
     pub fn init(opts: Options) !Endpoint {
-        var alpn_slice: c.slice_ref_uint8_t = undefined;
-        alpn_slice.ptr = opts.alpn.ptr;
-        alpn_slice.len = opts.alpn.len;
-
         var config = c.endpoint_config_default();
         defer c.endpoint_config_free(config);
-        c.endpoint_config_add_alpn(&config, alpn_slice);
         config.discovery_cfg = c.DISCOVERY_CONFIG_ALL;
         if (opts.secret_key) |secret_key| {
             // Note: I get a double free error when freeing secret key
             // afterwards, so it seems to be consumed by iroh already.
             config.secret_key = secret_key.ptr;
         }
+        const slice = opts.alpn.slice();
+        c.endpoint_config_add_alpn(&config, slice);
 
         const endpoint = c.endpoint_default() orelse unreachable;
+        errdefer c.endpoint_free(endpoint);
         const bind_res = c.endpoint_bind(&config, null, null, &endpoint);
         if (bind_res != 0) return error.BindFailed;
 
@@ -260,23 +275,22 @@ pub const Endpoint = struct {
             .gpa = opts.gpa,
             .ptr = endpoint,
             .alpn = opts.alpn,
-            .alpn_slice = alpn_slice,
             .state = .bound,
         };
     }
 
-    pub fn deinit(endpoint: *Endpoint) void {
-        c.endpoint_free(endpoint.ptr);
-        switch (endpoint.state) {
+    pub fn deinit(self: *Endpoint) void {
+        c.endpoint_free(self.ptr);
+        switch (self.state) {
             .bound => {},
-            .online => |state| state.deinit(endpoint.gpa),
+            .online => |state| state.deinit(self.gpa),
         }
     }
 
-    pub fn ensureOnline(endpoint: *Endpoint) EndpointError!void {
-        endpoint.checkOnline(.{}) catch |err| {
-            switch (endpoint.state) {
-                .online => |state| state.deinit(endpoint.gpa),
+    pub fn ensureOnline(self: *Endpoint) EndpointError!void {
+        self.checkOnline(.{}) catch |err| {
+            switch (self.state) {
+                .online => |state| state.deinit(self.gpa),
                 else => {},
             }
             return err;
@@ -284,39 +298,37 @@ pub const Endpoint = struct {
 
         // Get our address
         var addr_c = c.endpoint_addr_default();
-        const addr_res = c.endpoint_addr(&endpoint.ptr, &addr_c);
+        const addr_res = c.endpoint_addr(&self.ptr, &addr_c);
         if (checkEndpointResult(addr_res)) |err| return err;
         const addr = EndpointAddr.fromAddr(addr_c);
         const id = addr.id.toHex();
         // TODO Can use addr_c.relay_urls.len to ensure not null
-        const relay_url = if (addr.relayUrlNthAlloc(endpoint.gpa, 0)) |url|
+        const relay_url = if (addr.relayUrlNthAlloc(self.gpa, 0)) |url|
             url orelse unreachable
         else |_|
             @panic("OOM");
-        const ticket = addr.ticketAlloc(endpoint.gpa) catch @panic("OOM");
-        endpoint.state = .{
-            .online = .{
-                .addr = addr,
-                .id = id,
-                .relay_url = relay_url,
-                .ticket = ticket,
-            }
-        };
+        const ticket = addr.ticketAlloc(self.gpa) catch @panic("OOM");
+        self.state = .{ .online = .{
+            .addr = addr,
+            .id = id,
+            .relay_url = relay_url,
+            .ticket = ticket,
+        } };
     }
 
-    pub fn logAddr(endpoint: *Endpoint) void {
-        switch (endpoint.state) {
+    pub fn logAddr(self: *Endpoint) void {
+        switch (self.state) {
             .online => |state| {
-                std.log.info("Listening on:", .{});
-                std.log.info("  Endpoint Id: {s}", .{state.id});
-                std.log.info("  Ticket: {s}", .{state.ticket});
-                std.log.info("  Relay: {s}", .{state.relay_url});
-                std.log.info("  Addrs:", .{});
+                log.info("Listening on:", .{});
+                log.info("  Endpoint Id: {s}", .{state.id});
+                log.info("  Ticket: {s}", .{state.ticket});
+                log.info("  Relay: {s}", .{state.relay_url});
+                log.info("  Addrs:", .{});
                 for (0..state.addr.addr.ip_addrs.len - 1) |i| {
                     const socket_addr = c.endpoint_addr_ip_addrs_nth(&state.addr.addr, i);
                     const socket_str = c.socket_addr_as_str(socket_addr);
                     defer c.rust_free_string(socket_str);
-                    std.log.info("    - {s}", .{socket_str});
+                    log.info("    - {s}", .{socket_str});
                 }
             },
             else => {},
@@ -329,10 +341,10 @@ pub const Endpoint = struct {
     /// direct address.
     ///
     /// Will block at most `timeout` milliseconds.
-    pub fn checkOnline(endpoint: *const Endpoint, opts: struct { timeout_ms: u64 = 5000 }) EndpointError!void {
-        const errno = c.endpoint_online(&endpoint.ptr, opts.timeout_ms);
+    pub fn checkOnline(self: *const Endpoint, opts: struct { timeout_ms: u64 = 5000 }) EndpointError!void {
+        const errno = c.endpoint_online(&self.ptr, opts.timeout_ms);
         if (checkEndpointResult(errno)) |err| {
-            std.log.err("Failed to get a home relay: {t}", .{err});
+            log.err("Failed to get a home relay: {t}", .{err});
             return err;
         }
     }
@@ -340,29 +352,66 @@ pub const Endpoint = struct {
     /// Accept a new connection on this endpoint.
     ///
     /// Blocks the current thread until a connection is established.
-    pub fn accept(endpoint: *const Endpoint) EndpointError!Connection {
-        const conn = Connection.default();
-        const errno = c.endpoint_accept(&endpoint.ptr, endpoint.alpn_slice, &conn.ptr);
+    pub fn accept(self: *const Endpoint) EndpointError!Connection {
+        var conn = c.connection_default() orelse unreachable;
+        errdefer c.connection_free(conn);
+
+        var alpn_slice = c.rust_buffer_alloc(0);
+        defer c.rust_buffer_free(alpn_slice);
+        const errno = c.endpoint_accept_any(&self.ptr, &alpn_slice, &conn);
         if (checkEndpointResult(errno)) |err| {
-            std.log.err("Failed to accept connection: {t}", .{err});
+            log.err("Failed to accept connection: {t}", .{err});
             return err;
         }
-        return conn;
+        errdefer c.connection_close(conn);
+
+        // Not sure if this accepts literally anything, or only alpns
+        // that we passed in the config in init.
+        const alpn_name = alpn_slice.ptr[0..alpn_slice.len];
+        if (!std.mem.eql(u8, alpn_name, self.alpn.alpn)) {
+            log.err("Got unknown ALPN: {s}", .{alpn_name});
+            return EndpointError.UnknownError;
+        }
+
+        var addr_c = c.endpoint_addr_default();
+        const addr_res = c.endpoint_addr(&self.ptr, &addr_c);
+        if (checkEndpointResult(addr_res)) |err| {
+            log.err("Failed to get connection addr: {t}", .{err});
+            return err;
+        }
+        const addr: EndpointAddr = .fromAddr(addr_c);
+
+        return .{ .ptr = conn, .alpn = self.alpn, .addr = addr };
     }
 
     /// Blocks all incoming connections and then waits for all current connections
     /// to close gracefully, before shutting down the endpoint.
     /// Consumes the endpoint, no need to free it afterwards.
-    pub fn close(endpoint: *const Endpoint) void {
-        c.endpoint_close(&endpoint.ptr);
-        endpoint.deinit();
+    pub fn close(self: *const Endpoint) void {
+        c.endpoint_close(&self.ptr);
+        self.deinit();
     }
 
-    pub fn connect(ep: *const Endpoint, addr: *const EndpointAddr) EndpointError!Connection {
-        const conn = Connection.default();
-        const errno = c.endpoint_connect(&ep.ptr, ep.alpn_slice, addr.addr, &conn.ptr);
+    pub const ConnectTarget = union(enum) {
+        /// A copy is made so dont forget to free yours
+        addr: *const EndpointAddr,
+        /// A copy is made so dont forget to free yours
+        public_key: *const PublicKey,
+        // Can be either raw bytes or hex
+        // endpoint_id: []const u8,
+    };
+
+    pub fn connect(self: *const Endpoint, peer: ConnectTarget) EndpointError!Connection {
+        const addr: EndpointAddr = switch (peer) {
+            .addr => |addr| addr.copy(),
+            .public_key => |pk| EndpointAddr.fromPublicKey(pk),
+        };
+
+        const conn = Connection.default(self.alpn, addr);
+        const alpn_slice = self.alpn.slice();
+        const errno = c.endpoint_connect(&self.ptr, alpn_slice, addr.addr, &conn.ptr);
         if (checkEndpointResult(errno)) |err| {
-            std.log.err("Failed to connect to server: {t}", .{err});
+            log.err("Failed to connect to server: {t}", .{err});
             return err;
         }
         return conn;
@@ -371,9 +420,16 @@ pub const Endpoint = struct {
 
 pub const Connection = struct {
     ptr: *c.Connection_t,
+    alpn: *const Alpn,
+    /// Address of the endpoint we are connected to
+    addr: EndpointAddr,
 
-    pub fn default() Connection {
-        return .{ .ptr = c.connection_default() orelse unreachable };
+    pub fn default(alpn: *const Alpn, addr: EndpointAddr) Connection {
+        return .{
+            .ptr = c.connection_default() orelse unreachable,
+            .alpn = alpn,
+            .addr = addr,
+        };
     }
 
     pub fn deinit(self: *const Connection) void {
@@ -385,6 +441,7 @@ pub const Connection = struct {
     pub fn close(self: *const Connection) void {
         c.connection_close(self.ptr);
     }
+
     /// Wait for the connection to be closed. Errors when failed to
     /// close cleanly, which can be ignored. Blocks the current
     /// thread.
@@ -396,30 +453,85 @@ pub const Connection = struct {
         // contains struct Closed with some info.
         const errno = c.connection_closed(self.ptr);
         if (checkEndpointResult(errno)) |err| {
-            std.log.err("Failed to close connection cleanly: {t}", .{err});
+            log.err("Failed to close connection cleanly: {t}", .{err});
             return err;
         }
     }
 
-    pub fn createSendStream(self: *const Connection) EndpointError!SendStream {
-        return try SendStream.fromConnection(self);
+    pub fn openUniStream(self: *const Connection) EndpointError!SendStream {
+        var stream = SendStream.default();
+        errdefer stream.deinit();
+
+        const errno = c.connection_open_uni(&self.ptr, @ptrCast(&stream.ptr));
+        if (checkEndpointResult(errno)) |err| {
+            log.err("Failed to establish send stream: {t}", .{err});
+            return err;
+        }
+
+        return stream;
     }
 
-    pub fn createRecvStream(self: *const Connection) EndpointError!RecvStream {
-        return try RecvStream.fromConnection(self);
+    pub fn acceptUniStream(self: *const Connection) EndpointError!RecvStream {
+        var stream = RecvStream.default();
+        errdefer stream.deinit();
+
+        const errno = c.connection_accept_uni(&self.ptr, @ptrCast(&stream.ptr));
+        if (checkEndpointResult(errno)) |err| {
+            log.err("Failed to accept uni stream: {t}", .{err});
+            return err;
+        }
+
+        return stream;
+    }
+
+    pub fn openBiStream(self: *const Connection) EndpointError!BiStream {
+        var send_stream = SendStream.default();
+        errdefer send_stream.deinit();
+
+        var recv_stream = RecvStream.default();
+        errdefer recv_stream.deinit();
+
+        const errno = c.connection_open_bi(&self.ptr, @ptrCast(&send_stream.ptr), @ptrCast(&recv_stream.ptr));
+        if (checkEndpointResult(errno)) |err| {
+            log.err("Failed to establish bi stream: {t}", .{err});
+            return err;
+        }
+
+        return .{ .send = send_stream, .recv = recv_stream };
+    }
+
+    pub fn acceptBiStream(self: *const Connection) EndpointError!BiStream {
+        var send_stream = SendStream.default();
+        errdefer send_stream.deinit();
+
+        var recv_stream = RecvStream.default();
+        errdefer recv_stream.deinit();
+
+        const errno = c.connection_accept_bi(&self.ptr, @ptrCast(&send_stream.ptr), @ptrCast(&recv_stream.ptr));
+        if (checkEndpointResult(errno)) |err| {
+            log.err("Failed to accept bi stream: {t}", .{err});
+            return err;
+        }
+
+        return .{ .send = send_stream, .recv = recv_stream };
+    }
+};
+
+pub const BiStream = struct {
+    send: SendStream,
+    recv: RecvStream,
+
+    pub fn deinit(self: *const BiStream) void {
+        self.recv.deinit();
+        self.send.finish();
     }
 };
 
 pub const SendStream = struct {
     ptr: *c.SendStream_t,
 
-    pub fn fromConnection(conn: *const Connection) EndpointError!SendStream {
-        var stream = c.send_stream_default() orelse unreachable;
-        const errno = c.connection_open_uni(&conn.ptr, @ptrCast(&stream));
-        if (checkEndpointResult(errno)) |err| {
-            std.log.err("Failed to establish send stream: {t}", .{err});
-            return err;
-        }
+    pub fn default() SendStream {
+        const stream = c.send_stream_default() orelse unreachable;
         return .{ .ptr = stream };
     }
 
@@ -437,7 +549,7 @@ pub const SendStream = struct {
     pub fn finish(self: *const SendStream) void {
         const errno = c.send_stream_finish(self.ptr);
         if (checkEndpointResult(errno)) |err| {
-            std.log.err("Failed to finish sending: {t}", .{err});
+            log.err("Failed to finish sending: {t}", .{err});
         }
     }
 
@@ -459,7 +571,7 @@ pub const SendStream = struct {
         else
             c.send_stream_write(@ptrCast(&self.ptr), data_slice);
         if (checkEndpointResult(errno)) |err| {
-            std.log.err("Failed to send data: {t}", .{err});
+            log.err("Failed to send data: {t}", .{err});
             return err;
         }
     }
@@ -468,26 +580,21 @@ pub const SendStream = struct {
 pub const RecvStream = struct {
     ptr: *c.RecvStream_t,
 
-    pub fn fromConnection(conn: *const Connection) EndpointError!RecvStream {
-        var stream = c.recv_stream_default() orelse unreachable;
-        const errno = c.connection_accept_uni(&conn.ptr, @ptrCast(&stream));
-        if (checkEndpointResult(errno)) |err| {
-            std.log.err("Failed to accept uni stream: {t}", .{err});
-            return err;
-        }
+    pub fn default() RecvStream {
+        const stream = c.recv_stream_default() orelse unreachable;
         return .{ .ptr = stream };
     }
 
-    pub fn deinit(self: *RecvStream) void {
+    pub fn deinit(self: *const RecvStream) void {
         c.recv_stream_free(self.ptr);
     }
 
     /// Return slice in buf of data that was read, or null if EOF.
     pub fn read(
-        self: *RecvStream,
+        self: *const RecvStream,
         buf: []u8,
         opts: struct { timeout_ms: ?u64 = null },
-    ) EndpointError!?[]const u8 {
+    ) EndpointError![]const u8 {
         var buf_slice: c.slice_mut_uint8 = undefined;
         buf_slice.ptr = buf.ptr;
         buf_slice.len = buf.len;
@@ -497,17 +604,40 @@ pub const RecvStream = struct {
         // an error instead. Right now returns -1 as error, which
         // makes it ambiguous what caused it.
         const n_read = if (opts.timeout_ms) |timeout|
-            c.recv_stream_read_timeout(@ptrCast(&self.ptr), buf_slice, timeout)
+            c.recv_stream_read_timeout(@ptrCast(@constCast(&self.ptr)), buf_slice, timeout)
         else
-            c.recv_stream_read(@ptrCast(&self.ptr), buf_slice);
+            c.recv_stream_read(@ptrCast(@constCast(&self.ptr)), buf_slice);
 
         if (n_read == -1) {
-            std.log.err("Failed to recieve data", .{});
+            log.err("Failed to recieve data", .{});
             return EndpointError.ReadError;
         }
-        if (n_read == 0) return null;
+        // if (n_read == 0) return null;
 
         return buf[0..@intCast(n_read)];
+    }
+
+    pub fn readToEnd(
+        self: *RecvStream,
+        alloc: std.mem.Allocator,
+        opts: struct {
+            size_limit: usize = 1024,
+            timeout_ms: u64 = 5000,
+        },
+    ) EndpointError![:0]const u8 {
+        var buffer = c.rust_buffer_alloc(0);
+        defer c.rust_buffer_free(buffer);
+        const errno = c.recv_stream_read_to_end_timeout(
+            @ptrCast(&self.ptr),
+            &buffer,
+            opts.size_limit,
+            opts.timeout_ms,
+        );
+        if (checkEndpointResult(errno)) |err| {
+            log.err("Failed to read stream: {t}", .{err});
+            return err;
+        }
+        return try alloc.dupeZ(u8, buffer.ptr[0..buffer.len]);
     }
 };
 

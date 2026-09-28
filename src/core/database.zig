@@ -1,5 +1,6 @@
 const std = @import("std");
-const sqlite = @import("sqlite");
+pub const sqlite = @import("sqlite");
+pub const Diagnostics = sqlite.Diagnostics;
 const uuid = @import("uuid");
 
 const schema = @embedFile("schema.sql");
@@ -25,7 +26,7 @@ pub fn getDb(options: DatabaseOptions) !sqlite.Db {
     const rc = sqlite.c.sqlite3_exec(db.db, schema.ptr, null, null, &errmsg);
 
     if (rc == sqlite.c.SQLITE_OK) return db;
-    
+
     if (options.diags) |diags| {
         diags.err = db.getDetailedError();
     }
@@ -66,7 +67,7 @@ pub const Id = struct {
     pub fn toEmacsRepr(self: Id) StrT {
         return self.serialize();
     }
-    
+
     pub fn fromEmacsRepr(id_str: []const u8) !Id {
         return Id.parse(id_str);
     }
@@ -93,3 +94,14 @@ pub const Id = struct {
         return .{ .uuid = uuid_int.* };
     }
 };
+
+pub fn queryAll(comptime T: type, alloc: std.mem.Allocator, stmt: anytype, values: anytype) ![]T {
+    var diags: sqlite.Diagnostics = .{};
+    var iter = try stmt.iteratorAlloc(T, alloc, values);
+    var rows: std.ArrayList(T) = .empty;
+    defer rows.deinit(alloc);
+    while (try iter.nextAlloc(alloc, .{ .diags = &diags })) |row| {
+        try rows.append(alloc, row);
+    }
+    return try rows.toOwnedSlice(alloc);
+}
