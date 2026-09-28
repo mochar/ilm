@@ -44,6 +44,13 @@ pub fn isValid(db: *sqlite.Db) bool {
     return true;
 }
 
+pub const Table = enum {
+    concept,
+    concept_rel,
+    peer,
+    unknown,
+};
+
 /// A wrapper around a u128 UUID. All rows use this ID type.
 pub const Id = struct {
     uuid: u128,
@@ -117,14 +124,7 @@ pub const EventPub = struct {
     };
 
     pub const Event = struct {
-        table: struct {
-            buf: [64]u8,
-            len: u8,
-
-            pub fn name(self: *const @This()) []const u8 {
-                return self.buf[0..self.len];
-            }
-        },
+        table: Table,
         op: enum(c_int) {
             insert = sqlite.c.SQLITE_INSERT,
             delete = sqlite.c.SQLITE_DELETE,
@@ -159,24 +159,16 @@ pub const EventPub = struct {
         eventpub: ?*anyopaque,
         op: c_int,
         db: [*c]const u8,
-        table_c: [*c]const u8,
+        table: [*c]const u8,
         rowid: c_longlong,
     ) callconv(.c) void {
         _ = db;
         const self: *EventPub = @ptrCast(@alignCast(eventpub));
-
-        const table = std.mem.span(table_c);
-        var table_buf: [64]u8 = undefined;
-        const table_len = @min(table.len, 64);
-        @memcpy(table_buf[0..table_len], table[0..table_len]);
-
-        const event: Event = .{
+        self.publish(.{
             .op = @enumFromInt(op),
-            .table = .{ .buf = table_buf, .len = @intCast(table_len) },
+            .table = std.meta.stringToEnum(Table, std.mem.span(table)) orelse .unknown,
             .rowid = @intCast(rowid),
-        };
-
-        self.publish(event);
+        });
     }
 
     fn publish(self: *EventPub, event: Event) void {

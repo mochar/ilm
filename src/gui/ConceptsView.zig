@@ -81,11 +81,8 @@ fn dbEventCallback(self_opaque: *anyopaque, event: ilm.database.EventPub.Event) 
     // _ = self;
     const win = dvui.currentWindow();
     dvui.toast(@src(), .{ .window = win, .message = std.fmt.allocPrint(win.arena(), "Concepts: {d}", .{self.all_concepts.len}) catch "OOM" });
-    const msg = std.fmt.allocPrint(win.arena(), "DB event: {t}, {s}, {d}", .{event.op, event.table.name(), event.rowid}) catch "OOM";
+    const msg = std.fmt.allocPrint(win.arena(), "DB event: {t}, {t}, {d}", .{event.op, event.table, event.rowid}) catch "OOM";
     dvui.toast(@src(), .{ .window = win, .message = msg });
-
-    if (std.mem.eql(u8, event.table.name(), "concept")) {
-    }
 }
 
 fn getAllConcepts(self: *Self) void {
