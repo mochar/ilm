@@ -100,7 +100,9 @@ pub const Options = struct {
 
 pub fn init(options: Options) !Self {
     const gpa = options.gpa;
+    
     var graph = try Graph.init(gpa, options.graph_options);
+    errdefer graph.deinit();
 
     const stride = options.buffer_stride;
     const height = options.buffer_height;
@@ -110,6 +112,7 @@ pub fn init(options: Options) !Self {
         buffer = buf;
     } else {
         buffer = try gpa.alloc(u8, stride * height * 4);
+        errdefer gpa.free(buffer);
         @memset(buffer, 0);
     }
 
@@ -128,6 +131,7 @@ pub fn init(options: Options) !Self {
     }
 
     const canvas = try plutovg.Canvas.initForData(buffer.ptr, view_w, view_h, stride);
+    errdefer canvas.deinit();
 
     return .{
         .gpa = gpa,

@@ -38,7 +38,7 @@ graph_arena: std.heap.ArenaAllocator,
 pub fn create(gpa: std.mem.Allocator, core: *Core) !*Self {
     var self = try gpa.create(Self);
     errdefer gpa.destroy(self);
-    
+
     var graph_view: GraphView = try .init(.{
         .gpa = gpa,
         .io = core.io,
@@ -56,8 +56,8 @@ pub fn create(gpa: std.mem.Allocator, core: *Core) !*Self {
         .graph_arena = .init(gpa),
     };
     errdefer self.destroy();
-    
-    try core.db_pub.subscribe(.{.cb = dbEventCallback, .ctx = @ptrCast(self) });
+
+    try core.db_pub.subscribe(.{ .cb = dbEventCallback, .ctx = @ptrCast(self) });
 
     self.getAllConcepts();
     self.updateGraphContent(.reset);
@@ -71,18 +71,36 @@ pub fn destroy(self: *Self) void {
     self.search_query.deinit(self.gpa);
     self.search_arena.deinit();
     if (self.selected) |*s| {
-        s.view.deinit();
-        self.gpa.destroy(s.view);
+        s.view.destroy();
     }
 }
 
 fn dbEventCallback(self_opaque: *anyopaque, event: ilm.database.EventPub.Event) void {
     const self: *Self = @ptrCast(@alignCast(self_opaque));
-    // _ = self;
-    const win = dvui.currentWindow();
-    dvui.toast(@src(), .{ .window = win, .message = std.fmt.allocPrint(win.arena(), "Concepts: {d}", .{self.all_concepts.len}) catch "OOM" });
-    const msg = std.fmt.allocPrint(win.arena(), "DB event: {t}, {t}, {d}", .{event.op, event.table, event.rowid}) catch "OOM";
-    dvui.toast(@src(), .{ .window = win, .message = msg });
+    switch (event.table) {
+        .concept => {
+            switch (event.op) {
+                .update => {
+                    self.getAllConcepts();
+                    self.updateGraphContent(.retain_state);
+                },
+                .insert => {
+                    self.getAllConcepts();
+                    self.updateGraphContent(.retain_state);
+                    self.selectConceptByRowId(event.rowid);
+                },
+                .delete => {
+                    self.getAllConcepts();
+                    self.updateGraphContent(.reset);
+                    self.unselect();
+                },
+            }
+        },
+        .concept_rel => {
+            self.updateGraphContent(.retain_state);
+        },
+        else => {},
+    }
 }
 
 fn getAllConcepts(self: *Self) void {
@@ -204,20 +222,7 @@ fn renderConceptView(self: *Self) void {
             switch (action) {
                 .quit => self.unselect(),
                 .node_select => |id| self.selectConceptById(id),
-                .rename => {
-                    self.getAllConcepts();
-                    self.updateGraphContent(.retain_state);
-                },
-                .new => |id| {
-                    self.getAllConcepts();
-                    self.updateGraphContent(.retain_state);
-                    self.selectConceptById(id.uuid);
-                },
-                .delete => {
-                    self.getAllConcepts();
-                    self.updateGraphContent(.reset);
-                    self.unselect();
-                },
+                else => {},
             }
         }
     }
@@ -244,19 +249,27 @@ fn selectConceptById(self: *Self, id: u128) void {
     dvui.toast(@src(), .{ .message = "Failed to find concept" });
 }
 
+fn selectConceptByRowId(self: *Self, rowid: i64) void {
+    if (self.selected) |s| if (s.concept.rowid == rowid) return;
+    for (self.all_concepts) |*concept| {
+        if (concept.rowid == rowid) {
+            self.selectConcept(concept);
+            return;
+        }
+    }
+    dvui.toast(@src(), .{ .message = "Failed to find concept" });
+}
+
 fn selectConcept(self: *Self, concept: *Concept) void {
     if (self.selected) |*selected| {
         if (selected.concept == concept) return;
         // TODO Duplicate code in unselect()
-        selected.view.deinit();
-        self.gpa.destroy(selected.view);
+        selected.view.destroy();
         self.selected = null;
         self.graph_view.renderer.highlighted.clearRetainingCapacity();
     }
 
-    const view = self.gpa.create(ConceptView) catch @panic("OOM");
-    errdefer self.gpa.destroy(view);
-    view.* = ConceptView.init(.{
+    const view = ConceptView.create(.{
         .concept_id = concept.id,
         .core = self.core,
         .gpa = self.core.gpa,
@@ -275,8 +288,7 @@ fn selectConcept(self: *Self, concept: *Concept) void {
 
 fn unselect(self: *Self) void {
     if (self.selected) |*selected| {
-        selected.view.deinit();
-        self.gpa.destroy(selected.view);
+        selected.view.destroy();
         self.selected = null;
     }
     self.graph_view.animateFitToGraph() catch {};

@@ -9,6 +9,7 @@ const log = std.log.scoped(.cli);
 pub fn main(init: std.process.Init) !void {
     const data_path = (try known_folders.getPath(init.io, init.gpa, init.environ_map, .data)) orelse return error.FolderNotFound;
     defer init.gpa.free(data_path);
+    // const data_path = "/home/mochar/tmp/ilm";
 
     var core = try Core.init(.{ .gpa = init.gpa, .io = init.io, .data_dir = data_path });
     defer core.deinit();

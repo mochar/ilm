@@ -7,6 +7,7 @@ const Id = @import("database.zig").Id;
 const Graph = @import("graphviz").Graph;
 
 pub const Concept = struct {
+    rowid: i64,
     id: Id,
     name: []const u8,
 };
@@ -108,6 +109,29 @@ pub fn delete(core: *Core, id: Id) !void {
     var savepoint = try core.db.savepoint("delconcept");
     defer savepoint.rollback();
 
+    // Delete the relationship first. Otherwise inbetween there will
+    // conceptid in concept_rel of a concept that doesnt exist. This
+    // is a problem because of the sqlite update hook, which reacts
+    // immediately.
+    {
+        var stmt = core.db.prepareWithDiags(
+            \\DELETE FROM concept_rel
+            \\WHERE parent_id = ? OR child_id = ?
+        , .{ .diags = &diags }) catch |err| {
+            log.err("SQLite prepare failed: {s}", .{diags.message});
+            return err;
+        };
+        defer stmt.deinit();
+
+        stmt.exec(
+            .{ .diags = &diags },
+            .{ id.asBlob(), id.asBlob() },
+        ) catch |err| {
+            log.err("SQLite exec failed: {s}", .{diags.message});
+            return err;
+        };
+    }
+
     {
         var stmt = core.db.prepareWithDiags(
             \\DELETE FROM concept
@@ -127,25 +151,6 @@ pub fn delete(core: *Core, id: Id) !void {
         };
     }
 
-    {
-        var stmt = core.db.prepareWithDiags(
-            \\DELETE FROM concept_rel
-            \\WHERE parent_id = ? OR child_id = ?
-        , .{ .diags = &diags }) catch |err| {
-            log.err("SQLite prepare failed: {s}", .{diags.message});
-            return err;
-        };
-        defer stmt.deinit();
-
-        stmt.exec(
-            .{ .diags = &diags },
-            .{ id.asBlob(), id.asBlob() },
-        ) catch |err| {
-            log.err("SQLite exec failed: {s}", .{diags.message});
-            return err;
-        };
-    }
-    
     savepoint.commit();
 }
 
@@ -195,14 +200,25 @@ fn queryConcepts(alloc: Allocator, stmt: anytype, values: anytype) ![]Concept {
 pub fn getAll(core: *Core, alloc: Allocator) ![]Concept {
     var diags: sqlite.Diagnostics = .{};
     var stmt = try core.db.prepareWithDiags(
-        "SELECT id, name FROM concept ORDER BY name",
+        // "SELECT id, name FROM concept ORDER BY name",
+        "SELECT rowid, id, name FROM concept",
         .{ .diags = &diags },
     );
     defer stmt.deinit();
     return try queryConcepts(alloc, &stmt, .{});
 }
 
-pub fn getById(core: *Core, alloc: Allocator, ids: []const Id) ![]Concept {
+pub fn getById(core: *Core, alloc: Allocator, id: Id) !?Concept {
+    var diags: sqlite.Diagnostics = .{};
+    var stmt = try core.db.prepareWithDiags(
+        "SELECT rowid, id, name FROM concept WHERE id = ?",
+        .{ .diags = &diags },
+    );
+    defer stmt.deinit();
+    return try stmt.oneAlloc(Concept, alloc, .{ .diags = &diags }, .{id});
+}
+
+pub fn getByIds(core: *Core, alloc: Allocator, ids: []const Id) ![]Concept {
     if (ids.len == 0) return &.{};
 
     var arena_alloc: std.heap.ArenaAllocator = .init(alloc);
@@ -211,7 +227,7 @@ pub fn getById(core: *Core, alloc: Allocator, ids: []const Id) ![]Concept {
 
     var query_builder: std.ArrayList(u8) = .empty;
     defer query_builder.deinit(arena);
-    try query_builder.appendSlice(arena, "SELECT id, name FROM concept WHERE id IN (");
+    try query_builder.appendSlice(arena, "SELECT rowid, id, name FROM concept WHERE id IN (");
     for (0..ids.len) |i| {
         if (i > 0) try query_builder.appendSlice(arena, ", ");
         try query_builder.appendSlice(arena, "?");
@@ -228,7 +244,7 @@ pub fn getById(core: *Core, alloc: Allocator, ids: []const Id) ![]Concept {
 
 pub fn getByNameMatch(core: *Core, alloc: Allocator, substr: []const u8) ![]Concept {
     const query =
-        \\SELECT id, name
+        \\SELECT rowid, id, name
         \\FROM concept
         \\WHERE instr(name, ?) > 0
     ;
@@ -236,6 +252,13 @@ pub fn getByNameMatch(core: *Core, alloc: Allocator, substr: []const u8) ![]Conc
     var stmt = try core.db.prepareWithDiags(query, .{ .diags = &diags });
     defer stmt.deinit();
     return try queryConcepts(alloc, &stmt, .{substr});
+}
+
+pub fn getIdByRowId(core: *Core, rowid: i64) !?Id {
+    if (try core.db.one(Id.ByteT, "SELECT id FROM concept WHERE rowid = ?", .{}, .{rowid})) |id_bytes| {
+        return .{ .uuid = @bitCast(id_bytes) };
+    }
+    return null;
 }
 
 /// Retrieve the hierarchy of ancestors for a set of concepts.
@@ -324,7 +347,7 @@ pub fn getAncestors(
 pub fn getRoots(core: *Core, allocator: std.mem.Allocator) ![]Concept {
     // A concept has no ancestors if it never appears as a child_id in concept_rel
     const query =
-        \\SELECT c.id, c.name
+        \\SELECT c.rowid, c.id, c.name
         \\FROM concept c
         \\WHERE NOT EXISTS (
         \\    SELECT 1 FROM concept_rel cr WHERE cr.child_id = c.id
@@ -499,7 +522,7 @@ test "concept: basic creation and retrieval" {
     const all = try getAll(&core, alloc, .{ .diags = &diags });
     try std.testing.expectEqual(@as(usize, 2), all.len);
 
-    const fetched = try getById(&core, alloc, &.{ c1_id, c2_id }, .{ .diags = &diags });
+    const fetched = try getByIds(&core, alloc, &.{ c1_id, c2_id }, .{ .diags = &diags });
     try std.testing.expectEqual(@as(usize, 2), fetched.len);
 }
 

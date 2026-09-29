@@ -4,6 +4,7 @@ pub const sqlite = @import("sqlite");
 pub const Diagnostics = sqlite.Diagnostics;
 const uuid = @import("uuid");
 
+const log = std.log.scoped(.database);
 const schema = @embedFile("schema.sql");
 
 pub const DatabaseOptions = struct {
@@ -57,6 +58,7 @@ pub const Id = struct {
 
     pub const IntT = u128;
     pub const StrT = [36]u8;
+    pub const ByteT = [16]u8;
 
     pub fn new(io: std.Io) Id {
         return .{ .uuid = uuid.v7.new(io) };
@@ -81,6 +83,9 @@ pub const Id = struct {
     }
 
     // Sqlite helpers to convert to and from Blob.
+    // Note that when only the id is in the result set, the return
+    // type should be set to [16]u8 and then converted to Id struct using
+    // @bitCast. See example concept.getIdByRowId
     pub const BaseType = sqlite.Blob;
 
     pub fn asBlob(self: *const Id) sqlite.Blob {
@@ -121,6 +126,7 @@ pub const EventPub = struct {
     pub const Subscriber = struct {
         ctx: *anyopaque,
         cb: Callback,
+        unsubscribed: bool = false,
     };
 
     pub const Event = struct {
@@ -173,11 +179,35 @@ pub const EventPub = struct {
 
     fn publish(self: *EventPub, event: Event) void {
         for (self.subscribers.items) |*sub| {
-            sub.cb(sub.ctx, event);
+            if (!sub.unsubscribed) {
+                sub.cb(sub.ctx, event);
+            }
+        }
+
+        // Clean up dead subscribers.
+        // We iterate backwards because we use swapRemove
+        var i: usize = self.subscribers.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (self.subscribers.items[i].unsubscribed) {
+                _ = self.subscribers.swapRemove(i);
+            }
         }
     }
 
     pub fn subscribe(self: *EventPub, data: Subscriber) Allocator.Error!void {
         try self.subscribers.append(self.gpa, data);
+    }
+
+    pub fn unsubscribe(self: *EventPub, target: Subscriber) void {
+        // We only mark the unsubscription in the struct. This handles
+        // cases were subscribers unsub during this loop. The cleanup
+        // happens in the next publish().
+        for (self.subscribers.items) |*sub| {
+            if (sub.ctx == target.ctx and sub.cb == target.cb) {
+                sub.unsubscribed = true;
+                return;
+            }
+        }
     }
 };

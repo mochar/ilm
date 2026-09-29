@@ -13,16 +13,23 @@ const utils = @import("utils.zig");
 const MAX_GRAPH_WIDTH: u32 = 512;
 const MAX_GRAPH_HEIGHT: u32 = 512;
 
-/// Own a copy. Changes are propogated through Action enum.
-concept: Concept,
 core: *Core,
-graph_view: GraphView,
 /// Since this view is short lived, all allocation done with this
 /// arena and only freed at deinit.
 arena: std.heap.ArenaAllocator,
 
-editing_name: bool = false,
-name: std.ArrayList(u8) = .empty,
+/// Own a copy. Optional in case the concept gets deleted or some
+/// error occurs when retrieving the concept. By setting this to null
+/// we can put this view in an invalid, but still functional state.
+concept: ?Concept = null,
+concept_id: Id,
+
+graph_view: GraphView,
+
+name_edit: struct {
+    editing: bool = false,
+    name: std.ArrayList(u8) = .empty,
+} = .{},
 
 pub const Options = struct {
     concept_id: Id,
@@ -31,18 +38,14 @@ pub const Options = struct {
     io: std.Io,
 };
 
-pub fn init(opts: Options) !Self {
-    var arena: std.heap.ArenaAllocator = .init(opts.gpa);
-    errdefer arena.deinit();
+pub fn create(opts: Options) !*Self {
+    const gpa = opts.gpa;
 
-    const concept = blk: {
-        const concepts = try ilm.concept.getById(opts.core, arena.allocator(), &.{opts.concept_id});
-        if (concepts.len != 1) {
-            log.err("Expected 1 concept, found {d}", .{concepts.len});
-            return error.InvalidDbResult;
-        }
-        break :blk concepts[0];
-    };
+    var self = try gpa.create(Self);
+    errdefer gpa.destroy(self);
+
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    errdefer arena.deinit();
 
     var graph_view: GraphView = try .init(.{
         .gpa = opts.gpa,
@@ -53,36 +56,81 @@ pub fn init(opts: Options) !Self {
     });
     errdefer graph_view.deinit();
 
-    var self: Self = .{
-        .concept = concept,
+    self.* = .{
+        .concept_id = opts.concept_id,
         .core = opts.core,
         .graph_view = graph_view,
         .arena = arena,
     };
-    errdefer self.deinit();
+    errdefer self.destroy();
 
-    try self.name.appendSlice(arena.allocator(), concept.name);
-    try self.updateGraph();
+    try opts.core.db_pub.subscribe(.{ .cb = dbEventCallback, .ctx = @ptrCast(self) });
+    self.getConcept();
 
     return self;
 }
 
-pub fn deinit(self: *Self) void {
+pub fn destroy(self: *Self) void {
+    self.core.db_pub.unsubscribe(.{ .cb = dbEventCallback, .ctx = @ptrCast(self) });
     self.graph_view.deinit();
     self.arena.deinit();
 }
 
-pub fn updateGraph(self: *Self) !void {
+/// Retrieve concept from db and set state to match.
+fn getConcept(self: *Self) void {
+    self.name_edit.name.clearRetainingCapacity();
+    self.graph_view.renderer.clear();
+    self.concept = null;
+
+    if (ilm.concept.getById(self.core, self.arena.allocator(), self.concept_id) catch null) |concept| {
+        self.concept = concept;
+        self.name_edit.name.appendSlice(self.arena.allocator(), concept.name) catch {};
+        self.resetGraph() catch {};
+    } else {
+        log.err("Concept not found", .{});
+        dvui.toast(@src(), .{ .message = "Concept not found" });
+    }
+}
+
+fn dbEventCallback(self_opaque: *anyopaque, event: ilm.database.EventPub.Event) void {
+    const self: *Self = @ptrCast(@alignCast(self_opaque));
+    if (self.concept) |*concept| {
+        switch (event.table) {
+            .concept => {
+                if (event.rowid != concept.rowid) return;
+                self.getConcept();
+            },
+            .concept_rel => {
+                if (self.core.db.oneAlloc(
+                    ilm.concept.Relation,
+                    self.arena.allocator(),
+                    "SELECT parent_id, child_id FROM concept_rel WHERE rowid = ?",
+                    .{},
+                    .{event.rowid},
+                ) catch null) |rel| {
+                    if (rel.parent_id.uuid == concept.id.uuid or rel.child_id.uuid == concept.id.uuid) {
+                        self.getConcept();
+                    }
+                }
+            },
+            else => {},
+        }
+    }
+}
+
+pub fn resetGraph(self: *Self) !void {
     var renderer = &self.graph_view.renderer;
     const graph = self.graph_view.graph();
     const arena = self.arena.allocator(); // dont clear capacity
 
     renderer.clear();
 
-    try renderer.highlighted.put(self.concept.id.uuid, {});
-    try ilm.concept.fillAncestorGraph(self.core, graph, arena, &self.concept);
-    try renderer.layout("dotx");
-    try self.graph_view.updateGraph();
+    if (self.concept) |*concept| {
+        try renderer.highlighted.put(concept.id.uuid, {});
+        try ilm.concept.fillAncestorGraph(self.core, graph, arena, concept);
+        try renderer.layout("dotx");
+        try self.graph_view.updateGraph();
+    }
 }
 
 pub const Action = union(enum) {
@@ -99,23 +147,35 @@ pub fn render(self: *Self) ?Action {
     var box = dvui.box(@src(), .{}, .{ .expand = .both });
     defer box.deinit();
 
-    {
+    header: {
         var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
         defer hbox.deinit();
         if (dvui.buttonIcon(@src(), "back", dvui.entypo.back, .{}, .{}, .{ .gravity_y = 0.5 })) {
-            if (self.editing_name) {
-                self.editing_name = false;
+            if (self.name_edit.editing) {
+                self.name_edit.editing = false;
             } else {
                 return .quit;
             }
         }
 
-        if (self.editing_name) {
+        if (self.concept == null) {
+            dvui.labelNoFmt(@src(), "Not Found", .{}, .{
+                .expand = .horizontal,
+                .gravity_y = 0.5,
+                .font = .theme(.title),
+                .background = false,
+            });
+            break :header;
+        }
+
+        var concept = &self.concept.?;
+
+        if (self.name_edit.editing) {
             var edit_entry = dvui.textEntry(
                 @src(),
                 .{ .placeholder = "Name", .text = .{ .array_list = .{
                     .allocator = self.arena.allocator(),
-                    .backing = &self.name,
+                    .backing = &self.name_edit.name,
                 } } },
                 .{ .expand = .horizontal },
             );
@@ -128,25 +188,28 @@ pub fn render(self: *Self) ?Action {
             });
 
             if (enter_pressed or ok_pressed) {
-                if (ilm.concept.rename(self.core, self.concept.id, self.name.items)) {
-                    self.concept.name = self.arena.allocator().dupe(u8, self.name.items) catch @panic("OOM");
+                if (ilm.concept.rename(self.core, concept.id, self.name_edit.name.items)) {
+                    concept.name = self.arena.allocator().dupe(u8, self.name_edit.name.items) catch @panic("OOM");
                     action = .rename;
                 } else |err| {
                     utils.toastErr(@src(), err, "Error when editing name", .{});
                 }
-                self.editing_name = false;
+                self.name_edit.editing = false;
             }
         } else {
-            if (dvui.button(@src(), self.concept.name, .{}, .{
+            if (dvui.button(@src(), concept.name, .{}, .{
                 .expand = .horizontal,
                 .gravity_y = 0.5,
                 .font = .theme(.title),
                 .background = false,
             })) {
-                self.editing_name = true;
+                self.name_edit.editing = true;
             }
         }
     }
+
+    if (self.concept == null) return action;
+    const concept = &self.concept.?;
 
     if (self.graph_view.render(.{
         .expand = .ratio,
@@ -170,8 +233,8 @@ pub fn render(self: *Self) ?Action {
     )) {
         if (ilm.concept.add(
             self.core,
-            std.fmt.allocPrint(self.arena.allocator(), "{s} child", .{self.concept.name}) catch @panic("OOM"),
-            &.{self.concept.id},
+            std.fmt.allocPrint(self.arena.allocator(), "{s} child", .{concept.name}) catch @panic("OOM"),
+            &.{concept.id},
         )) |child_id| {
             return .{ .new = child_id };
         } else |err| {
@@ -190,7 +253,7 @@ pub fn render(self: *Self) ?Action {
             .color_fill = .red,
         },
     )) {
-        if (ilm.concept.delete(self.core, self.concept.id)) {
+        if (ilm.concept.delete(self.core, concept.id)) {
             return .delete;
         } else |err| {
             utils.toastErr(@src(), err, "Failed to delete node", .{});

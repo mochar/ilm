@@ -31,7 +31,7 @@ pub const Funcs = struct {
     }
 
     pub fn getById(ctx: *Context, core: *Core, ids: []const Id) ![]Concept {
-        return try ilm.concept.getById(core, ctx.arena, ids);
+        return try ilm.concept.getByIds(core, ctx.arena, ids);
     }
 
     pub fn getAncestors(ctx: *Context, core: *Core, ids: []Id, direct_only: bool) ![]ConceptAncestor {

@@ -148,6 +148,7 @@ pub const Graph = struct {
     /// Remove all nodes and edges, and clear the layout.
     pub fn clear(graph: *Graph) void {
         defer _ = graph.arena.reset(.retain_capacity);
+        
         if (graph.has_layout) {
             _ = c.gvFreeLayout(graph.gvc, graph.g);
             graph.has_layout = false;
