@@ -61,7 +61,16 @@ pub fn known(core: *Core, id: *const Peer.Id) !bool {
     return flag.?;
 }
 
-pub fn add(core: *Core, id: *const [32]u8, name: []const u8) !void {
+pub fn add(
+    core: *Core,
+    name: []const u8,
+    id: []const u8
+) !void {
+    if (id.len == 64) {
+        id = (try iroh.PublicKey.fromHex(id)).bytes();
+    } else if (id.len != 32) {
+        return error.InvalidID;
+    }    
     var diags: db.Diagnostics = .{};
 
     var stmt = core.db.prepareWithDiags(

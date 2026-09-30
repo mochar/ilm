@@ -3,24 +3,19 @@ const dvui = @import("dvui");
 const ilm = @import("ilm");
 const Core = ilm.Core;
 const Peer = ilm.peer.Peer;
+const utils = @import("utils.zig");
 const Self = @This();
+
+const log = std.log.scoped(.peers_view);
 
 core: *Core,
 gpa: std.mem.Allocator,
-peers: []Peer = &.{},
 
 pub fn init(core: *Core, gpa: std.mem.Allocator) !Self {
-    const peers = try ilm.peer.getAll(core, gpa);
-    return .{
-        .core = core,
-        .gpa = gpa,
-        .peers = peers,
-    };
+    return .{ .core = core, .gpa = gpa };
 }
 
-pub fn deinit(self: *Self) void {
-    self.gpa.free(self.peers);
-}
+pub fn deinit(_: *Self) void {}
 
 pub fn render(self: *Self) void {
     const win_rect = dvui.windowRect();
@@ -93,11 +88,10 @@ fn renderContent(self: *Self) void {
             defer hbox.deinit();
 
             dvui.label(@src(), "{x}", .{con_peer.id}, .{});
-            
         }
     }
 
-    for (self.peers) |*peer| {
+    for (self.core.peers) |*peer| {
         var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{
             .expand = .horizontal,
             .border = .all(2.0),
@@ -116,6 +110,8 @@ fn renderContent(self: *Self) void {
 
         var entry = dvui.textEntry(@src(), .{ .placeholder = "Peer ID or ticket" }, .{ .expand = .horizontal });
         const enter_pressed = entry.enter_pressed;
+        const input = entry.getText();
+        const entry_valid = input.len == 64; 
         entry.deinit();
 
         // TODO Button to take picture of qr code
@@ -127,8 +123,22 @@ fn renderContent(self: *Self) void {
             .label = " Pair",
             .tvg_bytes = dvui.entypo.link,
             .icon_first = true,
+            .button_opts = .{ .grayed = !entry_valid }
         }, .{ .gravity_y = 0.5 }) or enter_pressed) {
-            // const input = entry.getText();
+            log.info("Input: {s}", .{input});
+            if (entry_valid) {
+                self.pair(input) catch |err| {
+                    utils.toastErr(@src(), err, "Failed to pair", .{});
+                };
+            } else {
+                dvui.toast(@src(), .{ .message = "Peer ID must be 64 characters long" });
+            }
         }
     }
+}
+
+fn pair(self: *Self, endpoint_id: []const u8) !void {
+    _ = self;
+    _ = endpoint_id;
+    // ilm.peer.add(self.core, , name: []const u8)
 }
