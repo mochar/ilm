@@ -14,6 +14,7 @@ const MAX_GRAPH_WIDTH: u32 = 512;
 const MAX_GRAPH_HEIGHT: u32 = 512;
 
 core: *Core,
+gpa: std.mem.Allocator,
 /// Since this view is short lived, all allocation done with this
 /// arena and only freed at deinit.
 arena: std.heap.ArenaAllocator,
@@ -58,6 +59,7 @@ pub fn create(opts: Options) !*Self {
 
     self.* = .{
         .concept_id = opts.concept_id,
+        .gpa = gpa,
         .core = opts.core,
         .graph_view = graph_view,
         .arena = arena,
@@ -74,6 +76,7 @@ pub fn destroy(self: *Self) void {
     self.core.db_pub.unsubscribe(.{ .cb = dbEventCallback, .ctx = @ptrCast(self) });
     self.graph_view.deinit();
     self.arena.deinit();
+    self.gpa.destroy(self);
 }
 
 /// Retrieve concept from db and set state to match.

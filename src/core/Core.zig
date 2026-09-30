@@ -5,8 +5,11 @@ const sqlite = @import("sqlite");
 const database = @import("database.zig");
 const Id = database.Id;
 const P2p = @import("P2p.zig");
-
+const p2p_peer = @import("p2p/peer.zig");
+const Peer = p2p_peer.Peer;
 const Core = @This();
+
+const log = std.log.scoped(.core);
 
 gpa: std.mem.Allocator,
 io: std.Io,
@@ -14,6 +17,9 @@ data_dir: []const u8,
 db: sqlite.Db,
 db_pub: *database.EventPub,
 p2p: P2p,
+
+/// List of known peers in sync with the db.
+peers: []Peer = &.{},
 
 // fn getDefaultDataDir(io: std.Io, alloc: std.mem.Allocator, environ: *std.process.Environ.Map) ?[]const u8 {
 //     std.process.Environ.createMap(.empty, alloc)
@@ -27,9 +33,12 @@ pub const Options = struct {
     sqlite_diagnostics: ?*sqlite.Diagnostics = null,
 };
 
-pub fn init(opts: Options) !Core {
+pub fn create(opts: Options) !*Core {
     const gpa = opts.gpa;
     const io = opts.io;
+
+    const core = try gpa.create(Core);
+    errdefer gpa.destroy(core);
     
     const data_dir = gpa.dupe(u8, opts.data_dir) catch @panic("OOM");
     errdefer gpa.free(data_dir);
@@ -66,10 +75,11 @@ pub fn init(opts: Options) !Core {
         }
     };
 
-    const p2p: P2p = try .init(gpa, io, secret_key);
+    // P2p
+    var p2p: P2p = try .init(gpa, io, secret_key);
     errdefer p2p.deinit();
 
-    return .{
+    core.* = .{
         .gpa = gpa,
         .io = io,
         .data_dir = data_dir,
@@ -77,11 +87,38 @@ pub fn init(opts: Options) !Core {
         .db_pub = db_pub,
         .p2p = p2p,
     };
+
+    try db_pub.subscribe(.{ .cb = dbEventCallback, .ctx = @ptrCast(core) });
+    core.getPeers();
+
+    return core;
 }
 
-pub fn deinit(core: *Core) void {
+pub fn destroy(core: *Core) void {
+    core.db_pub.unsubscribe(.{ .cb = dbEventCallback, .ctx = @ptrCast(core) });
     core.db.deinit();
     core.gpa.free(core.data_dir);
+    core.p2p.deinit();
+    
+    core.gpa.destroy(core);
+}
+
+
+fn dbEventCallback(core_opaque: *anyopaque, event: database.EventPub.Event) void {
+    const core: *Core = @ptrCast(@alignCast(core_opaque));
+    if (event.table == .peer) {
+        core.getPeers();
+    }
+}
+
+fn getPeers(core: *Core) void {
+    core.gpa.free(core.peers);
+    core.peers = &.{};
+    if (p2p_peer.getAll(core, core.gpa)) |peers| {
+        core.peers = peers;
+    } else |err| {
+        log.err("Failed to get peers from db: {t}", .{err});
+    }
 }
 
 /// Returns true if still functional

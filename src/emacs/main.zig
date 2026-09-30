@@ -41,8 +41,7 @@ pub fn emacsLogFn(
 pub const Funcs = struct {
     pub fn init(ctx: *Context, data_dir: []const u8) !*Core {
         var diags: sqlite.Diagnostics = .{};
-        const core = try c_allocator.create(Core);
-        core.* = Core.init(.{
+        const core = Core.create(.{
             .gpa = gpa,
             .io = io.io(),
             .data_dir = data_dir,

@@ -1,6 +1,8 @@
 const std = @import("std");
-const Core = @import("Core.zig");
+const sqlite = @import("sqlite");
 const iroh = @import("iroh");
+const Core = @import("Core.zig");
+const database = @import("database.zig");
 const pair = @import("p2p/pair.zig");
 const sync = @import("p2p/sync.zig");
 const p2p_peer = @import("p2p/peer.zig");
@@ -100,10 +102,10 @@ pub fn deinit(self: *Self) void {
 
     self.connections.mutex.lockUncancelable(self.io);
     defer self.connections.mutex.unlock(self.io);
-    self.connections.peers.deinit(self.gpa);
+    self.connections.peers.deinit();
 }
 
-pub fn getCore(self: *const Self) *const Core {
+pub fn getCore(self: *const Self) *Core {
     return @fieldParentPtr("p2p", self);
 }
 
@@ -128,7 +130,7 @@ pub fn spawnListenThread(self: *Self, core: *Core) !void {
     log.info("Online!", .{});
     self.endpoint.logAddr();
     self.is_running.store(true, .seq_cst);
-    self.thread = try std.Thread.spawn(.{}, acceptLoop, .{self, core});
+    self.thread = try std.Thread.spawn(.{}, acceptLoop, .{ self, core });
 }
 
 pub fn stopListenThread(self: *Self) !void {

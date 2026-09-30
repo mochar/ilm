@@ -279,7 +279,7 @@ pub const Endpoint = struct {
         };
     }
 
-    pub fn deinit(self: *Endpoint) void {
+    pub fn deinit(self: *const Endpoint) void {
         c.endpoint_free(self.ptr);
         switch (self.state) {
             .bound => {},
@@ -388,7 +388,7 @@ pub const Endpoint = struct {
     /// to close gracefully, before shutting down the endpoint.
     /// Consumes the endpoint, no need to free it afterwards.
     pub fn close(self: *const Endpoint) void {
-        c.endpoint_close(&self.ptr);
+        c.endpoint_close(self.ptr);
         self.deinit();
     }
 

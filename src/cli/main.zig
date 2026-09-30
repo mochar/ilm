@@ -11,8 +11,8 @@ pub fn main(init: std.process.Init) !void {
     defer init.gpa.free(data_path);
     // const data_path = "/home/mochar/tmp/ilm";
 
-    var core = try Core.init(.{ .gpa = init.gpa, .io = init.io, .data_dir = data_path });
-    defer core.deinit();
+    var core = try Core.create(.{ .gpa = init.gpa, .io = init.io, .data_dir = data_path });
+    defer core.destroy();
     core.setupP2p() catch |err| {
         log.err("Failed to setup p2p: {t}", .{err});
     };

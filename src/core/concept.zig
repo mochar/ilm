@@ -493,7 +493,7 @@ fn createTestCore(t: *std.testing.TmpDir) !Core {
     const real_path = path_buf[0..len];
 
     var diags: sqlite.Diagnostics = .{};
-    const core = Core.init(std.testing.allocator, std.testing.io, real_path, .{
+    const core = Core.create(std.testing.allocator, std.testing.io, real_path, .{
         .sqlite_diagnostics = &diags,
     }) catch |err| {
         if (diags.err) |sqlite_err| {
@@ -509,7 +509,7 @@ test "concept: basic creation and retrieval" {
     defer tmp.cleanup();
 
     var core = try createTestCore(&tmp);
-    defer core.deinit();
+    defer core.destroy();
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -531,7 +531,7 @@ test "concept: prevent self loop" {
     defer tmp.cleanup();
 
     var core = try createTestCore(&tmp);
-    defer core.deinit();
+    defer core.destroy();
 
     var diags: sqlite.Diagnostics = .{};
     const c1_id = try add(&core, "Math", &.{}, .{ .diags = &diags });
@@ -546,7 +546,7 @@ test "concept: prevent 2-node cycle" {
     defer tmp.cleanup();
 
     var core = try createTestCore(&tmp);
-    defer core.deinit();
+    defer core.destroy();
 
     var diags: sqlite.Diagnostics = .{};
     const a = try add(&core, "A", &.{}, .{ .diags = &diags });
@@ -562,7 +562,7 @@ test "concept: prevent multi-node cycle (A -> B -> C, then C -> A)" {
     defer tmp.cleanup();
 
     var core = try createTestCore(&tmp);
-    defer core.deinit();
+    defer core.destroy();
 
     var diags: sqlite.Diagnostics = .{};
     const a = try add(&core, "A", &.{}, .{ .diags = &diags });
@@ -579,7 +579,7 @@ test "concept: prevent redundant edge insertion (A -> B -> C, then A -> C)" {
     defer tmp.cleanup();
 
     var core = try createTestCore(&tmp);
-    defer core.deinit();
+    defer core.destroy();
 
     var diags: sqlite.Diagnostics = .{};
     const a = try add(&core, "A", &.{}, .{ .diags = &diags });
@@ -596,7 +596,7 @@ test "concept: transitive reduction prunes shortcut edge after insertion" {
     defer tmp.cleanup();
 
     var core = try createTestCore(&tmp);
-    defer core.deinit();
+    defer core.destroy();
 
     var diags: sqlite.Diagnostics = .{};
     // 1. Create A -> C and A -> B
@@ -643,7 +643,7 @@ test "concept: getAncestors hierarchy and direct parents" {
     defer tmp.cleanup();
 
     var core = try createTestCore(&tmp);
-    defer core.deinit();
+    defer core.destroy();
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

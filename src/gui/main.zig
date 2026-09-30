@@ -128,8 +128,7 @@ pub fn appDeinit(win: *dvui.Window) void {
         inline else => |*v| v.deinit(),
     }
     if (core) |c| {
-        c.deinit();
-        gpa.destroy(c);
+        c.destroy();
     }
 }
 
@@ -153,14 +152,11 @@ pub fn appFrame() !dvui.App.Result {
 }
 
 pub fn connect(data_dir: []const u8) void {
-    if (core) |c| c.deinit();
+    if (core) |c| c.destroy();
 
     var diags: sqlite.Diagnostics = .{};
-    core = gpa.create(Core) catch {
-        return dvui.toast(@src(), .{ .message = "Failed to allocate Core" });
-    };
-    if (Core.init(.{ .gpa = gpa, .io = dvui.io, .data_dir = data_dir, .sqlite_diagnostics = &diags })) |c| {
-        core.?.* = c;
+    if (Core.create(.{ .gpa = gpa, .io = dvui.io, .data_dir = data_dir, .sqlite_diagnostics = &diags })) |c| {
+        core = c;
         core.?.p2p.addEventTrigger(.{
             .ctx = dvui.currentWindow(),
             .triggerFn = p2pEventTrigger,
@@ -179,7 +175,6 @@ pub fn connect(data_dir: []const u8) void {
             dvui.toast(@src(), .{ .message = "Content init failed" });
         }
     } else |err| {
-        gpa.destroy(core.?);
         core = null;
         var err_buf: [1024]u8 = undefined;
         const err_msg = if (diags.err) |sqlite_err| blk: {
