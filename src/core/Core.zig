@@ -87,7 +87,7 @@ pub fn create(opts: Options) !*Core {
     };
 
     // P2p router
-    var router: Router = try .init(gpa, io, secret_key);
+    var router: Router = try .init(gpa, io, db_path, secret_key);
     errdefer router.deinit();
 
     core.* = .{
@@ -115,7 +115,7 @@ pub fn destroy(core: *Core) void {
 }
 
 pub fn setup(core: *Core) !void {
-    try core.router.spawnListenThread(core);
+    try core.router.spawnListenThread();
     try core.db_writer.spawnWriteThread();
 }
 
@@ -133,7 +133,7 @@ fn dbWriteCallback(core_opaque: *anyopaque, result: DbWriter.WriteResult) void {
 fn getPeers(core: *Core) void {
     core.gpa.free(core.peers);
     core.peers = &.{};
-    if (p2p.peer.getAll(core, core.gpa)) |peers| {
+    if (p2p.peer.getAll(&core.db, core.gpa)) |peers| {
         core.peers = peers;
     } else |err| {
         log.err("Failed to get peers from db: {t}", .{err});

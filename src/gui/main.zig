@@ -62,29 +62,22 @@ const View = union(enum) {
 
 var view: View = .main;
 var core: ?*Core = null;
-/// Holds copied-over events from the p2p event queue. See p2pEventTrigger.
-var p2p_event_queue: [32]ilm.p2p.Router.Event = undefined;
 
 /// Called when a new p2p events are available. Drains events and updates ui.
-fn p2pEventTrigger(window_opaque: ?*anyopaque) void {
+fn p2pEventTrigger(window_opaque: ?*anyopaque, event: ilm.p2p.Router.Event) void {
     const window: *dvui.Window = @ptrCast(@alignCast(window_opaque orelse unreachable));
-    if (core) |c| blk: {
-        const events = c.router.drainEvents(&p2p_event_queue) catch break :blk;
-        for (events) |event| {
-            switch (event) {
-                .connected => dvui.toast(@src(), .{ .window = window, .message = "Connected to p2p client" }),
-                .disconnected => dvui.toast(@src(), .{ .window = window, .message = "Disconnected from p2p client" }),
-                .stream_received => dvui.toast(@src(), .{ .window = window, .message = "Stream received to p2p client" }),
-                .stream_closed => dvui.toast(@src(), .{ .window = window, .message = "Stream closed to p2p client" }),
-                .message => |payload| {
-                    const arena = dvui.currentWindow().lifo();
-                    const msg = payload.buf[0..payload.len];
-                    const txt = std.fmt.allocPrint(arena, "Recieved p2p msg: {s}", .{msg}) catch "OOM";
-                    defer arena.free(txt);
-                    dvui.toast(@src(), .{ .window = window, .message = txt });
-                },
-            }
-        }
+    switch (event) {
+        .connected => dvui.toast(@src(), .{ .window = window, .message = "Connected to p2p client" }),
+        .disconnected => dvui.toast(@src(), .{ .window = window, .message = "Disconnected from p2p client" }),
+        .stream_received => dvui.toast(@src(), .{ .window = window, .message = "Stream received to p2p client" }),
+        .stream_closed => dvui.toast(@src(), .{ .window = window, .message = "Stream closed to p2p client" }),
+        .message => |payload| {
+            const arena = dvui.currentWindow().lifo();
+            const msg = payload.buf[0..payload.len];
+            const txt = std.fmt.allocPrint(arena, "Recieved p2p msg: {s}", .{msg}) catch "OOM";
+            defer arena.free(txt);
+            dvui.toast(@src(), .{ .window = window, .message = txt });
+        },
     }
 }
 
@@ -147,7 +140,7 @@ pub fn appFrame() !dvui.App.Result {
         .main => {},
         inline else => |*v| v.render(),
     }
-    
+
     return .ok;
 }
 

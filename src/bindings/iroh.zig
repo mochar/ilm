@@ -92,13 +92,25 @@ pub const PublicKey = struct {
         return .{ .key = c.public_key_default() };
     }
 
+    pub fn fromBytes(key_bytes: []const u8) !PublicKey {
+        if (key_bytes.len != 32) return error.InvalidSize;
+        var key: PublicKey = .default();
+        @memcpy(&key.key.key.idx, key_bytes[0..32]);
+        return key;
+    }
+
     pub fn deinit(self: *const PublicKey) void {
         c.public_key_free(self.key);
     }
 
-    /// Returns the raw 32-byte public key array.
+    /// Returns reference to the raw 32-byte public key array.
     pub fn bytes(self: *const PublicKey) *const [32]u8 {
         return &self.key.key.idx;
+    }
+    
+    /// Returns the raw 32-byte public key array.
+    pub fn copyBytes(self: *const PublicKey) [32]u8 {
+        return self.key.key.idx;
     }
 
     /// Returns the 64-character hex-encoded string representation
@@ -220,6 +232,33 @@ pub const Alpn = struct {
         alpn_slice.ptr = self.alpn.ptr;
         alpn_slice.len = self.alpn.len;
         return alpn_slice;
+    }
+};
+
+pub const ConnectionTarget = union(enum) {
+    /// A copy is made so dont forget to free yours
+    addr: *const EndpointAddr,
+    /// A copy is made so dont forget to free yours
+    public_key: *const PublicKey,
+    // Can be either raw bytes or hex
+    id: []const u8,
+
+    pub fn copyAddr(target: @This()) !EndpointAddr {
+        const addr: EndpointAddr = switch (target) {
+            .addr => |addr| addr.copy(),
+            .public_key => |pk| EndpointAddr.fromPublicKey(pk),
+            .id => |id| blk: {
+                const pk = if (id.len == 64) 
+                    try PublicKey.fromHex(id)
+                else if (id.len == 32)
+                    try PublicKey.fromBytes(id)
+                else
+                    return error.InvalidID;
+                defer pk.deinit();
+                break :blk EndpointAddr.fromPublicKey(&pk);
+            },
+        };
+        return addr;
     }
 };
 
@@ -392,21 +431,8 @@ pub const Endpoint = struct {
         self.deinit();
     }
 
-    pub const ConnectTarget = union(enum) {
-        /// A copy is made so dont forget to free yours
-        addr: *const EndpointAddr,
-        /// A copy is made so dont forget to free yours
-        public_key: *const PublicKey,
-        // Can be either raw bytes or hex
-        // endpoint_id: []const u8,
-    };
-
-    pub fn connect(self: *const Endpoint, peer: ConnectTarget) EndpointError!Connection {
-        const addr: EndpointAddr = switch (peer) {
-            .addr => |addr| addr.copy(),
-            .public_key => |pk| EndpointAddr.fromPublicKey(pk),
-        };
-
+    pub fn connect(self: *const Endpoint, ep: ConnectionTarget) EndpointError!Connection {
+        const addr = ep.copyAddr() catch return error.AddrError;
         const conn = Connection.default(self.alpn, addr);
         const alpn_slice = self.alpn.slice();
         const errno = c.endpoint_connect(&self.ptr, alpn_slice, addr.addr, &conn.ptr);
@@ -421,7 +447,7 @@ pub const Endpoint = struct {
 pub const Connection = struct {
     ptr: *c.Connection_t,
     alpn: *const Alpn,
-    /// Address of the endpoint we are connected to
+    /// Address of the endpoint we are connected to. Owns it.
     addr: EndpointAddr,
 
     pub fn default(alpn: *const Alpn, addr: EndpointAddr) Connection {
@@ -434,12 +460,14 @@ pub const Connection = struct {
 
     pub fn deinit(self: *const Connection) void {
         c.connection_free(self.ptr);
+        self.addr.deinit();
     }
 
     /// Close a connection.
     /// Consumes the connection, no need to free it afterwards.
     pub fn close(self: *const Connection) void {
         c.connection_close(self.ptr);
+        self.addr.deinit();
     }
 
     /// Wait for the connection to be closed. Errors when failed to
@@ -568,9 +596,9 @@ pub const SendStream = struct {
         data_slice.len = data.len;
 
         const errno = if (timeout_ms) |timeout|
-            c.send_stream_write_timeout(@constCast(@ptrCast(&self.ptr)), data_slice, timeout)
+            c.send_stream_write_timeout(@ptrCast(@constCast(&self.ptr)), data_slice, timeout)
         else
-            c.send_stream_write(@constCast(@ptrCast(&self.ptr)), data_slice);
+            c.send_stream_write(@ptrCast(@constCast(&self.ptr)), data_slice);
         if (checkEndpointResult(errno)) |err| {
             log.err("Failed to send data: {t}", .{err});
             return err;
@@ -618,7 +646,7 @@ pub const RecvStream = struct {
         var rust_buffer = c.rust_buffer_alloc(0);
         defer c.rust_buffer_free(rust_buffer);
         const errno = c.recv_stream_read_to_end_timeout(
-            @constCast(@ptrCast(&self.ptr)),
+            @ptrCast(@constCast(&self.ptr)),
             &rust_buffer,
             buffer.len,
             timeout_ms,
@@ -630,7 +658,7 @@ pub const RecvStream = struct {
         @memcpy(buffer[0..rust_buffer.len], rust_buffer.ptr[0..rust_buffer.len]);
         return buffer[0..rust_buffer.len];
     }
-    
+
     pub fn readExact(self: *const RecvStream, buf: []u8, timeout_ms: u64) EndpointError![]const u8 {
         var buf_slice: c.slice_mut_uint8 = undefined;
         buf_slice.ptr = buf.ptr;
@@ -641,7 +669,7 @@ pub const RecvStream = struct {
             log.err("Failed to read stream: {t}", .{err});
             return err;
         }
-        
+
         return buf;
     }
 };

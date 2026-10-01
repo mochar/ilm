@@ -3,6 +3,7 @@ const sqlite = @import("sqlite");
 const iroh = @import("iroh");
 const Core = @import("../Core.zig");
 const database = @import("../database/database.zig");
+const Db = database.Db;
 const p2p_peer = @import("peer.zig");
 const protocols = @import("protocols.zig");
 const Peer = p2p_peer.Peer;
@@ -16,18 +17,21 @@ pub const ConnectedPeer = struct {
     conn: iroh.Connection,
     id: *const Peer.Id,
     known: bool,
+    sessions: std.ArrayList(protocols.ProtocolSession) = .empty,
 
-    pub fn fromConnection(conn: iroh.Connection, core: *Core) ConnectedPeer {
+    pub fn fromConnection(conn: iroh.Connection, db: *Db) ConnectedPeer {
         const id = conn.addr.id.bytes();
-        const known = p2p_peer.known(core, id) catch false;
+        const known = p2p_peer.exists(db, id) catch false;
         return .{ .conn = conn, .id = id, .known = known };
     }
 };
 
-const EVENT_QUEUE_SIZE = 128;
-
 pub const Event = union(enum) {
-    connected: Peer.Id,
+    connected: struct {
+        peer_id: Peer.Id,
+        /// Did we start the connection?
+        initiated: bool,
+    },
     disconnected: Peer.Id,
     stream_received: Peer.Id,
     stream_closed: Peer.Id,
@@ -37,22 +41,22 @@ pub const Event = union(enum) {
         len: usize,
     },
 };
-pub const EventQueue = std.Io.Queue(Event);
 
 /// A trigger to be called when a new event happens.
 /// This prevents the need to poll the queue manually.
 /// Note that the event is not passed, the queue must be drained still.
 pub const EventTrigger = struct {
     ctx: ?*anyopaque = null,
-    triggerFn: *const fn (ctx: ?*anyopaque) void,
+    triggerFn: *const fn (ctx: ?*anyopaque, event: Event) void,
 
-    pub fn trigger(self: EventTrigger) void {
-        self.triggerFn(self.ctx);
+    pub fn trigger(self: EventTrigger, event: Event) void {
+        self.triggerFn(self.ctx, event);
     }
 };
 
 gpa: std.mem.Allocator,
 io: std.Io,
+db: database.Db,
 endpoint: iroh.Endpoint,
 name: []const u8 = "Ilm enjoyer",
 
@@ -64,11 +68,12 @@ connections: struct {
     peers: std.AutoHashMap(*const Peer.Id, ConnectedPeer),
 },
 
-events: []Event,
-event_queue: EventQueue,
 event_triggers: std.ArrayList(EventTrigger),
 
-pub fn init(gpa: std.mem.Allocator, io: std.Io, secret_key: iroh.SecretKey) !Self {
+pub fn init(gpa: std.mem.Allocator, io: std.Io, db_path: [:0]const u8, secret_key: iroh.SecretKey) !Self {
+    var db = try database.getDb(db_path, .{ .write = false, .create = false });
+    errdefer db.deinit();
+    
     var endpoint: iroh.Endpoint = try .init(.{
         .gpa = gpa,
         .alpn = &ALPN,
@@ -76,16 +81,12 @@ pub fn init(gpa: std.mem.Allocator, io: std.Io, secret_key: iroh.SecretKey) !Sel
     });
     errdefer endpoint.deinit();
 
-    const events = try gpa.alloc(Event, EVENT_QUEUE_SIZE);
-    errdefer gpa.free(events);
-
     return .{
         .gpa = gpa,
         .io = io,
+        .db = db,
         .endpoint = endpoint,
         .connections = .{ .peers = .init(gpa) },
-        .events = events,
-        .event_queue = .init(events),
         .event_triggers = .empty,
     };
 }
@@ -97,12 +98,12 @@ pub fn deinit(self: *Self) void {
     // self.endpoint.close();
 
     self.event_triggers.deinit(self.gpa);
-    // self.event_queue.close(self.io); // not really necessary
-    self.gpa.free(self.events);
 
     self.connections.mutex.lockUncancelable(self.io);
     defer self.connections.mutex.unlock(self.io);
     self.connections.peers.deinit();
+
+    self.db.deinit();
 }
 
 pub fn getCore(self: *const Self) *Core {
@@ -114,27 +115,33 @@ pub fn addEventTrigger(self: *Self, trigger: EventTrigger) !void {
 }
 
 fn pushEvent(self: *Self, event: Event) !void {
-    try self.event_queue.putOneUncancelable(self.io, event);
     for (self.event_triggers.items) |*trigger| {
-        trigger.trigger();
+        trigger.trigger(event);
     }
 }
 
-pub fn drainEvents(self: *Self, buffer: []Event) ![]Event {
-    const count = self.event_queue.getUncancelable(self.io, buffer, 0) catch 0;
-    return buffer[0..count];
+pub fn connect(self: *Self, target: iroh.ConnectionTarget) !Peer.Id {
+    // TODO In thread.
+    const conn = self.endpoint.connect(target) catch |err| {
+        log.err("Failed establish connection: {t}", .{err});
+        return err;
+    };
+    try self.handleConn(conn); // closes conn on error
+    return conn.addr.id.copyBytes();
 }
 
-pub fn spawnListenThread(self: *Self, core: *Core) !void {
+pub fn spawnListenThread(self: *Self) !void {
     try self.endpoint.ensureOnline();
     log.info("Online!", .{});
     self.endpoint.logAddr();
     self.is_running.store(true, .seq_cst);
-    self.thread = std.Thread.spawn(.{}, acceptLoop, .{ self, core }) catch |err| {
+    if (std.Thread.spawn(.{}, acceptLoop, .{ self })) |thread| {
+        thread.detach();
+        self.thread = thread;
+    } else |err| {
         log.err("Failed to spawn p2p thread: {t}", .{err});
         return err;
-    };
-    self.thread.?.detach();
+    }
 }
 
 pub fn stopListenThread(self: *Self) !void {
@@ -149,7 +156,7 @@ pub fn stopListenThread(self: *Self) !void {
     }
 }
 
-fn acceptLoop(self: *Self, core: *Core) void {
+fn acceptLoop(self: *Self) void {
     log.info("Listening for connections...", .{});
     while (self.is_running.load(.seq_cst)) {
         const conn = self.endpoint.accept() catch |err| {
@@ -157,24 +164,25 @@ fn acceptLoop(self: *Self, core: *Core) void {
             continue;
         };
         log.info("Received connection!", .{});
-        self.handleConn(conn, core) catch |err| {
-            log.err("Failed to handle connection, closing ({t})", .{err});
-            conn.close();
-        };
+        self.handleConn(conn) catch {};
     }
 }
 
-fn handleConn(self: *Self, conn: iroh.Connection, core: *Core) !void {
-    const peer: ConnectedPeer = .fromConnection(conn, core);
+fn handleConn(self: *Self, conn: iroh.Connection) !void {
+    errdefer conn.close();
+    const peer: ConnectedPeer = .fromConnection(conn, &self.db);
 
     self.connections.mutex.lockUncancelable(self.io);
     defer self.connections.mutex.unlock(self.io);
-    try self.connections.peers.put(peer.id, peer);
+    self.connections.peers.put(peer.id, peer) catch |err| {
+        log.err("Failed to store connection: {t}", .{err});
+        return err;
+    };
     errdefer _ = self.connections.peers.remove(peer.id);
 
     if (std.Thread.spawn(.{}, connLoop, .{ self, peer.id })) |conn_thread| {
         conn_thread.detach();
-        self.pushEvent(.{ .connected = peer.id.* }) catch {};
+        self.pushEvent(.{ .connected = .{ .peer_id = peer.id.*, .initiated = false } }) catch {};
     } else |err| {
         log.err("Failed to spawn connection thread: {t}", .{err});
         return err;
@@ -261,7 +269,11 @@ fn streamLoop(self: *Self, peer_id: *const Peer.Id, streams: iroh.BiStream) void
             _ => {
                 log.err("Sender specified unknown protocol {d}", .{protocol_tag[0]});
                 return;
-            }
+            },
+            else => {
+                log.err("Unhandled protocol: {t}", .{protocol});
+                return;
+            },
         }
     }
 }

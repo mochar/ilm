@@ -1,7 +1,9 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Core = @import("../Core.zig");
-const db = @import("../database/database.zig");
+const database = @import("../database/database.zig");
+const Diagnostics = database.Diagnostics;
+const Db = database.Db;
 const iroh = @import("iroh");
 const Self = @This();
 
@@ -15,19 +17,19 @@ pub const Peer = struct {
     name: []const u8,
 };
 
-pub fn getAll(core: *Core, alloc: Allocator) ![]Peer {
-    var diags: db.Diagnostics = .{};
-    var stmt = try core.db.prepareWithDiags(
+pub fn getAll(db: *Db, alloc: Allocator) ![]Peer {
+    var diags: Diagnostics = .{};
+    var stmt = try db.prepareWithDiags(
         "SELECT id, name FROM peer",
         .{ .diags = &diags },
     );
     defer stmt.deinit();
-    return try db.helpers.queryAll(Peer, alloc, &stmt, .{});
+    return try database.helpers.queryAll(Peer, alloc, &stmt, .{});
 }
 
-pub fn getById(core: *Core, alloc: Allocator, id: *const Peer.Id) !?Peer {
-    var diags: db.Diagnostics = .{};
-    const peer = core.db.oneAlloc(
+pub fn getById(db: *Db, alloc: Allocator, id: *const Peer.Id) !?Peer {
+    var diags: Diagnostics = .{};
+    const peer = db.oneAlloc(
         Peer,
         alloc,
         "SELECT id, name FROM peer WHERE id = ?",
@@ -40,9 +42,9 @@ pub fn getById(core: *Core, alloc: Allocator, id: *const Peer.Id) !?Peer {
     return peer;
 }
 
-pub fn known(core: *Core, id: *const Peer.Id) !bool {
-    var diags: db.Diagnostics = .{};
-    const flag = core.db.one(
+pub fn exists(db: *Db, id: *const Peer.Id) !bool {
+    var diags: Diagnostics = .{};
+    const flag = db.one(
         bool,
         \\SELECT
         \\    CASE 
@@ -60,19 +62,11 @@ pub fn known(core: *Core, id: *const Peer.Id) !bool {
     return flag.?;
 }
 
-pub fn add(
-    core: *Core,
-    name: []const u8,
-    id: []const u8
-) !void {
-    if (id.len == 64) {
-        id = (try iroh.PublicKey.fromHex(id)).bytes();
-    } else if (id.len != 32) {
-        return error.InvalidID;
-    }    
-    var diags: db.Diagnostics = .{};
+/// Inserts blindly wihout checking if ID is valid.
+pub fn add(db: *Db, name: []const u8, id: []const u8) !void {
+    var diags: Diagnostics = .{};
 
-    var stmt = core.db.prepareWithDiags(
+    var stmt = db.prepareWithDiags(
         "INSERT INTO peer(id, name) VALUES (?, ?)",
         .{ .diags = &diags },
     ) catch |err| {

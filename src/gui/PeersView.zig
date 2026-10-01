@@ -138,7 +138,6 @@ fn renderContent(self: *Self) void {
 }
 
 fn pair(self: *Self, endpoint_id: []const u8) !void {
-    _ = self;
-    _ = endpoint_id;
+    _ = try self.core.router.connect(.{ .id = endpoint_id });
     // ilm.peer.add(self.core, , name: []const u8)
 }

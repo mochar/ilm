@@ -9,10 +9,25 @@ const log = std.log.scoped(.p2p_protocols);
 /// kind of bistream it will be.
 pub const ProtocolTag = enum(u8) {
     pair,
+    sync,
     _,
 };
 
 pub const Error = error{Protocol};
+
+pub const ProtocolSession = struct {
+    streams: iroh.BiStream,
+    protocol: Protocol,
+};
+
+pub const Protocol = union(ProtocolTag) {
+    pair: PairProtocol,
+    sync: SyncProtocol,
+};
+
+pub const PairProtocol = struct {};
+
+pub const SyncProtocol = struct {};
 
 /// Request pairing with a peer. Blocks until done or error.
 ///
@@ -29,13 +44,13 @@ pub fn requestPair(endpoint: *iroh.Endpoint, peer_endpoint_id: []const u8) ![:0]
     var conn = try endpoint.connect(.{ .addr = &addr });
     defer conn.close();
     // const endpoint_id = endpoint.state.online.addr.id.bytes();
-    
+
     log.info("Connected! Creating streams...", .{});
     const streams = try conn.openBiStream();
     // defer streams.deinit();
 
     const proto_byte: u8 = @intFromEnum(ProtocolTag.pair);
-    const pair_bytes = [1]u8{ proto_byte } ++ "Mamma";
+    const pair_bytes = [1]u8{proto_byte} ++ "Mamma";
     try streams.send.write(pair_bytes, 5000);
     streams.send.finish();
 
@@ -48,5 +63,5 @@ pub fn requestPair(endpoint: *iroh.Endpoint, peer_endpoint_id: []const u8) ![:0]
     // log.info("Got name: {s}", .{name});
     // return name;
 
-    return @constCast(@ptrCast("wow"));
+    return @ptrCast(@constCast("wow"));
 }
