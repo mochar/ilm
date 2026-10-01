@@ -9,6 +9,8 @@ const androidLogFn = @import("android.zig").logFn;
 const ContentView = @import("ContentView.zig");
 const SetupView = @import("SetupView.zig");
 
+const log = std.log.scoped(.gui_main);
+
 pub const dvui_app: dvui.App = .{
     .config = .{
         .options = .{
@@ -127,9 +129,7 @@ pub fn appDeinit(win: *dvui.Window) void {
         .main => {},
         inline else => |*v| v.deinit(),
     }
-    if (core) |c| {
-        c.destroy();
-    }
+    if (core) |c| c.destroy();
 }
 
 pub fn appFrame() !dvui.App.Result {
@@ -154,19 +154,18 @@ pub fn appFrame() !dvui.App.Result {
 pub fn connect(data_dir: []const u8) void {
     if (core) |c| c.destroy();
 
-    var diags: sqlite.Diagnostics = .{};
-    if (Core.create(.{ .gpa = gpa, .io = dvui.io, .data_dir = data_dir, .sqlite_diagnostics = &diags })) |c| {
+    if (Core.create(.{ .gpa = gpa, .io = dvui.io, .data_dir = data_dir })) |c| {
         core = c;
         core.?.p2p.addEventTrigger(.{
             .ctx = dvui.currentWindow(),
             .triggerFn = p2pEventTrigger,
         }) catch |err| {
-            std.log.err("Failed to add p2p event trigger: {t}", .{err});
+            log.err("Failed to add p2p event trigger: {t}", .{err});
             dvui.toast(@src(), .{ .message = "Failed to add p2p event trigger" });
         };
-        core.?.setupP2p() catch |err| {
-            std.log.err("Failed to setup p2p: {t}", .{err});
-            dvui.toast(@src(), .{ .message = "Failed to setup p2p" });
+        core.?.setup() catch |err| {
+            log.err("Failed to setup core: {t}", .{err});
+            dvui.toast(@src(), .{ .message = "Failed to setup core" });
         };
         if (ContentView.init(gpa, core.?)) |con| {
             switchView(.{ .content = con });
@@ -177,9 +176,7 @@ pub fn connect(data_dir: []const u8) void {
     } else |err| {
         core = null;
         var err_buf: [1024]u8 = undefined;
-        const err_msg = if (diags.err) |sqlite_err| blk: {
-            break :blk std.fmt.bufPrint(&err_buf, "Failed to init: {t}: {s}", .{ err, sqlite_err.message }) catch "Failed to init";
-        } else std.fmt.bufPrint(&err_buf, "Failed to init: {t}", .{err}) catch "Failed to init";
+        const err_msg = std.fmt.bufPrint(&err_buf, "Failed to init: {t}", .{err}) catch "Failed to init";
         dvui.toast(@src(), .{ .message = err_msg });
     }
 }

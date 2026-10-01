@@ -5,6 +5,7 @@ const ilm = @import("ilm");
 const Core = ilm.Core;
 const Concept = ilm.concept.Concept;
 const Id = ilm.Id;
+const DbWriter = ilm.database.DbWriter;
 
 const GraphView = @import("GraphView.zig");
 const ConceptView = @import("ConceptView.zig");
@@ -24,6 +25,9 @@ selected: ?struct {
     view: *ConceptView,
 } = null,
 
+db_writes_buf: []DbWriter.Write,
+db_writes_queue: std.Io.Queue(DbWriter.Write),
+
 search_query: std.ArrayList(u8) = .empty,
 /// Matched concepts (the structs themselves and the strings within)
 /// are allocated using this arena. It is reset each time the search
@@ -39,6 +43,9 @@ pub fn create(gpa: std.mem.Allocator, core: *Core) !*Self {
     var self = try gpa.create(Self);
     errdefer gpa.destroy(self);
 
+    const db_writes_buf = try gpa.alloc(DbWriter.Write, 12);
+    errdefer gpa.free(db_writes_buf);
+
     var graph_view: GraphView = try .init(.{
         .gpa = gpa,
         .io = core.io,
@@ -51,13 +58,15 @@ pub fn create(gpa: std.mem.Allocator, core: *Core) !*Self {
     self.* = .{
         .core = core,
         .gpa = gpa,
+        .db_writes_buf = db_writes_buf,
+        .db_writes_queue = .init(db_writes_buf),
         .search_arena = .init(gpa),
         .graph_view = graph_view,
         .graph_arena = .init(gpa),
     };
     errdefer self.destroy();
 
-    try core.db_pub.subscribe(.{ .cb = dbEventCallback, .ctx = @ptrCast(self) });
+    try core.db_writer.subscribe(.{ .cb = dbWriteCallback, .ctx = @ptrCast(self) });
 
     self.getAllConcepts();
     self.updateGraphContent(.reset);
@@ -65,39 +74,32 @@ pub fn create(gpa: std.mem.Allocator, core: *Core) !*Self {
 }
 
 pub fn destroy(self: *Self) void {
+    self.db_writes_queue.close(self.core.io);
+    self.gpa.free(self.db_writes_buf);
+    
     self.graph_view.deinit();
     self.graph_arena.deinit();
+    
     self.gpa.free(self.all_concepts);
+    
     self.search_query.deinit(self.gpa);
     self.search_arena.deinit();
+    
     if (self.selected) |*s| {
         s.view.destroy();
     }
+
+    self.gpa.destroy(self);
 }
 
-fn dbEventCallback(self_opaque: *anyopaque, event: ilm.database.EventPub.Event) void {
-    const self: *Self = @ptrCast(@alignCast(self_opaque));
-    switch (event.table) {
-        .concept => {
-            switch (event.op) {
-                .update => {
-                    self.getAllConcepts();
-                    self.updateGraphContent(.retain_state);
-                },
-                .insert => {
-                    self.getAllConcepts();
-                    self.updateGraphContent(.retain_state);
-                    self.selectConceptByRowId(event.rowid);
-                },
-                .delete => {
-                    self.getAllConcepts();
-                    self.updateGraphContent(.reset);
-                    self.unselect();
-                },
-            }
-        },
-        .concept_rel => {
-            self.updateGraphContent(.retain_state);
+fn dbWriteCallback(self_opaque: *anyopaque, result: DbWriter.WriteResult) void {
+    const write = result.write catch return;
+    switch (write.table_id) {
+        .concept, .concept_rel => {
+            const self: *Self = @ptrCast(@alignCast(self_opaque));
+            self.db_writes_queue.putOneUncancelable(self.core.io, write) catch |err| {
+                log.err("Failed to add concept db write: {t}", .{err});
+            };
         },
         else => {},
     }
@@ -132,6 +134,36 @@ pub fn render(self: *Self) void {
         .equal_space = !is_wide,
     }, .{ .expand = .both });
     defer hbox.deinit();
+
+    // Process writes buffer
+    var write: DbWriter.Write = undefined;
+    while (self.db_writes_queue.getUncancelable(self.core.io, @ptrCast(&write), 0) catch 0 != 0) {
+        switch (write.table_id) {
+            .concept => |id| {
+                switch (write.op) {
+                    .update => {
+                        self.getAllConcepts();
+                        self.updateGraphContent(.retain_state);
+                    },
+                    .insert => {
+                        self.getAllConcepts();
+                        self.updateGraphContent(.retain_state);
+                        self.selectConceptById(id.int);
+                    },
+                    .delete => {
+                        self.getAllConcepts();
+                        self.updateGraphContent(.reset);
+                        self.unselect();
+                    },
+                }
+            },
+            .concept_rel => |ids| {
+                _ = ids;
+                self.updateGraphContent(.retain_state);
+            },
+            else => {},
+        }
+    }
 
     // Left sidebar scroll area
     if (is_wide) {
@@ -190,17 +222,17 @@ fn renderSearch(self: *Self) void {
     var scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both });
     defer scroll.deinit();
 
-    const selected_id: ?u128 = if (self.selected) |s| s.concept.id.uuid else null;
+    const selected_id: ?u128 = if (self.selected) |s| s.concept.id.int else null;
     const concepts = if (self.search_query.items.len == 0) self.all_concepts else self.matched_concepts;
     for (concepts, 0..) |*concept, i| {
         _ = i;
-        const is_selected = concept.id.uuid == selected_id;
+        const is_selected = concept.id.int == selected_id;
         var c_box = dvui.box(
             @src(),
             .{ .dir = .horizontal },
             .{
                 // .id_extra = i,
-                .id_extra = @truncate(concept.id.uuid),
+                .id_extra = @truncate(concept.id.int),
                 .expand = .horizontal,
                 .background = true,
                 .style = if (is_selected) .highlight else null,
@@ -239,9 +271,9 @@ fn renderGraph(self: *Self) void {
 }
 
 fn selectConceptById(self: *Self, id: u128) void {
-    if (self.selected) |s| if (s.concept.id.uuid == id) return;
+    if (self.selected) |s| if (s.concept.id.int == id) return;
     for (self.all_concepts) |*concept| {
-        if (concept.id.uuid == id) {
+        if (concept.id.int == id) {
             self.selectConcept(concept);
             return;
         }
@@ -282,8 +314,8 @@ fn selectConcept(self: *Self, concept: *Concept) void {
     };
     self.selected = .{ .concept = concept, .view = view };
 
-    self.graph_view.animateToNode(concept.id.uuid) catch {};
-    self.graph_view.renderer.highlighted.put(concept.id.uuid, {}) catch {};
+    self.graph_view.animateToNode(concept.id.int) catch {};
+    self.graph_view.renderer.highlighted.put(concept.id.int, {}) catch {};
 }
 
 fn unselect(self: *Self) void {

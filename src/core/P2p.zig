@@ -2,7 +2,7 @@ const std = @import("std");
 const sqlite = @import("sqlite");
 const iroh = @import("iroh");
 const Core = @import("Core.zig");
-const database = @import("database.zig");
+const database = @import("database/database.zig");
 const pair = @import("p2p/pair.zig");
 const sync = @import("p2p/sync.zig");
 const p2p_peer = @import("p2p/peer.zig");
@@ -95,10 +95,11 @@ pub fn deinit(self: *Self) void {
     self.stopListenThread() catch |err| {
         log.err("Failed to stop p2p listen thread: {t}", .{err});
     };
-    self.endpoint.deinit();
-    self.gpa.free(self.events);
+    // self.endpoint.close();
+    
     self.event_triggers.deinit(self.gpa);
     // self.event_queue.close(self.io); // not really necessary
+    self.gpa.free(self.events);
 
     self.connections.mutex.lockUncancelable(self.io);
     defer self.connections.mutex.unlock(self.io);
@@ -130,14 +131,22 @@ pub fn spawnListenThread(self: *Self, core: *Core) !void {
     log.info("Online!", .{});
     self.endpoint.logAddr();
     self.is_running.store(true, .seq_cst);
-    self.thread = try std.Thread.spawn(.{}, acceptLoop, .{ self, core });
+    self.thread = std.Thread.spawn(.{}, acceptLoop, .{ self, core }) catch |err| {
+        log.err("Failed to spawn p2p thread: {t}", .{err});
+        return err;
+    };
+    self.thread.?.detach();
 }
 
 pub fn stopListenThread(self: *Self) !void {
+    // TODO Closing endpoint at any point, here or in deinit, causes
+    // deadlock when closing program. Maybe this is fixed if we use
+    // io.Group and cancel all threads by canceling that group.
     if (self.thread) |thread| {
+        _ = thread; // autofix
         self.is_running.store(false, .seq_cst);
-        self.endpoint.close();
-        thread.join();
+        // self.endpoint.close();
+        // thread.join();
     }
 }
 

@@ -13,9 +13,7 @@ pub fn main(init: std.process.Init) !void {
 
     var core = try Core.create(.{ .gpa = init.gpa, .io = init.io, .data_dir = data_path });
     defer core.destroy();
-    core.setupP2p() catch |err| {
-        log.err("Failed to setup p2p: {t}", .{err});
-    };
+    core.setup() catch |err| log.err("Failed to setup core: {t}", .{err});
 
     // const secret_key = iroh.SecretKey.generate();
     // defer secret_key.deinit();

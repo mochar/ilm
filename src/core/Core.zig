@@ -2,7 +2,8 @@ const std = @import("std");
 const known_folders = @import("known-folders");
 const iroh = @import("iroh");
 const sqlite = @import("sqlite");
-const database = @import("database.zig");
+const database = @import("database/database.zig");
+const DbWriter = @import("database/DbWriter.zig");
 const Id = database.Id;
 const P2p = @import("P2p.zig");
 const p2p_peer = @import("p2p/peer.zig");
@@ -14,8 +15,9 @@ const log = std.log.scoped(.core);
 gpa: std.mem.Allocator,
 io: std.Io,
 data_dir: []const u8,
+/// Read only
 db: sqlite.Db,
-db_pub: *database.EventPub,
+db_writer: DbWriter,
 p2p: P2p,
 
 /// List of known peers in sync with the db.
@@ -30,7 +32,6 @@ pub const Options = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
     data_dir: []const u8,
-    sqlite_diagnostics: ?*sqlite.Diagnostics = null,
 };
 
 pub fn create(opts: Options) !*Core {
@@ -39,23 +40,33 @@ pub fn create(opts: Options) !*Core {
 
     const core = try gpa.create(Core);
     errdefer gpa.destroy(core);
-    
+
     const data_dir = gpa.dupe(u8, opts.data_dir) catch @panic("OOM");
     errdefer gpa.free(data_dir);
+    const dir = try std.Io.Dir.createDirPathOpen(.cwd(), io, data_dir, .{});
+    defer dir.close(io);
 
     // Load sqlite database
     const db_path = try std.fs.path.joinZ(opts.gpa, &.{ data_dir, "ilm.db" });
     defer gpa.free(db_path);
-    var db = try database.getDb(.{ .path = db_path, .diags = opts.sqlite_diagnostics });
+    // First need to check if it does not exist yet. In that case we
+    // need to create the Db object using write and create
+    // permissions, as a read only db cannot create a new file.
+    dir.access(io, "ilm.db", .{ .read = true, .write = true }) catch |err| switch (err) {
+        error.FileNotFound => {
+            var db = try database.getDb(db_path, .{ .write = true, .create = true });
+            db.deinit();
+        },
+        else => return err,
+    };
+    var db = try database.getDb(db_path, .{ .write = false, .create = false });
     errdefer db.deinit();
 
-    // Setup db event publisher
-    var db_pub = try database.EventPub.create(gpa, db.db);
-    errdefer db_pub.destroy();
+    // Setup db writer
+    var db_writer: DbWriter = try .init(opts.gpa, opts.io, db_path);
+    errdefer db_writer.deinit();
 
     // Setup secret key
-    const dir = try std.Io.Dir.createDirPathOpen(.cwd(), io, data_dir, .{});
-    defer dir.close(io);
     const secret_key = blk: {
         if (dir.access(io, "secretkey.txt", .{ .read = true, .write = true })) {
             var secret_key_hex: [iroh.SecretKey.HEX_LEN]u8 = undefined;
@@ -84,30 +95,38 @@ pub fn create(opts: Options) !*Core {
         .io = io,
         .data_dir = data_dir,
         .db = db,
-        .db_pub = db_pub,
+        .db_writer = db_writer,
         .p2p = p2p,
     };
 
-    try db_pub.subscribe(.{ .cb = dbEventCallback, .ctx = @ptrCast(core) });
+    try db_writer.subscribe(.{ .cb = dbWriteCallback, .ctx = @ptrCast(core) });
     core.getPeers();
 
     return core;
 }
 
 pub fn destroy(core: *Core) void {
-    core.db_pub.unsubscribe(.{ .cb = dbEventCallback, .ctx = @ptrCast(core) });
+    core.db_writer.deinit();
     core.db.deinit();
     core.gpa.free(core.data_dir);
     core.p2p.deinit();
-    
+
     core.gpa.destroy(core);
 }
 
+pub fn setup(core: *Core) !void {
+    try core.p2p.spawnListenThread(core);
+    try core.db_writer.spawnWriteThread();
+}
 
-fn dbEventCallback(core_opaque: *anyopaque, event: database.EventPub.Event) void {
-    const core: *Core = @ptrCast(@alignCast(core_opaque));
-    if (event.table == .peer) {
-        core.getPeers();
+fn dbWriteCallback(core_opaque: *anyopaque, result: DbWriter.WriteResult) void {
+    const write = result.write catch return;
+    switch (write.table_id) {
+        .peer => {
+            const core: *Core = @ptrCast(@alignCast(core_opaque));
+            core.getPeers();
+        },
+        else => return,
     }
 }
 
@@ -124,13 +143,6 @@ fn getPeers(core: *Core) void {
 /// Returns true if still functional
 pub fn isValid(core: *Core) bool {
     return database.isValid(&core.db);
-}
-
-pub fn setupP2p(core: *Core) !void {
-    core.p2p.spawnListenThread(core) catch |err| {
-        std.log.err("Failed to spawn thread: {t}", .{err});
-        return err;
-    };
 }
 
 pub fn newId(core: *Core) Id {

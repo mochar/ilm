@@ -14,7 +14,7 @@ const layoutGraph = @import("graph.zig").layoutGraph;
 
 pub const Funcs = struct {
     pub fn add(_: *Context, core: *Core, name: []u8, parent_ids: []Id) !Id.StrT {
-        var id = try ilm.concept.add(core, name, parent_ids);
+        const id = try ilm.concept.add(core, name, parent_ids);
         return id.serialize();
     }
 
@@ -53,21 +53,21 @@ pub const Funcs = struct {
             break :blk concepts[0];
         };
 
-        graph.addNode(concept.id.uuid, concept.name) catch |err| {
+        graph.addNode(concept.id.int, concept.name) catch |err| {
             return ctx.setError("Failed to add node: {t}", .{err});
         };
-        gr.highlighted.put(concept.id.uuid, {}) catch |err| {
+        gr.highlighted.put(concept.id.int, {}) catch |err| {
             return ctx.setError("Failed to add graph highlight: {t}", .{err});
         };
 
         const ancestors = try ilm.concept.getAncestors(core, ctx.arena, .{ .ids = &ids });
         for (ancestors) |*ancestor| {
-            graph.addNode(ancestor.id.uuid, ancestor.name) catch |err| {
+            graph.addNode(ancestor.id.int, ancestor.name) catch |err| {
                 return ctx.setError("Failed to add node: {t}", .{err});
             };
         }
         for (ancestors) |*ancestor| {
-            graph.addEdge(ancestor.id.uuid, ancestor.child_id.uuid) catch |err| {
+            graph.addEdge(ancestor.id.int, ancestor.child_id.int) catch |err| {
                 return ctx.setError("Failed to add edge: {t}", .{err});
             };
         }

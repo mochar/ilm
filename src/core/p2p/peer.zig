@@ -1,7 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Core = @import("../Core.zig");
-const db = @import("../database.zig");
+const db = @import("../database/database.zig");
 const iroh = @import("iroh");
 const Self = @This();
 
@@ -23,7 +23,7 @@ pub fn getAll(core: *Core, alloc: Allocator) ![]Peer {
         .{ .diags = &diags },
     );
     defer stmt.deinit();
-    return try db.queryAll(Peer, alloc, &stmt, .{});
+    return try db.helpers.queryAll(Peer, alloc, &stmt, .{});
 }
 
 pub fn getById(core: *Core, alloc: Allocator, id: *const Peer.Id) !?Peer {

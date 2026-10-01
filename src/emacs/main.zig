@@ -40,24 +40,16 @@ pub fn emacsLogFn(
 
 pub const Funcs = struct {
     pub fn init(ctx: *Context, data_dir: []const u8) !*Core {
-        var diags: sqlite.Diagnostics = .{};
         const core = Core.create(.{
             .gpa = gpa,
             .io = io.io(),
             .data_dir = data_dir,
-            .sqlite_diagnostics = &diags,
         }) catch |err| {
-            if (diags.err) |sqlite_err| {
-                ctx.setError("Failed to init: {t}: {s}", .{ err, sqlite_err.message });
-            } else {
-                ctx.setError("Failed to init: {t}", .{err});
-            }
+            ctx.setError("Failed to init: {t}", .{err});
             return error.InitFailed;
         };
         // Not a big failure, dont err
-        core.setupP2p() catch |err| {
-            std.log.err("Failed to setup p2p: {t}", .{err});
-        };
+        core.setup() catch {};
         return core;
     }
 

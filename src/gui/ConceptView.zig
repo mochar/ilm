@@ -4,11 +4,12 @@ const ilm = @import("ilm");
 const Core = ilm.Core;
 const Id = ilm.database.Id;
 const Concept = ilm.concept.Concept;
-
-const Self = @This();
-const log = std.log.scoped(.concept_view);
+const DbWriter = ilm.database.DbWriter;
 const GraphView = @import("GraphView.zig");
 const utils = @import("utils.zig");
+const Self = @This();
+
+const log = std.log.scoped(.concept_view);
 
 const MAX_GRAPH_WIDTH: u32 = 512;
 const MAX_GRAPH_HEIGHT: u32 = 512;
@@ -26,6 +27,9 @@ concept: ?Concept = null,
 concept_id: Id,
 
 graph_view: GraphView,
+
+/// Set to true on db write events that effect this concept.
+dirty: std.atomic.Value(bool) = .init(false),
 
 name_edit: struct {
     editing: bool = false,
@@ -66,14 +70,14 @@ pub fn create(opts: Options) !*Self {
     };
     errdefer self.destroy();
 
-    try opts.core.db_pub.subscribe(.{ .cb = dbEventCallback, .ctx = @ptrCast(self) });
+    try opts.core.db_writer.subscribe(.{ .cb = dbWriteCallback, .ctx = @ptrCast(self) });
     self.getConcept();
 
     return self;
 }
 
 pub fn destroy(self: *Self) void {
-    self.core.db_pub.unsubscribe(.{ .cb = dbEventCallback, .ctx = @ptrCast(self) });
+    self.core.db_writer.unsubscribe(.{ .cb = dbWriteCallback, .ctx = @ptrCast(self) });
     self.graph_view.deinit();
     self.arena.deinit();
     self.gpa.destroy(self);
@@ -81,39 +85,36 @@ pub fn destroy(self: *Self) void {
 
 /// Retrieve concept from db and set state to match.
 fn getConcept(self: *Self) void {
-    self.name_edit.name.clearRetainingCapacity();
-    self.graph_view.renderer.clear();
-    self.concept = null;
-
     if (ilm.concept.getById(self.core, self.arena.allocator(), self.concept_id) catch null) |concept| {
-        self.concept = concept;
-        self.name_edit.name.appendSlice(self.arena.allocator(), concept.name) catch {};
-        self.resetGraph() catch {};
+        self.setConcept(concept);
     } else {
         log.err("Concept not found", .{});
         dvui.toast(@src(), .{ .message = "Concept not found" });
     }
 }
 
-fn dbEventCallback(self_opaque: *anyopaque, event: ilm.database.EventPub.Event) void {
+fn setConcept(self: *Self, concept: ?Concept) void {
+    self.name_edit.name.clearRetainingCapacity();
+    self.graph_view.renderer.clear();
+    self.concept = concept;
+    if (concept) |c| {
+        self.name_edit.name.appendSlice(self.arena.allocator(), c.name) catch {};
+        self.resetGraph() catch {};
+    }
+}
+
+fn dbWriteCallback(self_opaque: *anyopaque, result: DbWriter.WriteResult) void {
+    const write = result.write catch return;
     const self: *Self = @ptrCast(@alignCast(self_opaque));
     if (self.concept) |*concept| {
-        switch (event.table) {
-            .concept => {
-                if (event.rowid != concept.rowid) return;
-                self.getConcept();
+        switch (write.table_id) {
+            .concept => |id| {
+                if (id.int != concept.id.int) return;
+                self.dirty.store(true, .seq_cst);
             },
-            .concept_rel => {
-                if (self.core.db.oneAlloc(
-                    ilm.concept.Relation,
-                    self.arena.allocator(),
-                    "SELECT parent_id, child_id FROM concept_rel WHERE rowid = ?",
-                    .{},
-                    .{event.rowid},
-                ) catch null) |rel| {
-                    if (rel.parent_id.uuid == concept.id.uuid or rel.child_id.uuid == concept.id.uuid) {
-                        self.getConcept();
-                    }
+            .concept_rel => |ids| {
+                if (ids.parent.int == concept.id.int or ids.child.int == concept.id.int) {
+                    self.dirty.store(true, .seq_cst);
                 }
             },
             else => {},
@@ -129,7 +130,7 @@ pub fn resetGraph(self: *Self) !void {
     renderer.clear();
 
     if (self.concept) |*concept| {
-        try renderer.highlighted.put(concept.id.uuid, {});
+        try renderer.highlighted.put(concept.id.int, {});
         try ilm.concept.fillAncestorGraph(self.core, graph, arena, concept);
         try renderer.layout("dotx");
         try self.graph_view.updateGraph();
@@ -145,6 +146,11 @@ pub const Action = union(enum) {
 };
 
 pub fn render(self: *Self) ?Action {
+    if (self.dirty.load(.seq_cst)) {
+        self.getConcept();
+        self.dirty.store(false, .seq_cst);
+    }
+
     var action: ?Action = null;
 
     var box = dvui.box(@src(), .{}, .{ .expand = .both });

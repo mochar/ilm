@@ -1,9 +1,12 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const log = std.log.scoped(.concept);
-const Core = @import("Core.zig");
 const sqlite = @import("sqlite");
-const Id = @import("database.zig").Id;
+const Core = @import("Core.zig");
+const database = @import("database/database.zig");
+const Db = database.Db;
+const Id = database.Id;
+const Write = database.tables.Write;
 const Graph = @import("graphviz").Graph;
 
 pub const Concept = struct {
@@ -23,135 +26,26 @@ pub const ConceptAncestor = struct {
 // ** DB operations
 
 pub fn add(core: *Core, name: []const u8, parent_ids: []const Id) !Id {
-    var diags: sqlite.Diagnostics = .{};
-
-    var savepoint = try core.db.savepoint("addconcept");
-    defer savepoint.rollback();
     const id = core.newId();
-    const id_blob = id.asBlob();
-
-    {
-        var stmt = core.db.prepareWithDiags(
-            "INSERT INTO concept(id, name) VALUES (?, ?)",
-            .{ .diags = &diags },
-        ) catch |err| {
-            log.err("SQLite prepare failed: {s}", .{diags.message});
-            return err;
-        };
-        defer {
-            _ = sqlite.c.sqlite3_reset(stmt.dynamic_stmt.stmt);
-            stmt.deinit();
-        }
-        stmt.exec(
-            .{ .diags = &diags },
-            .{ .id = id_blob, .name = name },
-        ) catch |err| {
-            log.err("SQLite exec failed: {s}", .{diags.message});
-            return err;
-        };
-    }
-
-    {
-        var stmt = core.db.prepareWithDiags(
-            "INSERT INTO concept_rel(parent_id, child_id) VALUES (?, ?)",
-            .{ .diags = &diags },
-        ) catch |err| {
-            log.err("SQLite prepare failed: {s}", .{diags.message});
-            return err;
-        };
-        defer {
-            _ = sqlite.c.sqlite3_reset(stmt.dynamic_stmt.stmt);
-            stmt.deinit();
-        }
-        for (parent_ids) |*parent_id| {
-            stmt.reset();
-            stmt.exec(
-                .{ .diags = &diags },
-                .{ .parent_id = parent_id.asBlob(), .child_id = id_blob },
-            ) catch |err| {
-                log.err("SQLite exec failed: {s}", .{diags.message});
-                return err;
-            };
-        }
-    }
-
-    savepoint.commit();
-
-    return id;
+    const res = try core.db_writer.runCommand(.{ .add_concept = .{
+        .id = id,
+        .name = name,
+        .parent_ids = parent_ids,
+    } }, .{});
+    return if (res.write) |_| id else |err| return err;
 }
 
-// TODO Validate that rename actually happened (in case concept not found in db)
 pub fn rename(core: *Core, id: Id, name: []const u8) !void {
-    var diags: sqlite.Diagnostics = .{};
-
-    var stmt = core.db.prepareWithDiags(
-        \\UPDATE concept
-        \\SET name = ?
-        \\WHERE id = ?
-    , .{ .diags = &diags }) catch |err| {
-        log.err("SQLite prepare failed: {s}", .{diags.message});
-        return err;
-    };
-    defer stmt.deinit();
-
-    stmt.exec(
-        .{ .diags = &diags },
-        .{ .name = name, .id = id.asBlob() },
-    ) catch |err| {
-        log.err("SQLite exec failed: {s}", .{diags.message});
-        return err;
-    };
+    const res = try core.db_writer.runCommand(.{ .rename_concept = .{
+        .id = id,
+        .name = name,
+    } }, .{});
+    return if (res.write) |_| {} else |err| return err;
 }
 
-// TODO Validate that delete actually happened (in case concept not found in db)
 pub fn delete(core: *Core, id: Id) !void {
-    var diags: sqlite.Diagnostics = .{};
-    var savepoint = try core.db.savepoint("delconcept");
-    defer savepoint.rollback();
-
-    // Delete the relationship first. Otherwise inbetween there will
-    // conceptid in concept_rel of a concept that doesnt exist. This
-    // is a problem because of the sqlite update hook, which reacts
-    // immediately.
-    {
-        var stmt = core.db.prepareWithDiags(
-            \\DELETE FROM concept_rel
-            \\WHERE parent_id = ? OR child_id = ?
-        , .{ .diags = &diags }) catch |err| {
-            log.err("SQLite prepare failed: {s}", .{diags.message});
-            return err;
-        };
-        defer stmt.deinit();
-
-        stmt.exec(
-            .{ .diags = &diags },
-            .{ id.asBlob(), id.asBlob() },
-        ) catch |err| {
-            log.err("SQLite exec failed: {s}", .{diags.message});
-            return err;
-        };
-    }
-
-    {
-        var stmt = core.db.prepareWithDiags(
-            \\DELETE FROM concept
-            \\WHERE id = ?
-        , .{ .diags = &diags }) catch |err| {
-            log.err("SQLite prepare failed: {s}", .{diags.message});
-            return err;
-        };
-        defer stmt.deinit();
-
-        stmt.exec(
-            .{ .diags = &diags },
-            .{ .id = id.asBlob() },
-        ) catch |err| {
-            log.err("SQLite exec failed: {s}", .{diags.message});
-            return err;
-        };
-    }
-
-    savepoint.commit();
+    const res = try core.db_writer.runCommand(.{ .delete_concept = .{ .id = id } }, .{});
+    return if (res.write) |_| {} else |err| return err;
 }
 
 pub fn addParent(core: *Core, child_id: Id, parent_id: Id) !void {
@@ -432,7 +326,7 @@ pub fn fillAncestorGraph(core: *Core, graph: *Graph, alloc: Allocator, concept: 
     var ids: std.ArrayList(Id) = .empty;
     defer ids.deinit(alloc);
 
-    graph.addNode(concept.id.uuid, concept.name) catch |err| {
+    graph.addNode(concept.id.int, concept.name) catch |err| {
         log.err("Failed to add concept node ({t})", .{err});
         return err;
     };
@@ -443,7 +337,7 @@ pub fn fillAncestorGraph(core: *Core, graph: *Graph, alloc: Allocator, concept: 
     };
     defer alloc.free(ancestors);
     for (ancestors) |*ancestor| {
-        graph.addNode(ancestor.id.uuid, ancestor.name) catch |err| {
+        graph.addNode(ancestor.id.int, ancestor.name) catch |err| {
             log.err("Failed to add concept node ({t})", .{err});
             return err;
         };
@@ -453,7 +347,7 @@ pub fn fillAncestorGraph(core: *Core, graph: *Graph, alloc: Allocator, concept: 
     const relations = try getRelations(core, alloc, ids.items);
     defer alloc.free(relations);
     for (relations) |*relation| {
-        graph.addEdge(relation.parent_id.uuid, relation.child_id.uuid) catch |err| {
+        graph.addEdge(relation.parent_id.int, relation.child_id.int) catch |err| {
             log.err("Failed to add concept edge ({t})", .{err});
             return err;
         };
@@ -463,14 +357,14 @@ pub fn fillAncestorGraph(core: *Core, graph: *Graph, alloc: Allocator, concept: 
 pub fn fillFullGraph(core: *Core, graph: *Graph, arena: Allocator, all_concepts: ?[]Concept) !void {
     const concepts = all_concepts orelse try getAll(core, arena);
     for (concepts) |*concept| {
-        graph.addNode(concept.id.uuid, concept.name) catch |err| {
+        graph.addNode(concept.id.int, concept.name) catch |err| {
             log.err("Failed to add concept node ({t})", .{err});
             return err;
         };
     }
     const relations = try getRelations(core, arena, null);
     for (relations) |*relation| {
-        graph.addEdge(relation.parent_id.uuid, relation.child_id.uuid) catch |err| {
+        graph.addEdge(relation.parent_id.int, relation.child_id.int) catch |err| {
             log.err("Failed to add concept edge ({t})", .{err});
             return err;
         };
