@@ -55,7 +55,7 @@ pub fn render(self: *Self) void {
                 tl.format("Path: {s}\n", .{self.core.data_dir}, .{});
 
                 tl.addText("\n\nP2P\n", .{ .font = .theme(.heading) });
-                switch (self.core.p2p.endpoint.state) {
+                switch (self.core.router.endpoint.state) {
                     .bound => tl.addText("Endpoint not online\n", .{}),
                     .online => |state| {
                         tl.addText("Endpoint id:\n", .{});

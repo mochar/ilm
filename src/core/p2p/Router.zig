@@ -1,11 +1,10 @@
 const std = @import("std");
 const sqlite = @import("sqlite");
 const iroh = @import("iroh");
-const Core = @import("Core.zig");
-const database = @import("database/database.zig");
-const pair = @import("p2p/pair.zig");
-const sync = @import("p2p/sync.zig");
-const p2p_peer = @import("p2p/peer.zig");
+const Core = @import("../Core.zig");
+const database = @import("../database/database.zig");
+const p2p_peer = @import("peer.zig");
+const protocols = @import("protocols.zig");
 const Peer = p2p_peer.Peer;
 const Self = @This();
 
@@ -96,7 +95,7 @@ pub fn deinit(self: *Self) void {
         log.err("Failed to stop p2p listen thread: {t}", .{err});
     };
     // self.endpoint.close();
-    
+
     self.event_triggers.deinit(self.gpa);
     // self.event_queue.close(self.io); // not really necessary
     self.gpa.free(self.events);
@@ -223,35 +222,46 @@ fn connLoop(self: *Self, peer_id: *const Peer.Id) void {
     }
 }
 
+const StreamState = union(enum) { started, done, protocol: protocols.ProtocolTag };
+
+/// Run when a bistream has been established.
 fn streamLoop(self: *Self, peer_id: *const Peer.Id, streams: iroh.BiStream) void {
     // const peer = self.connections.peers.getPtr(peer_id) orelse unreachable;
     // const conn = &peer.conn;
 
     defer {
-        streams.deinit();
         self.pushEvent(.{ .stream_closed = peer_id.* }) catch {};
     }
 
     var recv_buf: [512]u8 = undefined;
 
-    while (true) {
-        const msg = streams.recv.read(&recv_buf, .{ .timeout_ms = 5000 }) catch |err| switch (err) {
-            error.Timeout => {
-                log.info("Timed out waiting for message", .{});
-                continue;
-            },
-            else => {
-                log.err("Stream read error: {t}. Killing stream.", .{err});
+    {
+        const protocol_tag = streams.recv.readExact(recv_buf[0..1], 5000) catch |err| {
+            log.err("Failed to read protocol tag: {t}", .{err});
+            return;
+        };
+        const protocol: protocols.ProtocolTag = @enumFromInt(protocol_tag[0]);
+        log.info("Requested with protocol {t}", .{protocol});
+        switch (protocol) {
+            .pair => {
+                const name = streams.recv.readToEnd(&recv_buf, 5000) catch |err| {
+                    log.err("Failed to read pair name: {t}", .{err});
+                    return;
+                };
+                streams.recv.deinit();
+                log.info("Pair requested with name {s}", .{name});
+
+                streams.send.write("OK", 5000) catch |err| {
+                    log.err("Failed to write back to pair: {t}", .{err});
+                    return;
+                };
+                streams.send.finish();
                 return;
             },
-        };
-
-        if (msg.len == 0) {
-            log.info("Stream EOF on peer {x}. Quitting.", .{peer_id});
-            return;
+            _ => {
+                log.err("Sender specified unknown protocol {d}", .{protocol_tag[0]});
+                return;
+            }
         }
-
-        log.info("Got message: {x}", .{msg});
-        self.pushEvent(.{ .message = .{ .buf = recv_buf, .len = msg.len } }) catch {};
     }
 }

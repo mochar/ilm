@@ -558,18 +558,19 @@ pub const SendStream = struct {
     ///
     /// Blocks current thread.
     pub fn write(
-        self: *SendStream,
-        data: [:0]const u8,
-        opts: struct { timeout_ms: ?u64 = null },
+        self: *const SendStream,
+        // data: [:0]const u8,
+        data: []const u8,
+        timeout_ms: ?u64,
     ) EndpointError!void {
         var data_slice: c.slice_ref_uint8_t = undefined;
         data_slice.ptr = data.ptr;
         data_slice.len = data.len;
 
-        const errno = if (opts.timeout_ms) |timeout|
-            c.send_stream_write_timeout(@ptrCast(&self.ptr), data_slice, timeout)
+        const errno = if (timeout_ms) |timeout|
+            c.send_stream_write_timeout(@constCast(@ptrCast(&self.ptr)), data_slice, timeout)
         else
-            c.send_stream_write(@ptrCast(&self.ptr), data_slice);
+            c.send_stream_write(@constCast(@ptrCast(&self.ptr)), data_slice);
         if (checkEndpointResult(errno)) |err| {
             log.err("Failed to send data: {t}", .{err});
             return err;
@@ -590,11 +591,7 @@ pub const RecvStream = struct {
     }
 
     /// Return slice in buf of data that was read, or null if EOF.
-    pub fn read(
-        self: *const RecvStream,
-        buf: []u8,
-        opts: struct { timeout_ms: ?u64 = null },
-    ) EndpointError![]const u8 {
+    pub fn read(self: *const RecvStream, buf: []u8, timeout_ms: ?u64) EndpointError![]const u8 {
         var buf_slice: c.slice_mut_uint8 = undefined;
         buf_slice.ptr = buf.ptr;
         buf_slice.len = buf.len;
@@ -603,7 +600,7 @@ pub const RecvStream = struct {
         // commented out accepting n_read as a pointer and returning
         // an error instead. Right now returns -1 as error, which
         // makes it ambiguous what caused it.
-        const n_read = if (opts.timeout_ms) |timeout|
+        const n_read = if (timeout_ms) |timeout|
             c.recv_stream_read_timeout(@ptrCast(@constCast(&self.ptr)), buf_slice, timeout)
         else
             c.recv_stream_read(@ptrCast(@constCast(&self.ptr)), buf_slice);
@@ -617,27 +614,35 @@ pub const RecvStream = struct {
         return buf[0..@intCast(n_read)];
     }
 
-    pub fn readToEnd(
-        self: *RecvStream,
-        alloc: std.mem.Allocator,
-        opts: struct {
-            size_limit: usize = 1024,
-            timeout_ms: u64 = 5000,
-        },
-    ) EndpointError![:0]const u8 {
-        var buffer = c.rust_buffer_alloc(0);
-        defer c.rust_buffer_free(buffer);
+    pub fn readToEnd(self: *const RecvStream, buffer: []u8, timeout_ms: u64) EndpointError![]const u8 {
+        var rust_buffer = c.rust_buffer_alloc(0);
+        defer c.rust_buffer_free(rust_buffer);
         const errno = c.recv_stream_read_to_end_timeout(
-            @ptrCast(&self.ptr),
-            &buffer,
-            opts.size_limit,
-            opts.timeout_ms,
+            @constCast(@ptrCast(&self.ptr)),
+            &rust_buffer,
+            buffer.len,
+            timeout_ms,
         );
         if (checkEndpointResult(errno)) |err| {
             log.err("Failed to read stream: {t}", .{err});
             return err;
         }
-        return try alloc.dupeZ(u8, buffer.ptr[0..buffer.len]);
+        @memcpy(buffer[0..rust_buffer.len], rust_buffer.ptr[0..rust_buffer.len]);
+        return buffer[0..rust_buffer.len];
+    }
+    
+    pub fn readExact(self: *const RecvStream, buf: []u8, timeout_ms: u64) EndpointError![]const u8 {
+        var buf_slice: c.slice_mut_uint8 = undefined;
+        buf_slice.ptr = buf.ptr;
+        buf_slice.len = buf.len;
+
+        const rc = c.recv_stream_read_exact_timeout(@ptrCast(@constCast(&self.ptr)), buf_slice, timeout_ms);
+        if (checkEndpointResult(rc)) |err| {
+            log.err("Failed to read stream: {t}", .{err});
+            return err;
+        }
+        
+        return buf;
     }
 };
 

@@ -46,7 +46,7 @@ fn renderSidebar(self: *Self, is_wide: bool) void {
     });
     defer box.deinit();
 
-    dvui.labelNoFmt(@src(), self.core.p2p.name, .{}, .{
+    dvui.labelNoFmt(@src(), self.core.router.name, .{}, .{
         .expand = .horizontal,
         .font = .theme(.title),
     });
@@ -54,7 +54,7 @@ fn renderSidebar(self: *Self, is_wide: bool) void {
     var tl = dvui.textLayout(@src(), .{}, .{ .expand = .horizontal });
     defer tl.deinit();
 
-    switch (self.core.p2p.endpoint.state) {
+    switch (self.core.router.endpoint.state) {
         .online => |*state| {
             tl.addText("Endpoint id\n", .{ .font = .theme(.heading) });
             if (tl.addTextClick(&state.id, .{ .margin = .all(4.0) })) |_| {
@@ -79,7 +79,7 @@ fn renderContent(self: *Self) void {
 
     {
         dvui.labelNoFmt(@src(), "Connections", .{}, .{ .font = .theme(.title) });
-        var conn_peers = self.core.p2p.connections.peers.valueIterator();
+        var conn_peers = self.core.router.connections.peers.valueIterator();
         while (conn_peers.next()) |con_peer| {
             var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{
                 .expand = .horizontal,

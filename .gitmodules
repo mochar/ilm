@@ -1,9 +1,10 @@
 [submodule "vendor/plutovg"]
 	path = vendor/plutovg
 	url = https://github.com/sammycage/plutovg
-[submodule "vendor/iroh-c-ffi"]
-	path = vendor/iroh-c-ffi
-	url = https://github.com/n0-computer/iroh-c-ffi
 [submodule "vendor/graphviz"]
 	path = vendor/graphviz
 	url = https://gitlab.com/graphviz/graphviz
+[submodule "vendor/iroh-c-ffi"]
+	path = vendor/iroh-c-ffi
+	url = ../iroh-c-ffi/
+	branch = stream-funcs

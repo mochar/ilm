@@ -11,7 +11,6 @@ pub const Peer = struct {
     /// Endpoint/public key ID
     pub const Id = [32]u8;
 
-    rowid: i64,
     id: Id,
     name: []const u8,
 };
@@ -19,7 +18,7 @@ pub const Peer = struct {
 pub fn getAll(core: *Core, alloc: Allocator) ![]Peer {
     var diags: db.Diagnostics = .{};
     var stmt = try core.db.prepareWithDiags(
-        "SELECT rowid, id, name FROM peer",
+        "SELECT id, name FROM peer",
         .{ .diags = &diags },
     );
     defer stmt.deinit();
@@ -31,7 +30,7 @@ pub fn getById(core: *Core, alloc: Allocator, id: *const Peer.Id) !?Peer {
     const peer = core.db.oneAlloc(
         Peer,
         alloc,
-        "SELECT rowid, id, name FROM peer WHERE id = ?",
+        "SELECT id, name FROM peer WHERE id = ?",
         .{ .diags = &diags },
         .{id},
     ) catch |err| {

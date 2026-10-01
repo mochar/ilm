@@ -5,9 +5,9 @@ const sqlite = @import("sqlite");
 const database = @import("database/database.zig");
 const DbWriter = @import("database/DbWriter.zig");
 const Id = database.Id;
-const P2p = @import("P2p.zig");
-const p2p_peer = @import("p2p/peer.zig");
-const Peer = p2p_peer.Peer;
+const p2p = @import("p2p.zig");
+const Router = p2p.Router;
+const Peer = p2p.Peer;
 const Core = @This();
 
 const log = std.log.scoped(.core);
@@ -18,7 +18,7 @@ data_dir: []const u8,
 /// Read only
 db: sqlite.Db,
 db_writer: DbWriter,
-p2p: P2p,
+router: Router,
 
 /// List of known peers in sync with the db.
 peers: []Peer = &.{},
@@ -86,9 +86,9 @@ pub fn create(opts: Options) !*Core {
         }
     };
 
-    // P2p
-    var p2p: P2p = try .init(gpa, io, secret_key);
-    errdefer p2p.deinit();
+    // P2p router
+    var router: Router = try .init(gpa, io, secret_key);
+    errdefer router.deinit();
 
     core.* = .{
         .gpa = gpa,
@@ -96,7 +96,7 @@ pub fn create(opts: Options) !*Core {
         .data_dir = data_dir,
         .db = db,
         .db_writer = db_writer,
-        .p2p = p2p,
+        .router = router,
     };
 
     try db_writer.subscribe(.{ .cb = dbWriteCallback, .ctx = @ptrCast(core) });
@@ -109,13 +109,13 @@ pub fn destroy(core: *Core) void {
     core.db_writer.deinit();
     core.db.deinit();
     core.gpa.free(core.data_dir);
-    core.p2p.deinit();
+    core.router.deinit();
 
     core.gpa.destroy(core);
 }
 
 pub fn setup(core: *Core) !void {
-    try core.p2p.spawnListenThread(core);
+    try core.router.spawnListenThread(core);
     try core.db_writer.spawnWriteThread();
 }
 
@@ -133,7 +133,7 @@ fn dbWriteCallback(core_opaque: *anyopaque, result: DbWriter.WriteResult) void {
 fn getPeers(core: *Core) void {
     core.gpa.free(core.peers);
     core.peers = &.{};
-    if (p2p_peer.getAll(core, core.gpa)) |peers| {
+    if (p2p.peer.getAll(core, core.gpa)) |peers| {
         core.peers = peers;
     } else |err| {
         log.err("Failed to get peers from db: {t}", .{err});

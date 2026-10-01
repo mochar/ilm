@@ -12,6 +12,7 @@ pub const Table = enum {
 
 pub const ConceptId = Id;
 pub const ConceptRelId = struct { parent: Id, child: Id };
+/// Endpoint/public key ID
 pub const PeerId = [32]u8;
 
 pub const TableId = union(Table) {

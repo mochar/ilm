@@ -33,14 +33,18 @@ pub fn main(init: std.process.Init) !void {
     while (try stdin.takeDelimiter('\n')) |input| {
         var parser = std.mem.splitScalar(u8, input, ' ');
         const command = parser.first();
-        if (std.meta.stringToEnum(enum { connect, info }, command)) |cmd| {
+        if (std.meta.stringToEnum(enum { connect, pair, info }, command)) |cmd| {
             switch (cmd) {
                 .connect => {
-                    const endpoint_id = parser.next() orelse &core.p2p.endpoint.state.online.id;
+                    const endpoint_id = parser.next() orelse &core.router.endpoint.state.online.id;
                     connect(endpoint_id, init.gpa) catch {};
                 },
+                .pair => {
+                    const endpoint_id = parser.next() orelse &core.router.endpoint.state.online.id;
+                    pair(endpoint_id, init.gpa) catch |err| log.err("Pair err: {t}", .{err});
+                },
                 .info => {
-                    if (core.p2p.endpoint.checkOnline(.{})) {
+                    if (core.router.endpoint.checkOnline(.{})) {
                         try stdout.print("Online\n", .{});
                     } else |err| {
                         try stdout.print("Offline! {t}\n", .{err});
@@ -62,7 +66,7 @@ fn connect(endpoint_id: []const u8, gpa: std.mem.Allocator) !void {
     const addr: iroh.EndpointAddr = .fromPublicKey(&public_key);
     defer addr.deinit();
 
-    var endpoint: iroh.Endpoint = try .init(.{ .gpa = gpa, .alpn = &ilm.P2p.ALPN });
+    var endpoint: iroh.Endpoint = try .init(.{ .gpa = gpa, .alpn = &ilm.p2p.ALPN });
     defer endpoint.deinit();
 
     var conn = try endpoint.connect(.{ .addr = &addr });
@@ -73,8 +77,21 @@ fn connect(endpoint_id: []const u8, gpa: std.mem.Allocator) !void {
     defer streams.deinit();
     log.info("Sending message...", .{});
 
-    try streams.send.write("Hallo lol", .{ .timeout_ms = 5000 });
+    try streams.send.write("Hallo lol", 5000);
     log.info("Message send! Closing.", .{});
 
-    try streams.send.write("DONE", .{ .timeout_ms = 5000 });
+    try streams.send.write("DONE", 5000);
+}
+
+fn pair(endpoint_id: []const u8, gpa: std.mem.Allocator) !void {
+    const public_key: iroh.PublicKey = try .fromHex(endpoint_id);
+    defer public_key.deinit();
+
+    const addr: iroh.EndpointAddr = .fromPublicKey(&public_key);
+    defer addr.deinit();
+
+    var endpoint: iroh.Endpoint = try .init(.{ .gpa = gpa, .alpn = &ilm.p2p.ALPN });
+    defer endpoint.deinit();
+
+    _ = try ilm.p2p.protocols.requestPair(&endpoint, endpoint_id);
 }

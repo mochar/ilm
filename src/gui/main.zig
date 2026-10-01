@@ -63,13 +63,13 @@ const View = union(enum) {
 var view: View = .main;
 var core: ?*Core = null;
 /// Holds copied-over events from the p2p event queue. See p2pEventTrigger.
-var p2p_event_queue: [32]ilm.P2p.Event = undefined;
+var p2p_event_queue: [32]ilm.p2p.Router.Event = undefined;
 
 /// Called when a new p2p events are available. Drains events and updates ui.
 fn p2pEventTrigger(window_opaque: ?*anyopaque) void {
     const window: *dvui.Window = @ptrCast(@alignCast(window_opaque orelse unreachable));
     if (core) |c| blk: {
-        const events = c.p2p.drainEvents(&p2p_event_queue) catch break :blk;
+        const events = c.router.drainEvents(&p2p_event_queue) catch break :blk;
         for (events) |event| {
             switch (event) {
                 .connected => dvui.toast(@src(), .{ .window = window, .message = "Connected to p2p client" }),
@@ -156,7 +156,7 @@ pub fn connect(data_dir: []const u8) void {
 
     if (Core.create(.{ .gpa = gpa, .io = dvui.io, .data_dir = data_dir })) |c| {
         core = c;
-        core.?.p2p.addEventTrigger(.{
+        core.?.router.addEventTrigger(.{
             .ctx = dvui.currentWindow(),
             .triggerFn = p2pEventTrigger,
         }) catch |err| {
