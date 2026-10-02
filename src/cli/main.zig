@@ -91,7 +91,7 @@ fn pair(endpoint_id: []const u8, gpa: std.mem.Allocator) !void {
     defer addr.deinit();
 
     var endpoint: iroh.Endpoint = try .init(.{ .gpa = gpa, .alpn = &ilm.p2p.ALPN });
-    defer endpoint.deinit();
+    defer endpoint.close();
 
     _ = try ilm.p2p.protocols.requestPair(&endpoint, endpoint_id);
 }

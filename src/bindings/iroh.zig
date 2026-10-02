@@ -4,6 +4,10 @@ const c = @import("c");
 
 const log = std.log.scoped(.iroh);
 
+pub fn enableTracing() void {
+    c.iroh_enable_tracing();
+}
+
 /// 32-byte secret key.
 pub const SecretKey = struct {
     pub const KEY_LEN = 32;
@@ -64,6 +68,11 @@ pub const SecretKey = struct {
 
         return secret_key;
     }
+
+    pub fn dupe(self: *const SecretKey) !SecretKey {
+        const hex = self.asHex();
+        return try .fromHex(&hex);
+    }
 };
 
 /// Alias of EndpointId.
@@ -107,7 +116,7 @@ pub const PublicKey = struct {
     pub fn bytes(self: *const PublicKey) *const [32]u8 {
         return &self.key.key.idx;
     }
-    
+
     /// Returns the raw 32-byte public key array.
     pub fn copyBytes(self: *const PublicKey) [32]u8 {
         return self.key.key.idx;
@@ -248,7 +257,7 @@ pub const ConnectionTarget = union(enum) {
             .addr => |addr| addr.copy(),
             .public_key => |pk| EndpointAddr.fromPublicKey(pk),
             .id => |id| blk: {
-                const pk = if (id.len == 64) 
+                const pk = if (id.len == 64)
                     try PublicKey.fromHex(id)
                 else if (id.len == 32)
                     try PublicKey.fromBytes(id)
@@ -267,8 +276,9 @@ pub const Endpoint = struct {
     ptr: *c.Endpoint_t,
     alpn: *const Alpn,
     state: union(enum) {
-        bound: void,
+        bound,
         online: OnlineState,
+        closed,
     },
 
     pub const OnlineState = struct {
@@ -319,9 +329,9 @@ pub const Endpoint = struct {
     }
 
     pub fn deinit(self: *const Endpoint) void {
-        c.endpoint_free(self.ptr);
+        if (self.state != .closed) c.endpoint_free(self.ptr);
         switch (self.state) {
-            .bound => {},
+            .bound, .closed => {},
             .online => |state| state.deinit(self.gpa),
         }
     }
@@ -392,25 +402,32 @@ pub const Endpoint = struct {
     ///
     /// Blocks the current thread until a connection is established.
     pub fn accept(self: *const Endpoint) EndpointError!Connection {
-        var conn = c.connection_default() orelse unreachable;
+        var conn = c.connection_default() orelse return error.UnknownError;
         errdefer c.connection_free(conn);
 
-        var alpn_slice = c.rust_buffer_alloc(0);
-        defer c.rust_buffer_free(alpn_slice);
-        const errno = c.endpoint_accept_any(&self.ptr, &alpn_slice, &conn);
+        const errno = c.endpoint_accept(&self.ptr, self.alpn.slice(), &conn);
         if (checkEndpointResult(errno)) |err| {
             log.err("Failed to accept connection: {t}", .{err});
             return err;
         }
         errdefer c.connection_close(conn);
 
-        // Not sure if this accepts literally anything, or only alpns
-        // that we passed in the config in init.
-        const alpn_name = alpn_slice.ptr[0..alpn_slice.len];
-        if (!std.mem.eql(u8, alpn_name, self.alpn.alpn)) {
-            log.err("Got unknown ALPN: {s}", .{alpn_name});
-            return EndpointError.UnknownError;
-        }
+        // var alpn_slice = c.rust_buffer_alloc(0);
+        // defer c.rust_buffer_free(alpn_slice);
+        // const errno = c.endpoint_accept_any(&self.ptr, &alpn_slice, &conn);
+        // if (checkEndpointResult(errno)) |err| {
+        //     log.err("Failed to accept connection: {t}", .{err});
+        //     return err;
+        // }
+        // errdefer c.connection_close(conn);
+
+        // // Not sure if this accepts literally anything, or only alpns
+        // // that we passed in the config in init.
+        // const alpn_name = alpn_slice.ptr[0..alpn_slice.len];
+        // if (!std.mem.eql(u8, alpn_name, self.alpn.alpn)) {
+        //     log.err("Got unknown ALPN: {s}", .{alpn_name});
+        //     return EndpointError.UnknownError;
+        // }
 
         var addr_c = c.endpoint_addr_default();
         const addr_res = c.endpoint_addr(&self.ptr, &addr_c);
@@ -426,8 +443,9 @@ pub const Endpoint = struct {
     /// Blocks all incoming connections and then waits for all current connections
     /// to close gracefully, before shutting down the endpoint.
     /// Consumes the endpoint, no need to free it afterwards.
-    pub fn close(self: *const Endpoint) void {
+    pub fn close(self: *Endpoint) void {
         c.endpoint_close(self.ptr);
+        self.state = .closed;
         self.deinit();
     }
 

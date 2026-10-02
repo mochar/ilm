@@ -50,25 +50,32 @@ pub fn render(self: *Self) void {
             0 => self.concepts_view.render(),
             1 => self.peers_view.render(),
             2 => {
+                var box = dvui.box(@src(), .{}, .{ .expand = .horizontal });
+                defer box.deinit();
+
                 var tl = dvui.textLayout(@src(), .{}, .{ .expand = .both, .font = .theme(.title) });
-                defer tl.deinit();
                 tl.format("Path: {s}\n", .{self.core.data_dir}, .{});
 
-                tl.addText("\n\nP2P\n", .{ .font = .theme(.heading) });
-                switch (self.core.router.endpoint.state) {
-                    .bound => tl.addText("Endpoint not online\n", .{}),
-                    .online => |state| {
-                        tl.addText("Endpoint id:\n", .{});
-                        if (tl.addTextClick(&state.id, .{ .margin = .all(4.0) })) |_| {
-                            dvui.clipboardTextSet(&state.id);
-                            dvui.toast(@src(), .{ .message = "Endpoint ID copied to clipboard!" });
-                        }
-                        tl.addText("\nTicket is:\n", .{});
-                        if (tl.addTextClick(state.ticket, .{ .margin = .all(4.0) })) |_| {
-                            dvui.clipboardTextSet(state.ticket);
-                            dvui.toast(@src(), .{ .message = "Ticket copied to clipboard!" });
-                        }
-                    },
+                tl.addText("\n\nRouter\n", .{ .font = .theme(.heading) });
+                const group_pending = self.core.router.io_group.token.load(.unordered) != null;
+                tl.addText(
+                    std.fmt.allocPrint(
+                        dvui.currentWindow().arena(),
+                        "Group has pending tasks: {s}",
+                        .{if (group_pending) "yes" else "no"},
+                    ) catch "OOM",
+                    .{},
+                );
+                tl.deinit();
+
+                if (group_pending) {
+                    if (dvui.button(@src(), "Stop", .{}, .{})) {
+                        self.core.router.stop() catch {};
+                    }
+                } else {
+                    if (dvui.button(@src(), "Start", .{}, .{})) {
+                        self.core.router.start() catch {};
+                    }
                 }
             },
             else => {},

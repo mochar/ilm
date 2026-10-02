@@ -115,7 +115,7 @@ pub fn destroy(core: *Core) void {
 }
 
 pub fn setup(core: *Core) !void {
-    try core.router.spawnListenThread();
+    try core.router.start();
     try core.db_writer.spawnWriteThread();
 }
 
