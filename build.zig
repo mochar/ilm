@@ -131,8 +131,10 @@ pub fn build(b: *Build) void {
     if (target.result.abi.isAndroid()) {
         buildGuiAndroid(b, target, optimize, &.{
             .{ .name = "ilm", .module = core_mod },
+            .{ .name = "assets", .module = assets_mod },
             .{ .name = "known-folders", .module = known_folders_mod },
             .{ .name = "sqlite", .module = sqlite_mod },
+            .{ .name = "iroh", .module = iroh.module },
         });
     } else {
         const core_test_step = addCoreTests(b, core_mod);
@@ -154,8 +156,10 @@ pub fn build(b: *Build) void {
 
         const gui_test_step = buildGui(b, target, optimize, &.{
             .{ .name = "ilm", .module = core_mod },
+            .{ .name = "assets", .module = assets_mod },
             .{ .name = "known-folders", .module = known_folders_mod },
             .{ .name = "sqlite", .module = sqlite_mod },
+            .{ .name = "iroh", .module = iroh.module },
         });
         test_step.dependOn(gui_test_step);
     }

@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const dvui = @import("dvui");
 const sqlite = @import("sqlite");
 const sdl = @import("sdl-backend");
+const assets = @import("assets");
 const ilm = @import("ilm");
 const Core = ilm.Core;
 const androidLogFn = @import("android.zig").logFn;
@@ -63,24 +64,6 @@ const View = union(enum) {
 var view: View = .main;
 var core: ?*Core = null;
 
-/// Called when a new p2p events are available. Drains events and updates ui.
-fn p2pEventTrigger(window_opaque: ?*anyopaque, event: ilm.p2p.Router.Event) void {
-    const window: *dvui.Window = @ptrCast(@alignCast(window_opaque orelse unreachable));
-    switch (event) {
-        .connected => dvui.toast(@src(), .{ .window = window, .message = "Connected to p2p client" }),
-        .disconnected => dvui.toast(@src(), .{ .window = window, .message = "Disconnected from p2p client" }),
-        .stream_received => dvui.toast(@src(), .{ .window = window, .message = "Stream received to p2p client" }),
-        .stream_closed => dvui.toast(@src(), .{ .window = window, .message = "Stream closed to p2p client" }),
-        .message => |payload| {
-            const arena = dvui.currentWindow().lifo();
-            const msg = payload.buf[0..payload.len];
-            const txt = std.fmt.allocPrint(arena, "Recieved p2p msg: {s}", .{msg}) catch "OOM";
-            defer arena.free(txt);
-            dvui.toast(@src(), .{ .window = window, .message = txt });
-        },
-    }
-}
-
 fn switchView(new_view: View) void {
     switch (view) {
         .main => {},
@@ -96,6 +79,8 @@ pub fn appInit(win: *dvui.Window) !void {
     // win.backend.impl.touch_mouse_events = true;
     // _ = sdl.c.SDL_SetHint(sdl.c.SDL_HINT_TOUCH_MOUSE_EVENTS, "1");
     // _ = sdl.c.SDL_SetHint(sdl.c.SDL_HINT_MOUSE_TOUCH_EVENTS, "1");
+
+    try dvui.addFont("dejavu sans", assets.fonts.dejavu_sans, null);
 
     var data_dir: ?[]const u8 = null;
     if (builtin.abi == .android) {
@@ -149,13 +134,6 @@ pub fn connect(data_dir: []const u8) void {
 
     if (Core.create(.{ .gpa = gpa, .io = dvui.io, .data_dir = data_dir })) |c| {
         core = c;
-        core.?.router.addEventTrigger(.{
-            .ctx = dvui.currentWindow(),
-            .triggerFn = p2pEventTrigger,
-        }) catch |err| {
-            log.err("Failed to add p2p event trigger: {t}", .{err});
-            dvui.toast(@src(), .{ .message = "Failed to add p2p event trigger" });
-        };
         core.?.setup() catch |err| {
             log.err("Failed to setup core: {t}", .{err});
             dvui.toast(@src(), .{ .message = "Failed to setup core" });

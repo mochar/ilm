@@ -122,6 +122,7 @@ pub const PublicKey = struct {
         return self.key.key.idx;
     }
 
+    // TODO This is just regular hex encoding so we can use zig for this instead.
     /// Returns the 64-character hex-encoded string representation
     pub fn toHex(self: *const PublicKey) [64:0]u8 {
         const c_str = c.public_key_as_base32(&self.key) orelse @panic("secret_key_as_base32 returned null");
@@ -567,14 +568,15 @@ pub const BiStream = struct {
     send: SendStream,
     recv: RecvStream,
 
-    pub fn deinit(self: *const BiStream) void {
+    pub fn deinit(self: *BiStream) void {
         self.recv.deinit();
-        self.send.finish();
+        self.send.deinit();
     }
 };
 
 pub const SendStream = struct {
     ptr: *c.SendStream_t,
+    freed: bool = false,
 
     pub fn default() SendStream {
         const stream = c.send_stream_default() orelse unreachable;
@@ -582,8 +584,10 @@ pub const SendStream = struct {
     }
 
     /// Must be called before Endpoint.deinit()!
-    pub fn deinit(self: *const SendStream) void {
+    pub fn deinit(self: *SendStream) void {
+        if (self.freed) return;
         c.send_stream_free(self.ptr);
+        self.freed = true;
     }
 
     /// Finish the sending on this stream.
@@ -592,11 +596,12 @@ pub const SendStream = struct {
     /// Note that finishing can fail when not all data was managed to
     /// be send before closing the stream. However this function does
     /// not error when that happens, only logs it.
-    pub fn finish(self: *const SendStream) void {
+    pub fn finish(self: *SendStream) void {
         const errno = c.send_stream_finish(self.ptr);
         if (checkEndpointResult(errno)) |err| {
             log.err("Failed to finish sending: {t}", .{err});
         }
+        self.freed = true;
     }
 
     /// Send data on the stream. If timeout not null, returns an error
@@ -626,14 +631,17 @@ pub const SendStream = struct {
 
 pub const RecvStream = struct {
     ptr: *c.RecvStream_t,
+    freed: bool = false,
 
     pub fn default() RecvStream {
         const stream = c.recv_stream_default() orelse unreachable;
         return .{ .ptr = stream };
     }
 
-    pub fn deinit(self: *const RecvStream) void {
+    pub fn deinit(self: *RecvStream) void {
+        if (self.freed) return;
         c.recv_stream_free(self.ptr);
+        self.freed = true;
     }
 
     /// Return slice in buf of data that was read, or null if EOF.

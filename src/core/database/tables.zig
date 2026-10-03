@@ -2,6 +2,7 @@ const std = @import("std");
 const sqlite = @import("sqlite");
 const Diagnostics = sqlite.Diagnostics;
 const Id = @import("Id.zig");
+const ilm = @import("../root.zig");
 
 pub const Table = enum {
     concept,
@@ -175,6 +176,23 @@ pub const TableCommand = union(enum) {
             savepoint.commit();
             
             return .{ .op = .delete, .table_id = .{ .concept = self.id } };
+        }
+    },
+    add_peer: struct {
+        id: PeerId,
+        name: []const u8,
+
+        pub fn write(self: *const @This(), db: *sqlite.Db) !Write {
+            try ilm.p2p.peer.addImpl(db, self.name, &self.id);
+            return .{ .op = .insert, .table_id = .{ .peer = self.id } };
+        }
+    },
+    delete_peer: struct {
+        id: PeerId,
+
+        pub fn write(self: *const @This(), db: *sqlite.Db) !Write {
+            try ilm.p2p.peer.deleteImpl(db, self.id);
+            return .{ .op = .delete, .table_id = .{ .peer = self.id } };
         }
     },
 };

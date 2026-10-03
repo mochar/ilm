@@ -4,9 +4,9 @@ const iroh = @import("iroh");
 const Core = @import("../Core.zig");
 const database = @import("../database/database.zig");
 const Db = database.Db;
-const p2p_peer = @import("peer.zig");
-const protocols = @import("protocols.zig");
-const Peer = p2p_peer.Peer;
+const p2p = @import("../p2p.zig");
+const protocols = p2p.protocols;
+const Peer = p2p.peer.Peer;
 const Self = @This();
 
 const log = std.log.scoped(.p2p);
@@ -16,12 +16,14 @@ pub const ALPN: iroh.Alpn = .{ .alpn = "/ilm/1" };
 pub const ConnectedPeer = struct {
     conn: iroh.Connection,
     id: Peer.Id,
-    known: bool,
-    sessions: std.ArrayList(protocols.ProtocolSession) = .empty,
+    known: bool, // TODO Remove?
+    // sessions: std.ArrayList(protocols.ProtocolSession) = .empty,
+    /// Populated if peer is waiting on a pair request
+    pair_request: ?*protocols.PairProtocol.PairRequest = null,
 
     pub fn fromConnection(conn: iroh.Connection, db: *Db) ConnectedPeer {
         const id = conn.addr.id.copyBytes();
-        const known = p2p_peer.exists(db, &id) catch false;
+        const known = p2p.peer.exists(db, &id) catch false;
         return .{ .conn = conn, .id = id, .known = known };
     }
 };
@@ -35,6 +37,7 @@ pub const Event = union(enum) {
     disconnected: Peer.Id,
     stream_received: Peer.Id,
     stream_closed: Peer.Id,
+    pair_request: *protocols.PairProtocol.PairRequest,
     // own message buf to not deal with allocation
     message: struct {
         buf: [512]u8,
@@ -115,14 +118,14 @@ pub fn deinit(self: *Self) void {
 }
 
 pub fn getCore(self: *const Self) *Core {
-    return @fieldParentPtr("p2p", self);
+    return @constCast(@fieldParentPtr("router", self));
 }
 
-pub fn addEventTrigger(self: *Self, trigger: EventTrigger) !void {
+pub fn addEventTrigger(self: *Self, trigger: EventTrigger) std.mem.Allocator.Error!void {
     try self.event_triggers.append(self.gpa, trigger);
 }
 
-fn pushEvent(self: *Self, event: Event) !void {
+fn publishEvent(self: *Self, event: Event) void {
     for (self.event_triggers.items) |*trigger| {
         trigger.trigger(event);
     }
@@ -176,6 +179,7 @@ pub fn stop(self: *Self) !void {
 }
 
 // TODO Im not sure if it should return Canceled error, group.async seems to suggest so.
+// TODO Use std.Io.checkCancel(self.io) with errdefer closing endpoint
 fn acceptLoop(self: *Self) error{Canceled}!void {
     log.info("Listening for connections...", .{});
     while (true) {
@@ -201,6 +205,7 @@ fn acceptLoop(self: *Self) error{Canceled}!void {
     }
 }
 
+/// Register new connection and spawn its connLoop thread
 fn handleConn(self: *Self, conn: iroh.Connection) !void {
     errdefer conn.close();
     const peer: ConnectedPeer = .fromConnection(conn, &self.db);
@@ -216,8 +221,10 @@ fn handleConn(self: *Self, conn: iroh.Connection) !void {
     self.io_group.async(self.io, connLoop, .{ self, peer.id });
 }
 
+/// Listens for new bi streams and spawns new streamLoop thread when
+/// one has been established.
 fn connLoop(self: *Self, peer_id: Peer.Id) void {
-    self.pushEvent(.{ .connected = .{ .peer_id = peer_id, .initiated = false } }) catch {};
+    self.publishEvent(.{ .connected = .{ .peer_id = peer_id, .initiated = false } });
 
     self.connections.mutex.lockUncancelable(self.io);
     const peer = self.connections.peers.get(peer_id) orelse {
@@ -233,7 +240,7 @@ fn connLoop(self: *Self, peer_id: Peer.Id) void {
         self.connections.mutex.lockUncancelable(self.io);
         _ = self.connections.peers.remove(peer_id);
         self.connections.mutex.unlock(self.io);
-        self.pushEvent(.{ .disconnected = peer_id }) catch {};
+        self.publishEvent(.{ .disconnected = peer_id });
     }
 
     const total_attempts = 3;
@@ -253,56 +260,94 @@ fn connLoop(self: *Self, peer_id: Peer.Id) void {
         };
 
         log.info("Received stream!", .{});
-        self.pushEvent(.{ .stream_received = peer_id }) catch {};
+        self.publishEvent(.{ .stream_received = peer_id });
         attempt = 1;
 
         self.io_group.async(self.io, streamLoop, .{ self, peer_id, streams });
     }
 }
 
-const StreamState = union(enum) { started, done, protocol: protocols.ProtocolTag };
-
 /// Run when a bistream has been established.
-fn streamLoop(self: *Self, peer_id: Peer.Id, streams: iroh.BiStream) void {
-    // const peer = self.connections.peers.getPtr(peer_id) orelse unreachable;
-    // const conn = &peer.conn;
+fn streamLoop(self: *Self, peer_id: Peer.Id, streams_: iroh.BiStream) void {
+    defer self.publishEvent(.{ .stream_closed = peer_id });
+    
+    var streams = streams_; // get a nonconst copy
+    defer streams.deinit();
+    
+    const core = self.getCore();
+    
+    var arena_alloc: std.heap.ArenaAllocator = .init(core.gpa);
+    defer arena_alloc.deinit();
+    const arena = arena_alloc.allocator();
 
-    defer {
-        self.pushEvent(.{ .stream_closed = peer_id }) catch {};
-    }
-
+    var peer = self.connections.peers.getPtr(peer_id) orelse unreachable;
     var recv_buf: [512]u8 = undefined;
 
     {
+        // All bistreams start with client sending protocol tag.
         const protocol_tag = streams.recv.readExact(recv_buf[0..1], 5000) catch |err| {
             log.err("Failed to read protocol tag: {t}", .{err});
             return;
         };
         const protocol: protocols.ProtocolTag = @enumFromInt(protocol_tag[0]);
-        log.info("Requested with protocol {t}", .{protocol});
+
         switch (protocol) {
             .pair => {
-                const name = streams.recv.readToEnd(&recv_buf, 5000) catch |err| {
-                    log.err("Failed to read pair name: {t}", .{err});
-                    return;
-                };
-                streams.recv.deinit();
-                log.info("Pair requested with name {s}", .{name});
+                log.info("Client requested pair", .{});
 
-                streams.send.write("OK", 5000) catch |err| {
+                var accepted: bool = undefined;
+                var name: []const u8 = undefined;
+
+                if (p2p.peer.getById(&self.db, arena, &peer_id) catch null) |known_peer| {
+                    log.info("Peer already known, accepting.", .{});
+                    accepted = true;
+                    name = known_peer.name;
+                } else {
+                    // Client is supposed to send its name and immediately finish.
+                    // TODO: std.unicode.utf8ValidateSlice(input: []const u8)
+                    name = streams.recv.readToEnd(&recv_buf, 5000) catch |err| {
+                        log.err("Failed to read pair name: {t}", .{err});
+                        return;
+                    };
+                    log.info("Pair client name: '{s}'", .{name});
+
+                    var pair_req: protocols.PairProtocol.PairRequest = .{
+                        .peer_id = peer_id,
+                        .name = name,
+                    };
+                    peer.pair_request = &pair_req;
+                    defer peer.pair_request = null;
+                    self.publishEvent(.{ .pair_request = &pair_req });
+
+                    // Pause thread, wait for user feedback, or thread cancel.
+                    pair_req.signal.wait(self.io) catch |err| switch (err) {
+                        error.Canceled => return,
+                    };
+
+                    accepted = pair_req.response == .accept;
+                }
+
+                const response: []const u8 = if (accepted)
+                    [1]u8{0} ++ "ilm enjoyer"
+                else
+                    &.{1};
+
+                streams.send.write(response, 5000) catch |err| {
                     log.err("Failed to write back to pair: {t}", .{err});
-                    return;
                 };
                 streams.send.finish();
+
+                if (accepted) {
+                    p2p.peer.add(core, name, peer_id) catch {};
+                }
+
                 return;
             },
             _ => {
-                log.err("Sender specified unknown protocol {d}", .{protocol_tag[0]});
-                return;
-            },
-            else => {
-                log.err("Unhandled protocol: {t}", .{protocol});
-                return;
+                log.err("Client specified unknown protocol '{d}', breaking bistream", .{protocol_tag[0]});
+                streams.send.write(&.{1}, 5000) catch |err| {
+                    log.err("Failed to write back: {t}", .{err});
+                };
             },
         }
     }

@@ -110,6 +110,7 @@ pub fn destroy(core: *Core) void {
     core.db.deinit();
     core.gpa.free(core.data_dir);
     core.router.deinit();
+    core.gpa.free(core.peers);
 
     core.gpa.destroy(core);
 }

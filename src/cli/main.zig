@@ -40,7 +40,7 @@ pub fn main(init: std.process.Init) !void {
                     connect(endpoint_id, init.gpa) catch {};
                 },
                 .pair => {
-                    const endpoint_id = parser.next() orelse &core.router.endpoint.state.online.id;
+                    const endpoint_id = parser.next() orelse "1914aeae12e05b2e0b0bd1a81e17caa95795ed76bbd4bddedb5e801f96da42c3";
                     pair(endpoint_id, init.gpa) catch |err| log.err("Pair err: {t}", .{err});
                 },
                 .info => {
@@ -74,7 +74,10 @@ fn connect(endpoint_id: []const u8, gpa: std.mem.Allocator) !void {
     log.info("Connected! Creating send stream...", .{});
 
     var streams = try conn.openBiStream();
-    defer streams.deinit();
+    defer {
+        streams.send.finish();
+        streams.recv.deinit();
+    }
     log.info("Sending message...", .{});
 
     try streams.send.write("Hallo lol", 5000);

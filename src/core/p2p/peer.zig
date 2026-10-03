@@ -63,7 +63,16 @@ pub fn exists(db: *Db, id: *const Peer.Id) !bool {
 }
 
 /// Inserts blindly wihout checking if ID is valid.
-pub fn add(db: *Db, name: []const u8, id: []const u8) !void {
+pub fn add(core: *Core, name: []const u8, id: Peer.Id) !void {
+    const res = try core.db_writer.runCommand(.{ .add_peer = .{
+        .id = id,
+        .name = name,
+    } }, .{});
+    return if (res.write) |_| {} else |err| return err;
+}
+
+/// Inserts blindly wihout checking if ID is valid.
+pub fn addImpl(db: *Db, name: []const u8, id: []const u8) !void {
     var diags: Diagnostics = .{};
 
     var stmt = db.prepareWithDiags(
@@ -80,6 +89,19 @@ pub fn add(db: *Db, name: []const u8, id: []const u8) !void {
         .{ .id = id, .name = name },
     ) catch |err| {
         log.err("SQLite exec failed: {s}", .{diags.message});
+        return err;
+    };
+}
+
+pub fn delete(core: *Core, id: Peer.Id) !void {
+    const res = try core.db_writer.runCommand(.{ .delete_peer = .{ .id = id } }, .{});
+    return if (res.write) |_| {} else |err| return err;
+}
+
+pub fn deleteImpl(db: *Db, id: Peer.Id) !void {
+    var diags: Diagnostics = .{};
+    db.exec("DELETE FROM peer WHERE id = ?", .{ .diags = &diags }, .{id}) catch |err| {
+        log.err("Failed to delete peer: {s}", .{diags.message});
         return err;
     };
 }
