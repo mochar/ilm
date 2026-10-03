@@ -174,7 +174,7 @@ pub const TableCommand = union(enum) {
             }
 
             savepoint.commit();
-            
+
             return .{ .op = .delete, .table_id = .{ .concept = self.id } };
         }
     },
@@ -193,6 +193,15 @@ pub const TableCommand = union(enum) {
         pub fn write(self: *const @This(), db: *sqlite.Db) !Write {
             try ilm.p2p.peer.deleteImpl(db, self.id);
             return .{ .op = .delete, .table_id = .{ .peer = self.id } };
+        }
+    },
+    rename_peer: struct {
+        id: PeerId,
+        name: []const u8,
+
+        pub fn write(self: *const @This(), db: *sqlite.Db) !Write {
+            try ilm.p2p.peer.renameImpl(db, self.id, self.name);
+            return .{ .op = .update, .table_id = .{ .peer = self.id } };
         }
     },
 };

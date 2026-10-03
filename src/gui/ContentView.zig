@@ -47,11 +47,8 @@ fn onPeerEvent(window_opaque: ?*anyopaque, event: ilm.p2p.Router.Event) void {
             dvui.toast(@src(), .{ .window = window, .message = txt });
         },
         .pair_request => |req| {
-            // See dvui.toast()
-            const id_mutex = dvui.toastAdd(window, @src(), 0, null, pairToastDisplay, 10_000_000);
-            const id = id_mutex.id;
-            dvui.dataSet(window, id, "_pair_request", req);
-            id_mutex.mutex.unlock(dvui.io);
+            const msg = std.fmt.allocPrint(window.arena(), "Pair request from '{s}'", .{req.name}) catch "OOM";
+            dvui.toast(@src(), .{ .window = window, .message = msg });
         },
     }
 }
@@ -109,46 +106,5 @@ pub fn render(self: *Self) void {
             },
             else => {},
         }
-    }
-}
-
-// From dvui.toastDisplay
-pub fn pairToastDisplay(id: dvui.Id) !void {
-    const pair_req = dvui.dataGet(null, id, "_pair_request", *ilm.p2p.protocols.PairProtocol.PairRequest) orelse {
-        std.log.err("pairToastDisplay lost data for toast {x}\n", .{id});
-        dvui.toastRemove(id);
-        return;
-    };
-
-    var animator = dvui.animate(@src(), .{ .kind = .alpha, .duration = 500_000 }, .{ .id_extra = id.asUsize(), .gravity_x = 0.5 });
-    defer animator.deinit();
-
-    dvui.label(
-        @src(),
-        "Pair request from: {s}",
-        .{pair_req.name},
-        .{
-            .background = true,
-            .corners = .all(1000),
-            .padding = .{ .x = 16, .y = 8, .w = 16, .h = 8 },
-        },
-    );
-
-    if (dvui.button(@src(), "Accept", .{}, .{})) {
-        pair_req.accept(dvui.io);
-        dvui.toastRemove(id);
-    }
-    if (dvui.button(@src(), "Reject", .{}, .{})) {
-        pair_req.reject(dvui.io);
-        dvui.toastRemove(id);
-    }
-
-    if (dvui.timerDone(id)) {
-        animator.startEnd();
-    }
-
-    if (animator.end()) {
-        dvui.toastRemove(id);
-        animator.data().min_size = .{};
     }
 }

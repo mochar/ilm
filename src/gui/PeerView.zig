@@ -71,6 +71,11 @@ pub fn render(self: *Self) void {
         });
 
         if (enter_pressed or ok_pressed) {
+            if (ilm.p2p.peer.rename(self.core, self.peer.id, self.name_edit.name.items)) {
+                self.peer.name = self.arena.allocator().dupe(u8, self.name_edit.name.items) catch @panic("OOM");
+            } else |err| {
+                utils.toastErr(@src(), err, "Error when editing name", .{});
+            }
             self.name_edit.editing = false;
         }
     } else {
