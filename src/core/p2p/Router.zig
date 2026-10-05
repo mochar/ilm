@@ -16,15 +16,13 @@ pub const ALPN: iroh.Alpn = .{ .alpn = "/ilm/1" };
 pub const ConnectedPeer = struct {
     conn: iroh.Connection,
     id: Peer.Id,
-    known: bool, // TODO Remove?
     // sessions: std.ArrayList(protocols.ProtocolSession) = .empty,
     /// Populated if peer is waiting on a pair request
     pair_request: ?*protocols.PairProtocol.PairRequest = null,
 
-    pub fn fromConnection(conn: iroh.Connection, db: *Db) ConnectedPeer {
+    pub fn fromConnection(conn: iroh.Connection) ConnectedPeer {
         const id = conn.addr.id.copyBytes();
-        const known = p2p.peer.exists(db, &id) catch false;
-        return .{ .conn = conn, .id = id, .known = known };
+        return .{ .conn = conn, .id = .{ .bytes = id } };
     }
 };
 
@@ -138,7 +136,7 @@ pub fn connectToEndpoint(self: *Self, target: iroh.ConnectionTarget) !Peer.Id {
         return err;
     };
     try self.handleConn(conn); // closes conn on error
-    return conn.addr.id.copyBytes();
+    return .{ .bytes = conn.addr.id.copyBytes() };
 }
 
 pub fn start(self: *Self) !void {
@@ -208,7 +206,7 @@ fn acceptLoop(self: *Self) error{Canceled}!void {
 /// Register new connection and spawn its connLoop thread
 fn handleConn(self: *Self, conn: iroh.Connection) !void {
     errdefer conn.close();
-    const peer: ConnectedPeer = .fromConnection(conn, &self.db);
+    const peer: ConnectedPeer = .fromConnection(conn);
 
     self.connections.mutex.lockUncancelable(self.io);
     defer self.connections.mutex.unlock(self.io);
@@ -235,7 +233,7 @@ fn connLoop(self: *Self, peer_id: Peer.Id) void {
     self.connections.mutex.unlock(self.io);
 
     defer {
-        log.info("Connection dropped to {x}", .{peer_id});
+        log.info("Connection dropped to {x}", .{peer_id.bytes});
         conn.close();
         self.connections.mutex.lockUncancelable(self.io);
         _ = self.connections.peers.remove(peer_id);
@@ -246,7 +244,7 @@ fn connLoop(self: *Self, peer_id: Peer.Id) void {
     const total_attempts = 3;
     var attempt: usize = 1;
     receive: while (true) {
-        log.info("Waiting for stream from peer {x}...", .{peer_id});
+        log.info("Waiting for stream from peer {x}...", .{peer_id.bytes});
 
         const streams = conn.acceptBiStream() catch |err| {
             if (attempt == total_attempts) {

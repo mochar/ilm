@@ -5,13 +5,42 @@ const database = @import("../database/database.zig");
 const Diagnostics = database.Diagnostics;
 const Db = database.Db;
 const iroh = @import("iroh");
+const sqlite = @import("sqlite");
 const Self = @This();
 
 const log = std.log.scoped(.p2p_peer);
 
 pub const Peer = struct {
     /// Endpoint/public key ID
-    pub const Id = [32]u8;
+    pub const Id = struct {
+        bytes: [32]u8,
+
+        pub const Short = [7]u8;
+
+        pub fn short(self: *const Id) Short {
+            return std.mem.bytesToValue(Short, &self.bytes);
+        }
+
+        // Sqlite
+        pub const BaseType = sqlite.Blob;
+
+        pub fn bindField(self: Id, allocator: Allocator) !BaseType {
+            const duped = try allocator.dupe(u8, &self.bytes);
+            return .{ .data = duped };
+        }
+
+        pub fn readField(_: Allocator, blob: BaseType) !Id {
+            var bytes: [32]u8 = undefined;
+            @memcpy(&bytes, blob.data);
+            return .{ .bytes = bytes };
+        }
+
+        pub fn asBlob(self: *const Id) sqlite.Blob {
+            // Must take in a pointer, otherwise &self.int points to this functions
+            // stack frame
+            return sqlite.Blob{ .data = std.mem.asBytes(&self.bytes) };
+        }
+    };
 
     id: Id,
     name: []const u8,
@@ -34,7 +63,7 @@ pub fn getById(db: *Db, alloc: Allocator, id: *const Peer.Id) !?Peer {
         alloc,
         "SELECT id, name FROM peer WHERE id = ?",
         .{ .diags = &diags },
-        .{id},
+        .{id.asBlob()},
     ) catch |err| {
         log.err("SQLite query failed ({t}): {s}", .{ err, diags.message });
         return err;
@@ -54,7 +83,7 @@ pub fn exists(db: *Db, id: *const Peer.Id) !bool {
         \\    END
     ,
         .{ .diags = &diags },
-        .{id},
+        .{id.asBlob()},
     ) catch |err| {
         log.err("SQLite query failed ({t}): {s}", .{ err, diags.message });
         return err;
@@ -72,7 +101,7 @@ pub fn add(core: *Core, name: []const u8, id: Peer.Id) !void {
 }
 
 /// Inserts blindly wihout checking if ID is valid.
-pub fn addImpl(db: *Db, name: []const u8, id: []const u8) !void {
+pub fn addImpl(db: *Db, name: []const u8, id: *const Peer.Id) !void {
     var diags: Diagnostics = .{};
 
     var stmt = db.prepareWithDiags(
@@ -86,7 +115,7 @@ pub fn addImpl(db: *Db, name: []const u8, id: []const u8) !void {
 
     stmt.exec(
         .{ .diags = &diags },
-        .{ .id = id, .name = name },
+        .{ .id = id.asBlob(), .name = name },
     ) catch |err| {
         log.err("SQLite exec failed: {s}", .{diags.message});
         return err;
@@ -100,7 +129,7 @@ pub fn delete(core: *Core, id: Peer.Id) !void {
 
 pub fn deleteImpl(db: *Db, id: Peer.Id) !void {
     var diags: Diagnostics = .{};
-    db.exec("DELETE FROM peer WHERE id = ?", .{ .diags = &diags }, .{id}) catch |err| {
+    db.exec("DELETE FROM peer WHERE id = ?", .{ .diags = &diags }, .{id.asBlob()}) catch |err| {
         log.err("Failed to delete peer: {s}", .{diags.message});
         return err;
     };
@@ -129,7 +158,7 @@ pub fn renameImpl(db: *Db, id: Peer.Id, name: []const u8) !void {
 
     stmt.exec(
         .{ .diags = &diags },
-        .{ .name = name, .id = id },
+        .{ .name = name, .id = id.asBlob() },
     ) catch |err| {
         log.err("SQLite exec failed: {s}", .{diags.message});
         return err;

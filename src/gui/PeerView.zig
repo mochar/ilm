@@ -96,11 +96,17 @@ pub fn render(self: *Self) void {
         }
     }
 
-    dvui.label(@src(), "{X}", .{&self.peer.id}, .{ .color_text = .gray });
+    dvui.label(@src(), "{x}", .{&self.peer.id.bytes}, .{ .color_text = .gray });
 
     {
         var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{});
         defer hbox.deinit();
+
+        if (peer_conn == null and dvui.button(@src(), "Connect", .{}, .{})) {
+            _ = self.core.router.connectToEndpoint(.{ .id = &self.peer.id.bytes}) catch |err| {
+                utils.toastErr(@src(), err, "Failed to connect", .{});
+            };
+        }
 
         if (dvui.button(@src(), "Delete", .{}, .{})) {
             ilm.p2p.peer.delete(self.core, self.peer.id) catch |err| {

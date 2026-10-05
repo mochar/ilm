@@ -71,7 +71,7 @@ pub const SyncProtocol = struct {};
 ///
 /// If the peer accepts this will return the name returned by the
 /// pair, which the caller is responsible for deallocating.
-pub fn requestPair(endpoint: *iroh.Endpoint, peer_endpoint_id: []const u8) ![:0]u8 {
+pub fn requestPair(endpoint: *const iroh.Endpoint, peer_endpoint_id: []const u8) ![:0]u8 {
     log.info("Trying to connect...", .{});
     var conn = try endpoint.connect(.{ .id = peer_endpoint_id });
     defer conn.close();

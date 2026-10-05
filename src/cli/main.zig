@@ -41,7 +41,7 @@ pub fn main(init: std.process.Init) !void {
                 },
                 .pair => {
                     const endpoint_id = parser.next() orelse "1914aeae12e05b2e0b0bd1a81e17caa95795ed76bbd4bddedb5e801f96da42c3";
-                    pair(endpoint_id, init.gpa) catch |err| log.err("Pair err: {t}", .{err});
+                    pair(&core.router.endpoint, endpoint_id, init.gpa) catch |err| log.err("Pair err: {t}", .{err});
                 },
                 .info => {
                     if (core.router.endpoint.checkOnline(.{})) {
@@ -86,15 +86,13 @@ fn connect(endpoint_id: []const u8, gpa: std.mem.Allocator) !void {
     try streams.send.write("DONE", 5000);
 }
 
-fn pair(endpoint_id: []const u8, gpa: std.mem.Allocator) !void {
+fn pair(endpoint: *const iroh.Endpoint, endpoint_id: []const u8, gpa: std.mem.Allocator) !void {
+    _ = gpa; // autofix
     const public_key: iroh.PublicKey = try .fromHex(endpoint_id);
     defer public_key.deinit();
 
     const addr: iroh.EndpointAddr = .fromPublicKey(&public_key);
     defer addr.deinit();
 
-    var endpoint: iroh.Endpoint = try .init(.{ .gpa = gpa, .alpn = &ilm.p2p.ALPN });
-    defer endpoint.close();
-
-    _ = try ilm.p2p.protocols.requestPair(&endpoint, endpoint_id);
+    _ = try ilm.p2p.protocols.requestPair(endpoint, endpoint_id);
 }

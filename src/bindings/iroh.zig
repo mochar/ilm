@@ -413,30 +413,9 @@ pub const Endpoint = struct {
         }
         errdefer c.connection_close(conn);
 
-        // var alpn_slice = c.rust_buffer_alloc(0);
-        // defer c.rust_buffer_free(alpn_slice);
-        // const errno = c.endpoint_accept_any(&self.ptr, &alpn_slice, &conn);
-        // if (checkEndpointResult(errno)) |err| {
-        //     log.err("Failed to accept connection: {t}", .{err});
-        //     return err;
-        // }
-        // errdefer c.connection_close(conn);
-
-        // // Not sure if this accepts literally anything, or only alpns
-        // // that we passed in the config in init.
-        // const alpn_name = alpn_slice.ptr[0..alpn_slice.len];
-        // if (!std.mem.eql(u8, alpn_name, self.alpn.alpn)) {
-        //     log.err("Got unknown ALPN: {s}", .{alpn_name});
-        //     return EndpointError.UnknownError;
-        // }
-
-        var addr_c = c.endpoint_addr_default();
-        const addr_res = c.endpoint_addr(&self.ptr, &addr_c);
-        if (checkEndpointResult(addr_res)) |err| {
-            log.err("Failed to get connection addr: {t}", .{err});
-            return err;
-        }
-        const addr: EndpointAddr = .fromAddr(addr_c);
+        const pkey: PublicKey = .{ .key = c.connection_remote_id(&conn) };
+        defer pkey.deinit();
+        const addr: EndpointAddr = .fromPublicKey(&pkey);
 
         return .{ .ptr = conn, .alpn = self.alpn, .addr = addr };
     }

@@ -7,4 +7,4 @@
 [submodule "vendor/iroh-c-ffi"]
 	path = vendor/iroh-c-ffi
 	url = ../iroh-c-ffi/
-	branch = stream-funcs
+	branch = mochar
