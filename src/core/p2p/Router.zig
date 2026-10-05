@@ -139,6 +139,25 @@ pub fn connectToEndpoint(self: *Self, target: iroh.ConnectionTarget) !Peer.Id {
     return .{ .bytes = conn.addr.id.copyBytes() };
 }
 
+/// Try to establish connections with all known peers.
+fn connectToPeers(self: *Self) !void {
+    var arena_alloc: std.heap.ArenaAllocator = .init(self.gpa);
+    defer arena_alloc.deinit();
+    const arena = arena_alloc.allocator();
+
+    const peers = p2p.peer.getAll(&self.db, arena) catch |err| {
+        log.err("Failed to get peers: {t}", .{err});
+        return err;
+    };
+    for (peers) |p| {
+        _ = self.connectToEndpoint(.{ .id = &p.id.bytes }) catch |err| {
+            log.err("Failed to connect to peer {s}: {t}", .{ p.name, err });
+            continue;
+        };
+        log.info("Connect to peer {s}", .{p.name});
+    }
+}
+
 pub fn start(self: *Self) !void {
     if (self.endpoint.state == .closed) {
         self.endpoint = try .init(.{
@@ -150,6 +169,12 @@ pub fn start(self: *Self) !void {
     try self.endpoint.ensureOnline();
     log.info("Online!", .{});
     self.endpoint.logAddr();
+
+    self.io_group.async(self.io, struct {
+        pub fn f(s: *Self) error{Canceled}!void {
+            s.connectToPeers() catch return error.Canceled;
+        }
+    }.f, .{self});
     self.io_group.async(self.io, acceptLoop, .{self});
 }
 
