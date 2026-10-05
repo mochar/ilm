@@ -94,5 +94,5 @@ fn pair(endpoint: *const iroh.Endpoint, endpoint_id: []const u8, gpa: std.mem.Al
     const addr: iroh.EndpointAddr = .fromPublicKey(&public_key);
     defer addr.deinit();
 
-    _ = try ilm.p2p.protocols.requestPair(endpoint, endpoint_id);
+    _ = try ilm.p2p.protocols.PairProtocol.request(endpoint, endpoint_id);
 }
