@@ -50,6 +50,7 @@ fn onPeerEvent(window_opaque: ?*anyopaque, event: ilm.p2p.Router.Event) void {
             const msg = std.fmt.allocPrint(window.arena(), "Pair request from '{s}'", .{req.name}) catch "OOM";
             dvui.toast(@src(), .{ .window = window, .message = msg });
         },
+        else => {},
     }
 }
 

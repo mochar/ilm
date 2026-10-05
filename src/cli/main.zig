@@ -6,6 +6,8 @@ const iroh = @import("iroh");
 
 const log = std.log.scoped(.cli);
 
+const Command = enum { pair, info };
+
 pub fn main(init: std.process.Init) !void {
     const data_path = (try known_folders.getPath(init.io, init.gpa, init.environ_map, .data)) orelse return error.FolderNotFound;
     defer init.gpa.free(data_path);
@@ -14,10 +16,6 @@ pub fn main(init: std.process.Init) !void {
     var core = try Core.create(.{ .gpa = init.gpa, .io = init.io, .data_dir = data_path });
     defer core.destroy();
     core.setup() catch |err| log.err("Failed to setup core: {t}", .{err});
-
-    // const secret_key = iroh.SecretKey.generate();
-    // defer secret_key.deinit();
-    // log.info("Secret key hex: {s}", .{secret_key.asHex()});
 
     var read_buf: [1024]u8 = undefined;
     var stdin_reader = std.Io.File.stdin().reader(init.io, &read_buf);
@@ -33,23 +31,13 @@ pub fn main(init: std.process.Init) !void {
     while (try stdin.takeDelimiter('\n')) |input| {
         var parser = std.mem.splitScalar(u8, input, ' ');
         const command = parser.first();
-        if (std.meta.stringToEnum(enum { connect, pair, info }, command)) |cmd| {
+        if (std.meta.stringToEnum(Command, command)) |cmd| {
             switch (cmd) {
-                .connect => {
-                    const endpoint_id = parser.next() orelse &core.router.endpoint.state.online.id;
-                    connect(endpoint_id, init.gpa) catch {};
-                },
                 .pair => {
-                    const endpoint_id = parser.next() orelse "1914aeae12e05b2e0b0bd1a81e17caa95795ed76bbd4bddedb5e801f96da42c3";
-                    pair(&core.router.endpoint, endpoint_id, init.gpa) catch |err| log.err("Pair err: {t}", .{err});
+                    const endpoint_id_hex = parser.next() orelse "1914aeae12e05b2e0b0bd1a81e17caa95795ed76bbd4bddedb5e801f96da42c3";
+                    pair(&core.router, endpoint_id_hex) catch |err| log.err("Pair err: {t}", .{err});
                 },
-                .info => {
-                    if (core.router.endpoint.checkOnline(.{})) {
-                        try stdout.print("Online\n", .{});
-                    } else |err| {
-                        try stdout.print("Offline! {t}\n", .{err});
-                    }
-                },
+                .info => printInfo(core, stdout, init.arena.allocator()) catch {},
             }
         } else {
             try stdout.print("Unknown command\n", .{});
@@ -59,40 +47,27 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-fn connect(endpoint_id: []const u8, gpa: std.mem.Allocator) !void {
-    const public_key: iroh.PublicKey = try .fromHex(endpoint_id);
-    defer public_key.deinit();
-
-    const addr: iroh.EndpointAddr = .fromPublicKey(&public_key);
-    defer addr.deinit();
-
-    var endpoint: iroh.Endpoint = try .init(.{ .gpa = gpa, .alpn = &ilm.p2p.ALPN });
-    defer endpoint.deinit();
-
-    var conn = try endpoint.connect(.{ .addr = &addr });
-    defer conn.wait_close() catch {};
-    log.info("Connected! Creating send stream...", .{});
-
-    var streams = try conn.openBiStream();
-    defer {
-        streams.send.finish();
-        streams.recv.deinit();
+fn printInfo(core: *Core, stdout: *std.Io.Writer, arena: std.mem.Allocator) !void {
+    try stdout.print("Router status: ", .{});
+    if (core.router.endpoint.checkOnline(.{})) {
+        try stdout.print("Online\n", .{});
+    } else |err| {
+        try stdout.print("Offline! {t}\n", .{err});
     }
-    log.info("Sending message...", .{});
 
-    try streams.send.write("Hallo lol", 5000);
-    log.info("Message send! Closing.", .{});
-
-    try streams.send.write("DONE", 5000);
+    try stdout.print("Peers:\n", .{});
+    const peers = try ilm.p2p.peer.getAll(&core.db, arena);
+    for (peers) |peer| {
+        const peer_conn = core.router.connections.peers.getPtr(peer.id);
+        try stdout.print("  - {s} {s}: {x} \n", .{ if (peer_conn == null) "○" else "●", peer.name, peer.id.bytes });
+    }
 }
 
-fn pair(endpoint: *const iroh.Endpoint, endpoint_id: []const u8, gpa: std.mem.Allocator) !void {
-    _ = gpa; // autofix
-    const public_key: iroh.PublicKey = try .fromHex(endpoint_id);
-    defer public_key.deinit();
-
-    const addr: iroh.EndpointAddr = .fromPublicKey(&public_key);
-    defer addr.deinit();
-
-    _ = try ilm.p2p.protocols.PairProtocol.request(endpoint, endpoint_id);
+fn pair(router: *ilm.p2p.Router, endpoint_id_hex: []const u8) !void {
+    var endpoint_id_bytes: [32]u8 = undefined;
+    _ = try std.fmt.hexToBytes(&endpoint_id_bytes, endpoint_id_hex);
+    const peer_id: ilm.p2p.Peer.Id = .{ .bytes = endpoint_id_bytes };
+    var recv_buf: [512]u8 = undefined;
+    const name = try ilm.p2p.protocols.PairProtocol.request(router, peer_id, &recv_buf);
+    _ = name;
 }

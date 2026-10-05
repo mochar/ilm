@@ -63,18 +63,20 @@ pub const PairProtocol = struct {
     };
 
     pub const PairError = error{
-        NoConnection,
         Database,
     } || Allocator.Error || iroh.EndpointError || std.Io.Cancelable;
 
+    pub const PairAcceptError = error{NotConnected} || PairError;
+
     /// Called from the server side to handle a pair request from a client.
+    ///
     /// This is called after only the protocol tag has been consumed
-    /// from the recv stream.
+    /// from the recv stream. This transfers ownership of BiStream.
     pub fn accept(
         router: *p2p.Router,
         streams_: iroh.BiStream,
         peer_id: Peer.Id,
-    ) PairError!void {
+    ) PairAcceptError!void {
         const core = router.getCore();
         const io = core.io;
 
@@ -85,13 +87,13 @@ pub const PairProtocol = struct {
         var streams = streams_; // get a nonconst copy
         defer streams.deinit();
 
-        var peer = router.connections.peers.getPtr(peer_id) orelse return error.NoConnection;
+        var peer = router.connections.peers.getPtr(peer_id) orelse return error.NotConnected;
         var recv_buf: [512]u8 = undefined;
 
         var accepted: bool = undefined;
         var name: []const u8 = undefined;
 
-        if (p2p.peer.getById(&router.db, arena, &peer_id) catch null) |known_peer| {
+        if (p2p.peer.getById(&router.db, arena, &peer_id) catch return error.Database) |known_peer| {
             log.info("Peer already known, accepting.", .{});
             accepted = true;
             name = known_peer.name;
@@ -121,7 +123,7 @@ pub const PairProtocol = struct {
         // Accept: 1-byte + name, end stream
         // Reject: 0-byte, end stream
         const response: []const u8 = if (accepted)
-            try std.mem.concat(arena, u8, &.{&.{0}, router.name})
+            try std.mem.concat(arena, u8, &.{ &.{0}, router.name })
         else
             &.{1};
         streams.send.write(response, 5000) catch |err| {
@@ -135,27 +137,44 @@ pub const PairProtocol = struct {
         }
     }
 
+    pub const PairRequestError = error{
+        KnownPeer,
+        InvalidResponse,
+        Rejected,
+    } || PairError;
+
     /// Request pairing with a peer. Blocks until done or error.
     ///
     /// If the peer accepts this will return the name returned by the
     /// pair, which the caller is responsible for deallocating.
-    pub fn request(endpoint: *const iroh.Endpoint, peer_endpoint_id: []const u8) ![:0]u8 {
-        log.info("Trying to connect...", .{});
-        var conn = try endpoint.connect(.{ .id = peer_endpoint_id });
-        defer conn.close();
-        // const endpoint_id = endpoint.state.online.addr.id.bytes();
+    pub fn request(
+        router: *p2p.Router,
+        peer_id: Peer.Id,
+        recv_buf: []u8,
+    ) PairRequestError![]const u8 {
+        if (p2p.peer.exists(&router.db, &peer_id) catch false) {
+            return error.KnownPeer;
+        }
 
-        log.info("Connected! Creating streams...", .{});
+        const core = router.getCore();
+
+        var arena_alloc: std.heap.ArenaAllocator = .init(core.gpa);
+        defer arena_alloc.deinit();
+        const arena = arena_alloc.allocator();
+
+        log.info("Requesting pair with {x}", .{peer_id.bytes});
+        var conn = try router.endpoint.connect(.{ .id = &peer_id.bytes });
+        errdefer conn.close(); // Keep the connection if pair succesful
         var streams = try conn.openBiStream();
 
         const proto_byte: u8 = @intFromEnum(ProtocolTag.pair);
-        const pair_bytes = [1]u8{proto_byte} ++ "Mamma";
+        const pair_bytes = try std.mem.concat(arena, u8, &.{ &.{proto_byte}, router.name });
         try streams.send.write(pair_bytes, 5000);
         streams.send.finish();
 
-        var recv_buf: [512]u8 = undefined;
-        // const resp = try streams.recv.readToEnd(&recv_buf, 30_000);
-        const resp = try streams.recv.readToEnd(&recv_buf, 1_000_000);
+        // Expect to receive a 1-byte for a reject, or a 0-byte plus
+        // optional name bytes for accept.
+        const resp = try streams.recv.readToEnd(recv_buf, 1_000_000);
         streams.recv.deinit();
 
         if (resp.len == 0) return error.InvalidResponse;
@@ -164,12 +183,21 @@ pub const PairProtocol = struct {
             0 => {
                 const name = resp[1..];
                 log.info("Pair accepted with name: '{s}'", .{name});
+                p2p.peer.add(core, name, peer_id) catch |err| {
+                    log.warn("Failed to save peer in db: {t}", .{err});
+                };
+                router.publishEvent(.{ .pair_established = peer_id });
+                return name;
             },
-            1 => log.info("Pair rejected", .{}),
-            else => log.info("Invalid pair response", .{}),
+            1 => {
+                log.err("Pair request rejected", .{});
+                return error.Rejected;
+            },
+            else => {
+                log.err("Invalid pair response", .{});
+                return error.InvalidResponse;
+            },
         }
-
-        return @ptrCast(@constCast("wow"));
     }
 };
 

@@ -9,7 +9,7 @@ const protocols = p2p.protocols;
 const Peer = p2p.peer.Peer;
 const Self = @This();
 
-const log = std.log.scoped(.p2p);
+const log = std.log.scoped(.p2p_router);
 
 pub const ALPN: iroh.Alpn = .{ .alpn = "/ilm/1" };
 
@@ -36,6 +36,7 @@ pub const Event = union(enum) {
     stream_received: Peer.Id,
     stream_closed: Peer.Id,
     pair_request: *protocols.PairProtocol.IncomingRequest,
+    pair_established: Peer.Id,
     // own message buf to not deal with allocation
     message: struct {
         buf: [512]u8,

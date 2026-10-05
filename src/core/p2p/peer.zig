@@ -13,9 +13,17 @@ const log = std.log.scoped(.p2p_peer);
 pub const Peer = struct {
     /// Endpoint/public key ID
     pub const Id = struct {
-        bytes: [32]u8,
-
+        pub const Bytes = [32]u8;
         pub const Short = [7]u8;
+
+        bytes: Bytes,
+
+        pub fn fromSlice(slice: []const u8) error{InvalidSize}!Id {
+            if (slice.len != 32) return error.InvalidSize;
+            var bytes: [32]u8 = undefined;
+            @memcpy(&bytes, slice);
+            return .{ .bytes = bytes };
+        }
 
         pub fn short(self: *const Id) Short {
             return std.mem.bytesToValue(Short, &self.bytes);
@@ -30,9 +38,7 @@ pub const Peer = struct {
         }
 
         pub fn readField(_: Allocator, blob: BaseType) !Id {
-            var bytes: [32]u8 = undefined;
-            @memcpy(&bytes, blob.data);
-            return .{ .bytes = bytes };
+            return try .fromSlice(blob.data);
         }
 
         pub fn asBlob(self: *const Id) sqlite.Blob {
