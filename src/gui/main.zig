@@ -6,6 +6,8 @@ const sdl = @import("sdl-backend");
 const assets = @import("assets");
 const ilm = @import("ilm");
 const Core = ilm.Core;
+
+const themes = @import("themes.zig");
 const androidLogFn = @import("android.zig").logFn;
 const ContentView = @import("ContentView.zig");
 const SetupView = @import("SetupView.zig");
@@ -75,10 +77,14 @@ fn switchView(new_view: View) void {
 // Runs before the first frame, after backend and dvui.Window.init()
 // - runs between win.begin()/win.end()
 pub fn appInit(win: *dvui.Window) !void {
-    _ = win;
     // win.backend.impl.touch_mouse_events = true;
     // _ = sdl.c.SDL_SetHint(sdl.c.SDL_HINT_TOUCH_MOUSE_EVENTS, "1");
     // _ = sdl.c.SDL_SetHint(sdl.c.SDL_HINT_MOUSE_TOUCH_EVENTS, "1");
+
+    // TODO Find out how to find out if dark or light mode
+    if (std.mem.eql(u8, win.theme.name, "Adwaita Light")) {
+        win.themeSet(themes.Papyrus.light);
+    }
 
     try dvui.addFont("dejavu sans", assets.fonts.dejavu_sans, null);
 
