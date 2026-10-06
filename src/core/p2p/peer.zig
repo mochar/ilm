@@ -14,7 +14,7 @@ pub const Peer = struct {
     /// Endpoint/public key ID
     pub const Id = struct {
         pub const Bytes = [32]u8;
-        pub const Short = [7]u8;
+        pub const Short = [4]u8;
 
         bytes: Bytes,
 

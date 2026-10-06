@@ -337,14 +337,21 @@ pub const Endpoint = struct {
         }
     }
 
+    /// Check if we are online, and if self.state is .bound, set it
+    /// to .online. Note that this will error if self.state is .closed.
+    /// A new instance of Endpoint must be made instead.
     pub fn ensureOnline(self: *Endpoint) EndpointError!void {
-        self.checkOnline(.{}) catch |err| {
+        // TODO We need more info from iroh-c-ffi to know why we get an error.
+        self.checkOnline(2000) catch |err| {
             switch (self.state) {
-                .online => |state| state.deinit(self.gpa),
+                .online => |online| online.deinit(self.gpa),
                 else => {},
             }
+            self.state = .bound;
             return err;
         };
+
+        if (self.state == .online) return;
 
         // Get our address
         var addr_c = c.endpoint_addr_default();
@@ -352,12 +359,12 @@ pub const Endpoint = struct {
         if (checkEndpointResult(addr_res)) |err| return err;
         const addr = EndpointAddr.fromAddr(addr_c);
         const id = addr.id.toHex();
+
         // TODO Can use addr_c.relay_urls.len to ensure not null
-        const relay_url = if (addr.relayUrlNthAlloc(self.gpa, 0)) |url|
-            url orelse unreachable
-        else |_|
-            @panic("OOM");
+        const relay_url = (addr.relayUrlNthAlloc(self.gpa, 0) catch @panic("OOM")) orelse unreachable;
+
         const ticket = addr.ticketAlloc(self.gpa) catch @panic("OOM");
+
         self.state = .{ .online = .{
             .addr = addr,
             .id = id,
@@ -391,8 +398,8 @@ pub const Endpoint = struct {
     /// direct address.
     ///
     /// Will block at most `timeout` milliseconds.
-    pub fn checkOnline(self: *const Endpoint, opts: struct { timeout_ms: u64 = 5000 }) EndpointError!void {
-        const errno = c.endpoint_online(&self.ptr, opts.timeout_ms);
+    pub fn checkOnline(self: *const Endpoint, timeout_ms: u64) EndpointError!void {
+        const errno = c.endpoint_online(&self.ptr, timeout_ms);
         if (checkEndpointResult(errno)) |err| {
             log.err("Failed to get a home relay: {t}", .{err});
             return err;
@@ -430,6 +437,7 @@ pub const Endpoint = struct {
     }
 
     pub fn connect(self: *const Endpoint, ep: ConnectionTarget) EndpointError!Connection {
+        // TODO Add connect_timeout to iroh-c-ffi. See iroh's connect_with_options
         const addr = ep.copyAddr() catch return error.AddrError;
         const conn = Connection.default(self.alpn, addr);
         const alpn_slice = self.alpn.slice();

@@ -1,4 +1,5 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const sqlite = @import("sqlite");
 const iroh = @import("iroh");
 const Core = @import("../Core.zig");
@@ -16,13 +17,25 @@ pub const ALPN: iroh.Alpn = .{ .alpn = "/ilm/1" };
 pub const ConnectedPeer = struct {
     conn: iroh.Connection,
     id: Peer.Id,
+    /// Use this to cancel the conn loop and all its bistream loops
+    /// TODO This doesnt work at all..
+    io_group: std.Io.Group,
     // sessions: std.ArrayList(protocols.ProtocolSession) = .empty,
     /// Populated if peer is waiting on a pair request
     pair_request: ?*protocols.PairProtocol.IncomingRequest = null,
 
     pub fn fromConnection(conn: iroh.Connection) ConnectedPeer {
         const id = conn.addr.id.copyBytes();
-        return .{ .conn = conn, .id = .{ .bytes = id } };
+        return .{
+            .conn = conn,
+            .id = .{ .bytes = id },
+            .io_group = .init,
+        };
+    }
+
+    pub fn close(self: *ConnectedPeer, io: std.Io) void {
+        self.conn.close();
+        self.io_group.cancel(io);
     }
 };
 
@@ -36,7 +49,15 @@ pub const Event = union(enum) {
     stream_received: Peer.Id,
     stream_closed: Peer.Id,
     pair_request: *protocols.PairProtocol.IncomingRequest,
+    /// A new pair was established.
+    /// TODO Add if we initiated or accepted the pair.
     pair_established: Peer.Id,
+    /// Our pair request failed, due to error or rejection.
+    /// Not called when we reject incoming pair requests.
+    pair_failed: struct {
+        peer_id: Peer.Id,
+        err: protocols.PairProtocol.PairRequestError,
+    },
     // own message buf to not deal with allocation
     message: struct {
         buf: [512]u8,
@@ -61,14 +82,16 @@ io: std.Io,
 db: database.Db,
 
 endpoint: iroh.Endpoint,
+
 /// Gets consumed when creating an endpoint, so we .dupe() this one.
 secret_key: iroh.SecretKey,
-name: []const u8 = "Ilm enjoyer",
+name: []const u8,
 
 io_group: std.Io.Group,
 
 connections: struct {
     mutex: std.Io.Mutex = .init,
+    // TODO Use Peer.Id.Short as key
     peers: std.AutoHashMap(Peer.Id, ConnectedPeer),
 },
 
@@ -96,6 +119,7 @@ pub fn init(gpa: std.mem.Allocator, io: std.Io, db_path: [:0]const u8, secret_ke
         .io_group = .init,
         .connections = .{ .peers = .init(gpa) },
         .event_triggers = .empty,
+        .name = try gpa.dupe(u8, "Ilm enjoyer"),
     };
 }
 
@@ -114,6 +138,7 @@ pub fn deinit(self: *Self) void {
 
     self.event_triggers.deinit(self.gpa);
     self.db.deinit();
+    self.gpa.free(self.name);
 }
 
 pub fn getCore(self: *const Self) *Core {
@@ -130,14 +155,50 @@ pub fn publishEvent(self: *Self, event: Event) void {
     }
 }
 
-pub fn connectToEndpoint(self: *Self, target: iroh.ConnectionTarget) !Peer.Id {
-    // TODO In thread.
-    const conn = self.endpoint.connect(target) catch |err| {
-        log.err("Failed establish connection: {t}", .{err});
-        return err;
-    };
-    try self.handleConn(conn); // closes conn on error
-    return .{ .bytes = conn.addr.id.copyBytes() };
+pub fn setName(self: *Self, name: []const u8) !void {
+    self.name = try self.gpa.dupe(u8, name);
+}
+
+pub fn sendPairRequest(self: *Self, peer_id: Peer.Id) void {
+    const request = struct {
+        pub fn f(router: *Self, peer: Peer.Id) std.Io.Cancelable!void {
+            var recv_buf: [512]u8 = undefined;
+            _ = p2p.protocols.PairProtocol.request(router, peer, &recv_buf) catch |err| switch (err) {
+                error.Canceled => |e| return e,
+                else => |e| log.err("Pair request with {x} failed: {t}", .{ peer.bytes[0..4], e }),
+            };
+        }
+    }.f;
+    self.io_group.async(self.io, request, .{ self, peer_id });
+}
+
+pub fn connectToEndpoint(self: *Self, peer_id: Peer.Id) !void {
+    // We dont check here if peer is already in self.connections because
+    // that might be false, and while we are trying to connect, this peer
+    // might have in the meanwhile connected, leading to double connect.
+    // Instead this logic is handled in handleConn.
+    log.info("Attempting connection to peer {x}...", .{peer_id.bytes[0..4]});
+    const conn = try self.endpoint.connect(.{ .id = &peer_id.bytes });
+    try self.handleConn(conn, true); // closes conn on error
+}
+
+pub fn closeConnection(
+    self: *Self,
+    opts: struct {
+        peer_id: Peer.Id,
+        conn: ?*iroh.Connection = null,
+    },
+) void {
+    self.connections.mutex.lockUncancelable(self.io);
+    defer self.connections.mutex.unlock(self.io);
+    if (self.connections.peers.getPtr(opts.peer_id)) |conn_peer| {
+        if (opts.conn == null or opts.conn.?.ptr == conn_peer.conn.ptr) {
+            conn_peer.close(self.io);
+            _ = self.connections.peers.remove(opts.peer_id);
+            log.info("Connection dropped to {x}", .{opts.peer_id.bytes[0..4]});
+            self.publishEvent(.{ .disconnected = opts.peer_id });
+        }
+    }
 }
 
 /// Try to establish connections with all known peers.
@@ -151,11 +212,10 @@ fn connectToPeers(self: *Self) !void {
         return err;
     };
     for (peers) |p| {
-        _ = self.connectToEndpoint(.{ .id = &p.id.bytes }) catch |err| {
-            log.err("Failed to connect to peer {s}: {t}", .{ p.name, err });
+        _ = self.connectToEndpoint(p.id) catch |err| {
+            log.warn("Failed to connect to peer {s}: {t}", .{ p.name, err });
             continue;
         };
-        log.info("Connect to peer {s}", .{p.name});
     }
 }
 
@@ -167,6 +227,7 @@ pub fn start(self: *Self) !void {
             .secret_key = try self.secret_key.dupe(),
         });
     }
+
     try self.endpoint.ensureOnline();
     log.info("Online!", .{});
     self.endpoint.logAddr();
@@ -187,19 +248,15 @@ pub fn stop(self: *Self) !void {
     // safely.
     self.endpoint.close();
 
-    // Deinit and remove connections. No need to close them, as
-    // endpoint.close does that for us.
+    // Connect loops will cleanup and their connections.
+    self.io_group.cancel(self.io);
+
+    // Clean up connection map (closing is already done).
     {
         self.connections.mutex.lockUncancelable(self.io);
         defer self.connections.mutex.unlock(self.io);
-        var iter = self.connections.peers.valueIterator();
-        while (iter.next()) |peer| {
-            peer.conn.deinit();
-        }
         self.connections.peers.clearRetainingCapacity();
     }
-
-    self.io_group.cancel(self.io);
 }
 
 // TODO Im not sure if it should return Canceled error, group.async seems to suggest so.
@@ -224,70 +281,66 @@ fn acceptLoop(self: *Self) error{Canceled}!void {
                 continue;
             }
         };
-        log.info("Received connection!", .{});
-        self.handleConn(conn) catch {};
+
+        self.handleConn(conn, false) catch {};
     }
 }
 
 /// Register new connection and spawn its connLoop thread
-fn handleConn(self: *Self, conn: iroh.Connection) !void {
+pub fn handleConn(self: *Self, conn: iroh.Connection, initiated: bool) Allocator.Error!void {
+    // If we already have a connection, we remove that one and
+    // replace it with this new one, as the peer might have
+    // lost theirs.
+    self.closeConnection(.{ .peer_id = .{ .bytes = conn.addr.id.copyBytes() } });
+
     errdefer conn.close();
-    const peer: ConnectedPeer = .fromConnection(conn);
 
-    self.connections.mutex.lockUncancelable(self.io);
-    defer self.connections.mutex.unlock(self.io);
-    self.connections.peers.put(peer.id, peer) catch |err| {
-        log.err("Failed to store connection: {t}", .{err});
-        return err;
-    };
-    errdefer _ = self.connections.peers.remove(peer.id);
+    var conn_peer: ConnectedPeer = .fromConnection(conn);
 
-    self.io_group.async(self.io, connLoop, .{ self, peer.id });
+    {
+        self.connections.mutex.lockUncancelable(self.io);
+        defer self.connections.mutex.unlock(self.io);
+        self.connections.peers.put(conn_peer.id, conn_peer) catch |err| {
+            log.err("Failed to store connection: {t}", .{err});
+            return err;
+        };
+    }
+
+    log.info(
+        "{s} connection to peer {x}",
+        .{ if (initiated) "Initiated" else "Accepted", conn_peer.id.bytes[0..4] },
+    );
+    self.publishEvent(.{ .connected = .{ .peer_id = conn_peer.id, .initiated = initiated } });
+    // self.io_group.async(self.io, connLoop, .{ self, conn_peer.id });
+    conn_peer.io_group.async(self.io, connLoop, .{ self, conn_peer.id });
 }
 
 /// Listens for new bi streams and spawns new streamLoop thread when
 /// one has been established.
-fn connLoop(self: *Self, peer_id: Peer.Id) void {
-    self.publishEvent(.{ .connected = .{ .peer_id = peer_id, .initiated = false } });
-
-    self.connections.mutex.lockUncancelable(self.io);
-    const peer = self.connections.peers.get(peer_id) orelse {
-        self.connections.mutex.unlock(self.io);
-        unreachable;
-    };
-    var conn = peer.conn;
-    self.connections.mutex.unlock(self.io);
-
-    defer {
-        log.info("Connection dropped to {x}", .{peer_id.bytes});
-        conn.close();
+fn connLoop(self: *Self, peer_id: Peer.Id) error{Canceled}!void {
+    var conn_peer: ConnectedPeer = blk: {
         self.connections.mutex.lockUncancelable(self.io);
-        _ = self.connections.peers.remove(peer_id);
-        self.connections.mutex.unlock(self.io);
-        self.publishEvent(.{ .disconnected = peer_id });
-    }
+        defer self.connections.mutex.unlock(self.io);
+        break :blk self.connections.peers.get(peer_id) orelse unreachable;
+    };
+    var conn = &conn_peer.conn;
 
-    const total_attempts = 3;
-    var attempt: usize = 1;
-    receive: while (true) {
-        log.info("Waiting for stream from peer {x}...", .{peer_id.bytes});
+    // We specify the connection so that we dont close a newer connection.
+    defer self.closeConnection(.{ .peer_id = peer_id, .conn = conn });
+
+    while (true) {
+        log.info("Waiting for stream from peer {x}...", .{peer_id.bytes[0..4]});
 
         const streams = conn.acceptBiStream() catch |err| {
-            if (attempt == total_attempts) {
-                log.err("Failed to accept stream: {t}. Quitting at attempt {d}", .{ err, attempt });
-                return;
-            } else {
-                log.err("Failed to accept stream: {t}. Trying again.", .{err});
-                attempt += 1;
-                continue :receive;
-            }
+            log.err("Failed to accept stream from {x}: {t}. Quitting connLoop.", .{ peer_id.bytes[0..4], err });
+            return error.Canceled;
         };
 
         log.info("Received stream!", .{});
         self.publishEvent(.{ .stream_received = peer_id });
-        attempt = 1;
 
-        self.io_group.async(self.io, streamLoop, .{ self, peer_id, streams });
+        // self.io_group.async(self.io, streamLoop, .{ self, peer_id, streams });
+        conn_peer.io_group.async(self.io, streamLoop, .{ self, peer_id, streams });
     }
 }
 

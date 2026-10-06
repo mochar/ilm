@@ -6,7 +6,7 @@ const iroh = @import("iroh");
 
 const log = std.log.scoped(.cli);
 
-const Command = enum { pair, info };
+const Command = enum { pair, exit, router };
 
 pub fn main(init: std.process.Init) !void {
     const data_path = (try known_folders.getPath(init.io, init.gpa, init.environ_map, .data)) orelse return error.FolderNotFound;
@@ -33,11 +33,22 @@ pub fn main(init: std.process.Init) !void {
         const command = parser.first();
         if (std.meta.stringToEnum(Command, command)) |cmd| {
             switch (cmd) {
+                .exit => {
+                    core.destroy();
+                    return;
+                },
+                .router => {
+                    const subcommand = std.meta.stringToEnum(enum { info, start, stop }, parser.next() orelse "info") orelse .info;
+                    switch (subcommand) {
+                        .info => printInfo(core, stdout, init.arena.allocator()) catch {},
+                        .start => core.router.start() catch {},
+                        .stop => core.router.stop() catch {},
+                    }
+                },
                 .pair => {
                     const endpoint_id_hex = parser.next() orelse "1914aeae12e05b2e0b0bd1a81e17caa95795ed76bbd4bddedb5e801f96da42c3";
                     pair(&core.router, endpoint_id_hex) catch |err| log.err("Pair err: {t}", .{err});
                 },
-                .info => printInfo(core, stdout, init.arena.allocator()) catch {},
             }
         } else {
             try stdout.print("Unknown command\n", .{});
@@ -48,18 +59,21 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn printInfo(core: *Core, stdout: *std.Io.Writer, arena: std.mem.Allocator) !void {
-    try stdout.print("Router status: ", .{});
-    if (core.router.endpoint.checkOnline(.{})) {
-        try stdout.print("Online\n", .{});
-    } else |err| {
-        try stdout.print("Offline! {t}\n", .{err});
+    try stdout.print("Router status: {t}\n", .{core.router.endpoint.state});
+
+    {
+        try stdout.print("Connections:\n", .{});
+        var iter = core.router.connections.peers.valueIterator();
+        while (iter.next()) |conn_peer| {
+            try stdout.print("  - {x}\n", .{conn_peer.id.bytes});
+        }
     }
 
     try stdout.print("Peers:\n", .{});
     const peers = try ilm.p2p.peer.getAll(&core.db, arena);
     for (peers) |peer| {
         const peer_conn = core.router.connections.peers.getPtr(peer.id);
-        try stdout.print("  - {s} {s}: {x} \n", .{ if (peer_conn == null) "○" else "●", peer.name, peer.id.bytes });
+        try stdout.print("  - {s} {s} ({x}) \n", .{ if (peer_conn == null) "○" else "●", peer.name, peer.id.bytes[0..4] });
     }
 }
 

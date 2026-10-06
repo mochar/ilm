@@ -83,7 +83,7 @@ pub fn render(self: *Self) void {
         defer hbox.deinit();
 
         dvui.labelNoFmt(@src(), "●", .{}, .{
-            .color_text = .{ .color = if (peer_conn != null) .lime else .gray },
+            .color_text = .{ .color = if (peer_conn != null) .fromHex("#42c52c") else .gray },
             .font = .find(.{ .family = "dejavu sans" }),
             .padding = .{ .y = 5, .x = 4 },
         });
@@ -103,13 +103,13 @@ pub fn render(self: *Self) void {
         defer hbox.deinit();
 
         if (peer_conn == null and dvui.button(@src(), "Connect", .{}, .{})) {
-            _ = self.core.router.connectToEndpoint(.{ .id = &self.peer.id.bytes}) catch |err| {
+            _ = self.core.router.connectToEndpoint(self.peer.id) catch |err| {
                 utils.toastErr(@src(), err, "Failed to connect", .{});
             };
         }
 
         if (dvui.button(@src(), "Delete", .{}, .{})) {
-            ilm.p2p.peer.delete(self.core, self.peer.id) catch |err| {
+            self.core.deletePeerAndCloseConnection(self.peer.id) catch |err| {
                 utils.toastErr(@src(), err, "Failed to delete peer", .{});
             };
         }

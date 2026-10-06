@@ -19,15 +19,27 @@ core: *Core,
 db_writes: *DbWrites,
 peer_views: std.AutoArrayHashMapUnmanaged(Peer.Id, PeerView),
 
+requesting_pair: *std.atomic.Value(bool),
+
+name_edit: struct {
+    editing: bool = false,
+    name: std.ArrayList(u8) = .empty,
+} = .{},
+
 pub fn init(core: *Core) !Self {
     const db_writes = try core.gpa.create(DbWrites);
     db_writes.*.queue = .init(&db_writes.buf);
     try core.db_writer.subscribe(.{ .cb = dbWriteCallback, .ctx = @ptrCast(db_writes) });
 
+    const requesting_pair = try core.gpa.create(std.atomic.Value(bool));
+    requesting_pair.* = .init(false);
+    try core.router.addEventTrigger(.{ .ctx = @ptrCast(requesting_pair), .triggerFn = routerEventCallback });
+
     var self: Self = .{
         .core = core,
         .db_writes = db_writes,
         .peer_views = .empty,
+        .requesting_pair = requesting_pair,
     };
     errdefer self.deinit();
 
@@ -45,8 +57,22 @@ pub fn deinit(self: *Self) void {
     self.db_writes.queue.close(dvui.io);
     self.core.gpa.destroy(self.db_writes);
 
+    self.core.gpa.destroy(self.requesting_pair);
+
+    self.name_edit.name.deinit(self.core.gpa);
+
     for (self.peer_views.values()) |*view| view.deinit();
     self.peer_views.deinit(self.core.gpa);
+}
+
+fn routerEventCallback(requesting_pair_opaque: ?*anyopaque, event: ilm.p2p.Router.Event) void {
+    const requesting_pair: *std.atomic.Value(bool) = @ptrCast(@alignCast(requesting_pair_opaque.?));
+    switch (event) {
+        .pair_established, .pair_failed => {
+            _ = requesting_pair.swap(false, .acq_rel);
+        },
+        else => {},
+    }
 }
 
 fn dbWriteCallback(writes_opaque: *anyopaque, result: DbWriter.WriteResult) void {
@@ -121,10 +147,47 @@ fn renderSidebar(self: *Self, is_wide: bool) void {
     });
     defer box.deinit();
 
-    dvui.labelNoFmt(@src(), self.core.router.name, .{}, .{
-        .expand = .horizontal,
-        .font = .theme(.title),
-    });
+    // Name
+    if (self.name_edit.editing) {
+        var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{});
+        defer hbox.deinit();
+
+        var edit_entry = dvui.textEntry(
+            @src(),
+            .{
+                .placeholder = "Name",
+                .text = .{ .array_list = .{
+                    .allocator = self.core.gpa,
+                    .backing = &self.name_edit.name,
+                } },
+            },
+            .{ .expand = .horizontal },
+        );
+        const enter_pressed = edit_entry.enter_pressed;
+        edit_entry.deinit();
+
+        const ok_pressed = dvui.buttonIcon(@src(), "ok", dvui.entypo.check, .{}, .{}, .{
+            .gravity_y = 0.5,
+            .gravity_x = 1.0,
+        });
+
+        if (enter_pressed or ok_pressed) {
+            if (self.name_edit.name.items.len > 0) {
+                self.core.router.setName(self.name_edit.name.items) catch {};
+            }
+            self.name_edit.editing = false;
+        }
+    } else {
+        const clicked = dvui.labelClick(@src(), "{s}", .{self.core.router.name}, .{}, .{
+            .expand = .horizontal,
+            .font = dvui.themeGet().font_title.larger(2),
+        });
+        if (clicked) {
+            self.name_edit.name.clearRetainingCapacity();
+            self.name_edit.name.appendSlice(self.core.gpa, self.core.router.name) catch {};
+            self.name_edit.editing = true;
+        }
+    }
 
     var tl = dvui.textLayout(@src(), .{}, .{ .expand = .horizontal });
     defer tl.deinit();
@@ -174,6 +237,8 @@ fn renderContent(self: *Self) void {
         var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
         defer hbox.deinit();
 
+        const requesting = self.requesting_pair.load(.acquire);
+
         var entry = dvui.textEntry(@src(), .{ .placeholder = "Peer ID or ticket" }, .{ .expand = .horizontal });
         const enter_pressed = entry.enter_pressed;
         const input = entry.getText();
@@ -185,14 +250,26 @@ fn renderContent(self: *Self) void {
             dvui.toast(@src(), .{ .message = "TODO qr code" });
         }
 
-        if (dvui.buttonLabelAndIcon(@src(), .{ .label = " Pair", .tvg_bytes = dvui.entypo.link, .icon_first = true, .button_opts = .{ .grayed = !entry_valid } }, .{ .gravity_y = 0.5 }) or enter_pressed) {
-            log.info("Input: {s}", .{input});
-            if (entry_valid) {
+        const btn_pressed = dvui.buttonLabelAndIcon(
+            @src(),
+            .{
+                .label = " Pair",
+                .tvg_bytes = dvui.entypo.link,
+                .icon_first = true,
+                .button_opts = .{ .grayed = !entry_valid or requesting },
+            },
+            .{ .gravity_y = 0.5 },
+        );
+
+        if (btn_pressed or enter_pressed) {
+            if (requesting) {
+                dvui.toast(@src(), .{ .message = "Pair request already in progress" });
+            } else if (!entry_valid) {
+                dvui.toast(@src(), .{ .message = "Peer ID must be 64 characters long" });
+            } else {
                 self.pair(input) catch |err| {
                     utils.toastErr(@src(), err, "Failed to pair", .{});
                 };
-            } else {
-                dvui.toast(@src(), .{ .message = "Peer ID must be 64 characters long" });
             }
         }
     }
@@ -232,7 +309,11 @@ fn renderPairingPeer(peer: *ilm.p2p.Router.ConnectedPeer) !void {
     }
 }
 
-fn pair(self: *Self, endpoint_id: []const u8) !void {
-    _ = try self.core.router.connectToEndpoint(.{ .id = endpoint_id });
-    // ilm.peer.add(self.core, , name: []const u8)
+fn pair(self: *Self, endpoint_id_hex: []const u8) !void {
+    var endpoint_id_bytes: [32]u8 = undefined;
+    _ = try std.fmt.hexToBytes(&endpoint_id_bytes, endpoint_id_hex);
+    const peer_id: ilm.p2p.Peer.Id = .{ .bytes = endpoint_id_bytes };
+
+    _ = self.requesting_pair.swap(true, .acq_rel);
+    self.core.router.sendPairRequest(peer_id);
 }

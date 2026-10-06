@@ -93,7 +93,9 @@ pub const PairProtocol = struct {
         var accepted: bool = undefined;
         var name: []const u8 = undefined;
 
-        if (p2p.peer.getById(&router.db, arena, &peer_id) catch return error.Database) |known_peer| {
+        const stored_peer = p2p.peer.getById(&router.db, arena, &peer_id) catch return error.Database;
+
+        if (stored_peer) |known_peer| {
             log.info("Peer already known, accepting.", .{});
             accepted = true;
             name = known_peer.name;
@@ -132,7 +134,7 @@ pub const PairProtocol = struct {
         };
         streams.send.finish();
 
-        if (accepted) {
+        if (accepted and stored_peer == null) {
             p2p.peer.add(core, name, peer_id) catch return error.Database;
         }
     }
@@ -152,6 +154,20 @@ pub const PairProtocol = struct {
         peer_id: Peer.Id,
         recv_buf: []u8,
     ) PairRequestError![]const u8 {
+        if (requestInner(router, peer_id, recv_buf)) |name| {
+            router.publishEvent(.{ .pair_established = peer_id });
+            return name;
+        } else |err| {
+            router.publishEvent(.{ .pair_failed = .{ .peer_id = peer_id, .err = err } });
+            return err;
+        }
+    }
+
+    fn requestInner(
+        router: *p2p.Router,
+        peer_id: Peer.Id,
+        recv_buf: []u8,
+    ) PairRequestError![]const u8 {
         if (p2p.peer.exists(&router.db, &peer_id) catch false) {
             return error.KnownPeer;
         }
@@ -163,8 +179,14 @@ pub const PairProtocol = struct {
         const arena = arena_alloc.allocator();
 
         log.info("Requesting pair with {x}", .{peer_id.bytes});
+
+        // First establish connection in the router.
+        // Connection is always closed on error, so we assume this peer is
+        // not already connected to the router. On success, the connection
+        // is passed to the router to keep around.
+        // if (router.connections.peers.contains(peer_id)) {}
         var conn = try router.endpoint.connect(.{ .id = &peer_id.bytes });
-        errdefer conn.close(); // Keep the connection if pair succesful
+        errdefer conn.close();
         var streams = try conn.openBiStream();
 
         const proto_byte: u8 = @intFromEnum(ProtocolTag.pair);
@@ -183,10 +205,10 @@ pub const PairProtocol = struct {
             0 => {
                 const name = resp[1..];
                 log.info("Pair accepted with name: '{s}'", .{name});
+                router.handleConn(conn, true) catch {}; // closes conn on error
                 p2p.peer.add(core, name, peer_id) catch |err| {
                     log.warn("Failed to save peer in db: {t}", .{err});
                 };
-                router.publishEvent(.{ .pair_established = peer_id });
                 return name;
             },
             1 => {

@@ -62,7 +62,7 @@ pub fn render(self: *Self) void {
         const tab_names: [3][]const u8 = .{ "Concepts", "Peers", "Info" };
         for (tab_names, 0..) |tab_name, tab_index| {
             const is_selected = self.tab == tab_index;
-            if (tabs.addTabLabel(true, tab_name, .{ .style = if (is_selected) .content else null })) {
+            if (tabs.addTabLabel(true, tab_name, .{ .border = if (is_selected) null else .{ .h = 1.0 } })) {
                 self.tab = tab_index;
             }
         }
@@ -77,33 +77,52 @@ pub fn render(self: *Self) void {
             0 => self.concepts_view.render(),
             1 => self.peers_view.render(),
             2 => {
-                var box = dvui.box(@src(), .{}, .{ .expand = .horizontal });
+                var box = dvui.box(@src(), .{}, .{ .expand = .both });
                 defer box.deinit();
 
                 var tl = dvui.textLayout(@src(), .{}, .{ .expand = .both, .font = .theme(.title) });
                 tl.format("Path: {s}\n", .{self.core.data_dir}, .{});
 
                 tl.addText("\n\nRouter\n", .{ .font = .theme(.heading) });
-                const group_pending = self.core.router.io_group.token.load(.unordered) != null;
-                tl.addText(
-                    std.fmt.allocPrint(
-                        dvui.currentWindow().arena(),
-                        "Group has pending tasks: {s}",
-                        .{if (group_pending) "yes" else "no"},
-                    ) catch "OOM",
-                    .{},
-                );
-                tl.deinit();
 
-                if (group_pending) {
-                    if (dvui.button(@src(), "Stop", .{}, .{})) {
-                        self.core.router.stop() catch {};
+                {
+                    const group_pending = self.core.router.io_group.token.load(.unordered) != null;
+                    tl.addText(
+                        std.fmt.allocPrint(
+                            dvui.currentWindow().arena(),
+                            "Group has pending tasks: {s}",
+                            .{if (group_pending) "yes" else "no"},
+                        ) catch "OOM",
+                        .{},
+                    );
+                    tl.addText("  ", .{});
+
+                    const bo: dvui.Options = .{
+                        .background = true,
+                        .color_fill = .{ .color = dvui.themeGet().control.fill.? },
+                    };
+                    if (group_pending) {
+                        if (tl.addTextClick("Stop", bo)) |_| {
+                            self.core.router.stop() catch {};
+                        }
+                    } else {
+                        if (tl.addTextClick("Start", bo)) |_| {
+                            self.core.router.start() catch {};
+                        }
                     }
-                } else {
-                    if (dvui.button(@src(), "Start", .{}, .{})) {
-                        self.core.router.start() catch {};
+
+                    tl.addText("\n", .{});
+                }
+
+                {
+                    tl.addText("Connections:", .{});
+                    var iter = self.core.router.connections.peers.valueIterator();
+                    while (iter.next()) |peer_conn| {
+                        tl.format("\n  - {x}", .{peer_conn.id.bytes}, .{});
                     }
                 }
+
+                tl.deinit();
             },
             else => {},
         }
