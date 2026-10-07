@@ -48,6 +48,10 @@
             .url = "git+https://github.com/david-vanderson/dvui?ref=main#e5718eb8ecf5babc5311d7494f1cb2de1457ac2f",
             .hash = "dvui-0.5.0-dev-AQFJmXOKAwHIwYXUv3KNj6Q3hqJUb3v5gLfdhQDXriru",
         },
+        .zqlite = .{
+            .url = "git+https://github.com/karlseguin/zqlite.zig?ref=master#865223b734a5113f731ab1eb1d7d81c8ac252913",
+            .hash = "zqlite-0.0.1-RWLaY4Y8nADz2l5aBE-JVyDyM3sZzHjq0agNykuVZKqQ",
+        },
     },
     .paths = .{
         "build.zig",

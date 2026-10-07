@@ -87,10 +87,12 @@ pub fn build(b: *Build) void {
         sqlite_lib.root_module.sanitize_c = .off;
         b.installArtifact(sqlite_lib);
     }
+    const zqlite_dep = b.dependency("zqlite", .{ .target = target, .optimize = optimize });
     const known_folders_dep = b.dependency("known_folders", .{ .target = target, .optimize = optimize });
     const uuid_dep = b.dependency("uuid", .{ .target = target, .optimize = optimize });
 
     const sqlite_mod = sqlite_dep.module("sqlite");
+    const zqlite_mod = zqlite_dep.module("zqlite");
     const known_folders_mod = known_folders_dep.module("known-folders");
     const uuid_mod = uuid_dep.module("uuid");
 
@@ -122,6 +124,7 @@ pub fn build(b: *Build) void {
         .{ .name = "plutovg", .module = plutovg_mod },
         .{ .name = "graphviz", .module = graphviz.module },
         .{ .name = "sqlite", .module = sqlite_mod },
+        .{ .name = "zqlite", .module = zqlite_mod },
         .{ .name = "known-folders", .module = known_folders_mod },
         .{ .name = "uuid", .module = uuid_mod },
         .{ .name = "iroh", .module = iroh.module },
@@ -134,6 +137,7 @@ pub fn build(b: *Build) void {
             .{ .name = "assets", .module = assets_mod },
             .{ .name = "known-folders", .module = known_folders_mod },
             .{ .name = "sqlite", .module = sqlite_mod },
+            .{ .name = "zqlite", .module = zqlite_mod },
             .{ .name = "iroh", .module = iroh.module },
         });
     } else {
@@ -146,6 +150,7 @@ pub fn build(b: *Build) void {
         buildEmacs(b, target, optimize, &.{
             .{ .name = "ilm", .module = core_mod },
             .{ .name = "sqlite", .module = sqlite_mod },
+            .{ .name = "zqlite", .module = zqlite_mod },
             .{ .name = "graphviz", .module = graphviz.module },
         });
 
@@ -159,6 +164,7 @@ pub fn build(b: *Build) void {
             .{ .name = "assets", .module = assets_mod },
             .{ .name = "known-folders", .module = known_folders_mod },
             .{ .name = "sqlite", .module = sqlite_mod },
+            .{ .name = "zqlite", .module = zqlite_mod },
             .{ .name = "iroh", .module = iroh.module },
         });
         test_step.dependOn(gui_test_step);
