@@ -2,21 +2,25 @@
 --- Concepts
 ---
 CREATE TABLE IF NOT EXISTS concept (
-    id   BLOB PRIMARY KEY,
-    name TEXT NOT NULL
+    id   BLOB PRIMARY KEY NOT NULL,
+    name TEXT
 );
+SELECT crsql_as_crr('concept');
 
 CREATE TABLE IF NOT EXISTS concept_rel (
     parent_id BLOB NOT NULL,
     child_id  BLOB NOT NULL,
 
-    PRIMARY KEY (parent_id, child_id),
+    PRIMARY KEY (parent_id, child_id)
 
-    FOREIGN KEY (parent_id) REFERENCES concept(id) ON DELETE CASCADE,
-    FOREIGN KEY (child_id) REFERENCES concept(id) ON DELETE CASCADE,
+    -- FOREIGN KEY (parent_id) REFERENCES concept(id) ON DELETE CASCADE,
+    -- FOREIGN KEY (child_id) REFERENCES concept(id) ON DELETE CASCADE
+    -- FOREIGN KEY (parent_id) REFERENCES concept(id),
+    -- FOREIGN KEY (child_id) REFERENCES concept(id)
 
-    CHECK (parent_id != child_id)
+    -- CHECK (parent_id != child_id)
 );
+SELECT crsql_as_crr('concept_rel');
 
 -- Index to speed up queries looking for a concept's parents
 CREATE INDEX IF NOT EXISTS idx_child_id ON concept_rel(child_id);
@@ -87,6 +91,7 @@ END;
 --- Peers
 ---
 CREATE TABLE IF NOT EXISTS peer (
-    id   BLOB PRIMARY KEY, -- endpoint id
-    name TEXT NOT NULL
+    id   BLOB PRIMARY KEY NOT NULL, -- endpoint id
+    name TEXT
 );
+SELECT crsql_as_crr('peer');

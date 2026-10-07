@@ -12,12 +12,23 @@ const log = std.log.scoped(.database);
 
 const schema = @embedFile("database/schema.sql");
 
-pub fn getDb(path: [:0]const u8, flags: sqlite.Db.OpenFlags) !sqlite.Db {
+const Options = struct {
+    flags: sqlite.Db.OpenFlags = .{ .write = false, .create = false },
+    /// Required when flags.create is true
+    site_id: ?*const [16]u8 = null,
+};
+
+pub fn getDb(path: [:0]const u8, opts: Options) !sqlite.Db {
+    if (opts.flags.create and opts.site_id == null) {
+        log.err("Must pass site_id when flags.create is true", .{});
+        return error.NoSiteId;
+    }
+
     var diags: sqlite.Diagnostics = .{};
 
     var db = sqlite.Db.init(.{
         .mode = .{ .File = path },
-        .open_flags = flags,
+        .open_flags = opts.flags,
         .diags = &diags,
     }) catch |err| {
         log.err("Failed to open database: {t}", .{err});
@@ -25,35 +36,43 @@ pub fn getDb(path: [:0]const u8, flags: sqlite.Db.OpenFlags) !sqlite.Db {
     };
     errdefer db.deinit();
 
-    // Load cr-sqlite extension
-    // {
-    //     var rc = sqlite.c.sqlite3_enable_load_extension(db.db, 1);
-    //     if (rc != sqlite.c.SQLITE_OK) {
-    //         log.err("Failed to enable sqlite extension loading: {d}", .{rc});
-    //         return error.SqliteExtensionLoad;
-    //     }
+    if (opts.flags.write) {
+        // Load cr-sqlite extension. Requires write permission.
+        var rc = sqlite.c.sqlite3_enable_load_extension(db.db, 1);
+        if (rc != sqlite.c.SQLITE_OK) {
+            log.err("Failed to enable sqlite extension loading: {d}", .{rc});
+            return error.SqliteExtensionLoad;
+        }
 
-    //     var err_msg: [*c]u8 = undefined;
-    //     rc = sqlite.c.sqlite3_load_extension(db.db, "/home/mochar/src/cr-sqlite/core/dist/crsqlite.so", "sqlite3_crsqlite_init", &err_msg);
-    //     if (rc != sqlite.c.SQLITE_OK) {
-    //         defer sqlite.c.sqlite3_free(err_msg);
-    //         const msg = std.mem.span(err_msg);
-    //         log.err("Failed to load crsqlite extension: {s}", .{msg});
-    //         return error.CrsqliteFailed;
-    //     }
-    // }
-
-    // Execute schema script
-    var errmsg: [*c]u8 = null;
-    const rc = sqlite.c.sqlite3_exec(db.db, schema.ptr, null, null, &errmsg);
-
-    if (rc == sqlite.c.SQLITE_OK) return db;
-
-    diags.err = db.getDetailedError();
-    if (errmsg != null) {
-        sqlite.c.sqlite3_free(errmsg);
+        rc = sqlite.c.sqlite3_load_extension(db.db, "/home/mochar/src/cr-sqlite/core/dist/crsqlite.so", null, null);
+        if (rc != sqlite.c.SQLITE_OK) {
+            const e = db.getDetailedError();
+            log.err("Failed to load crsqlite extension: {f}", .{e});
+            return error.CrsqliteFailed;
+        }
     }
-    return sqlite.errorFromResultCode(rc);
+
+    if (opts.flags.create) {
+        // Set the crsqlite site id
+        db.exec(
+            "UPDATE crsql_site_id SET site_id = ? WHERE ordinal = 0",
+            .{ .diags = &diags },
+            .{sqlite.Blob{ .data = opts.site_id.? }},
+        ) catch |err| {
+            log.err("Failed to set crsql site id ({t}): {f}", .{ err, diags });
+            return err;
+        };
+
+        // Execute schema script
+        const rc = sqlite.c.sqlite3_exec(db.db, schema.ptr, null, null, null);
+        if (rc != sqlite.c.SQLITE_OK) {
+            const e = db.getDetailedError();
+            log.err("Failed to execute schema: {f}", .{e});
+            return error.CrsqliteFailed;
+        }
+    }
+
+    return db;
 }
 
 /// Returns true if still functional

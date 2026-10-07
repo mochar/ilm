@@ -100,7 +100,7 @@ event_triggers: std.ArrayList(EventTrigger),
 pub fn init(gpa: std.mem.Allocator, io: std.Io, db_path: [:0]const u8, secret_key: iroh.SecretKey) !Self {
     iroh.enableTracing();
 
-    var db = try database.getDb(db_path, .{ .write = false, .create = false });
+    var db = try database.getDb(db_path, .{});
     errdefer db.deinit();
 
     var endpoint: iroh.Endpoint = try .init(.{

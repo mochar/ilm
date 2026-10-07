@@ -68,7 +68,7 @@ subscribers: std.ArrayList(Subscriber) = .empty,
 thread: ?std.Thread = null,
 
 pub fn init(gpa: Allocator, io: std.Io, db_path: [:0]const u8) !Self {
-    var db = try database.getDb(db_path, .{ .write = true });
+    var db = try database.getDb(db_path, .{ .flags = .{ .write = true } });
     errdefer db.deinit();
 
     const queue_buf = try gpa.alloc(WriteRequest, 64);

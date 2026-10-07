@@ -46,27 +46,7 @@ pub fn create(opts: Options) !*Core {
     const dir = try std.Io.Dir.createDirPathOpen(.cwd(), io, data_dir, .{});
     defer dir.close(io);
 
-    // Load sqlite database
-    const db_path = try std.fs.path.joinZ(opts.gpa, &.{ data_dir, "ilm.db" });
-    defer gpa.free(db_path);
-    // First need to check if it does not exist yet. In that case we
-    // need to create the Db object using write and create
-    // permissions, as a read only db cannot create a new file.
-    dir.access(io, "ilm.db", .{ .read = true, .write = true }) catch |err| switch (err) {
-        error.FileNotFound => {
-            var db = try database.getDb(db_path, .{ .write = true, .create = true });
-            db.deinit();
-        },
-        else => return err,
-    };
-    var db = try database.getDb(db_path, .{ .write = false, .create = false });
-    errdefer db.deinit();
-
-    // Setup db writer
-    var db_writer: DbWriter = try .init(opts.gpa, opts.io, db_path);
-    errdefer db_writer.deinit();
-
-    // Setup secret key
+    // Read the secret key file or create it if not exists.
     const secret_key = blk: {
         if (dir.access(io, "secretkey.txt", .{ .read = true, .write = true })) {
             var secret_key_hex: [iroh.SecretKey.HEX_LEN]u8 = undefined;
@@ -85,6 +65,33 @@ pub fn create(opts: Options) !*Core {
             }
         }
     };
+
+    // Load sqlite database
+    const db_path = try std.fs.path.joinZ(opts.gpa, &.{ data_dir, "ilm.db" });
+    defer gpa.free(db_path);
+    // First need to check if it does not exist yet. In that case we
+    // need to create the Db object using write and create
+    // permissions, as a read only db cannot create a new file.
+    dir.access(io, "ilm.db", .{ .read = true, .write = true }) catch |err| switch (err) {
+        error.FileNotFound => {
+            // We use the first 16 bytes of the public key as the crsqlite site id.
+            const public_key = secret_key.public();
+            defer public_key.deinit();
+            const site_id = public_key.bytes()[0..16].*;
+            var db = try database.getDb(
+                db_path,
+                .{ .flags = .{ .write = true, .create = true }, .site_id = &site_id },
+            );
+            db.deinit();
+        },
+        else => return err,
+    };
+    var db = try database.getDb(db_path, .{});
+    errdefer db.deinit();
+
+    // Setup db writer
+    var db_writer: DbWriter = try .init(opts.gpa, opts.io, db_path);
+    errdefer db_writer.deinit();
 
     // P2p router
     var router: Router = try .init(gpa, io, db_path, secret_key);
