@@ -136,6 +136,12 @@ pub const Graph = struct {
 
     /// Get the bounding box of the graph from its layout.
     pub fn boundingBox(graph: *const Graph) BoundingBox {
+        if (graph.n_nodes() == 0) return .{
+            .llx = 0,
+            .lly = 0,
+            .urx = 100,
+            .ury = 100,
+        };
         const info = graphInfo(graph.g);
         return .{
             .llx = @floatCast(info.bb.LL.x),
@@ -196,7 +202,7 @@ pub const Graph = struct {
 
     /// Number of nodes in the graph
     pub fn n_nodes(graph: *const Graph) usize {
-        return c.agnnodes(graph.g);
+        return @intCast(c.agnnodes(graph.g));
     }
 
     /// Run the layout algorithm of an engine on the graph.

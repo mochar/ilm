@@ -3,6 +3,8 @@ const std = @import("std");
 const c = @import("c");
 const assets = @import("assets");
 
+const log = std.log.scoped(.plutovg);
+
 // For now just load one font globally.
 pub var plutovg_font: ?*c.plutovg_font_face_t = null;
 
