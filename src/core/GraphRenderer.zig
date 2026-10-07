@@ -585,6 +585,7 @@ test "Graph buffer rendering, camera panning, zooming, and hit testing" {
 
     var renderer = try init(.{
         .gpa = allocator,
+        .io = std.testing.io,
         .view_width = 400,
         .view_height = 300,
         .buffer_stride = 512,

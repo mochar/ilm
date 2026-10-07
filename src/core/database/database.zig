@@ -25,6 +25,24 @@ pub fn getDb(path: [:0]const u8, flags: sqlite.Db.OpenFlags) !sqlite.Db {
     };
     errdefer db.deinit();
 
+    // Load cr-sqlite extension
+    // {
+    //     var rc = sqlite.c.sqlite3_enable_load_extension(db.db, 1);
+    //     if (rc != sqlite.c.SQLITE_OK) {
+    //         log.err("Failed to enable sqlite extension loading: {d}", .{rc});
+    //         return error.SqliteExtensionLoad;
+    //     }
+
+    //     var err_msg: [*c]u8 = undefined;
+    //     rc = sqlite.c.sqlite3_load_extension(db.db, "/home/mochar/src/cr-sqlite/core/dist/crsqlite.so", "sqlite3_crsqlite_init", &err_msg);
+    //     if (rc != sqlite.c.SQLITE_OK) {
+    //         defer sqlite.c.sqlite3_free(err_msg);
+    //         const msg = std.mem.span(err_msg);
+    //         log.err("Failed to load crsqlite extension: {s}", .{msg});
+    //         return error.CrsqliteFailed;
+    //     }
+    // }
+
     // Execute schema script
     var errmsg: [*c]u8 = null;
     const rc = sqlite.c.sqlite3_exec(db.db, schema.ptr, null, null, &errmsg);
