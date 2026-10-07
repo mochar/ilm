@@ -76,15 +76,15 @@ pub fn create(gpa: std.mem.Allocator, core: *Core) !*Self {
 pub fn destroy(self: *Self) void {
     self.db_writes_queue.close(self.core.io);
     self.gpa.free(self.db_writes_buf);
-    
+
     self.graph_view.deinit();
     self.graph_arena.deinit();
-    
+
     self.gpa.free(self.all_concepts);
-    
+
     self.search_query.deinit(self.gpa);
     self.search_arena.deinit();
-    
+
     if (self.selected) |*s| {
         s.view.destroy();
     }
@@ -185,9 +185,27 @@ fn renderSidebar(self: *Self, is_wide: bool) void {
     });
     defer box.deinit();
     if (self.selected == null) {
+        self.renderActions();
         self.renderSearch();
     } else {
         self.renderConceptView();
+    }
+}
+
+fn renderActions(self: *Self) void {
+    if (dvui.buttonLabelAndIcon(
+        @src(),
+        .{
+            .label = "Add concept",
+            .tvg_bytes = dvui.entypo.plus,
+        },
+        .{ .expand = .horizontal },
+    )) {
+        if (ilm.concept.add(self.core, "New concept", &.{})) |child_id| {
+            _ = child_id;
+        } else |err| {
+            utils.toastErr(@src(), err, "Failed to create concept", .{});
+        }
     }
 }
 
