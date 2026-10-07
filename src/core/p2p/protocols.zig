@@ -17,7 +17,7 @@ const Core = @import("../Core.zig");
 const iroh = @import("iroh");
 const p2p = @import("../p2p.zig");
 const Peer = p2p.Peer;
-const database = @import("../database/database.zig");
+const database = @import("../database.zig");
 const Self = @This();
 
 /// First byte in new bistream that the sender sends to establish the

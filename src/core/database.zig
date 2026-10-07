@@ -3,14 +3,14 @@ const Allocator = std.mem.Allocator;
 pub const sqlite = @import("sqlite");
 pub const Diagnostics = sqlite.Diagnostics;
 pub const Db = sqlite.Db;
-pub const helpers = @import("helpers.zig");
-pub const Id = @import("Id.zig");
-pub const tables = @import("tables.zig");
-pub const DbWriter = @import("DbWriter.zig");
+pub const helpers = @import("database/helpers.zig");
+pub const Id = @import("database/Id.zig");
+pub const tables = @import("database/tables.zig");
+pub const DbWriter = @import("database/DbWriter.zig");
 
 const log = std.log.scoped(.database);
 
-const schema = @embedFile("schema.sql");
+const schema = @embedFile("database/schema.sql");
 
 pub fn getDb(path: [:0]const u8, flags: sqlite.Db.OpenFlags) !sqlite.Db {
     var diags: sqlite.Diagnostics = .{};

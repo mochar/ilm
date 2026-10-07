@@ -10,9 +10,9 @@ const Allocator = std.mem.Allocator;
 pub const sqlite = @import("sqlite");
 pub const Diagnostics = sqlite.Diagnostics;
 const ilm = @import("../root.zig");
-const tables = @import("tables.zig");
+const database = @import("../database.zig");
+const tables = database.tables;
 pub const Write = tables.Write;
-const database = @import("database.zig");
 const Self = @This();
 
 const log = std.log.scoped(.database_writer);
