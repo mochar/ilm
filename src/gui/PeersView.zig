@@ -228,7 +228,9 @@ fn renderContent(self: *Self) void {
         }
 
         // Known peers
-        for (self.peer_views.values()) |*peer_view| {
+        for (self.peer_views.values(), 0..) |*peer_view, i| {
+            var pbox = dvui.box(@src(), .{}, .{.id_extra = i});
+            defer pbox.deinit();
             peer_view.render();
         }
     }

@@ -50,13 +50,17 @@ pub const Event = union(enum) {
     stream_closed: Peer.Id,
     pair_request: *protocols.PairProtocol.IncomingRequest,
     /// A new pair was established.
-    /// TODO Add if we initiated or accepted the pair.
     pair_established: Peer.Id,
     /// Our pair request failed, due to error or rejection.
     /// Not called when we reject incoming pair requests.
     pair_failed: struct {
         peer_id: Peer.Id,
         err: protocols.PairProtocol.PairRequestError,
+    },
+    sync_start: Peer,
+    sync_done: struct {
+        peer: Peer,
+        err: ?anyerror = null,
     },
     // own message buf to not deal with allocation
     message: struct {
@@ -166,6 +170,18 @@ pub fn sendPairRequest(self: *Self, peer_id: Peer.Id) void {
             _ = p2p.protocols.PairProtocol.request(router, peer, &recv_buf) catch |err| switch (err) {
                 error.Canceled => |e| return e,
                 else => |e| log.err("Pair request with {x} failed: {t}", .{ peer.bytes[0..4], e }),
+            };
+        }
+    }.f;
+    self.io_group.async(self.io, request, .{ self, peer_id });
+}
+
+pub fn sendSyncRequest(self: *Self, peer_id: Peer.Id) void {
+    const request = struct {
+        pub fn f(router: *Self, peer: Peer.Id) std.Io.Cancelable!void {
+            _ = p2p.protocols.SyncProtocol.request(router, peer) catch |err| switch (err) {
+                error.Canceled => |e| return e,
+                else => |e| log.err("Sync request with {x} failed: {t}", .{ peer.bytes[0..4], e }),
             };
         }
     }.f;
@@ -339,43 +355,15 @@ fn connLoop(self: *Self, peer_id: Peer.Id) error{Canceled}!void {
         log.info("Received stream!", .{});
         self.publishEvent(.{ .stream_received = peer_id });
 
-        // self.io_group.async(self.io, streamLoop, .{ self, peer_id, streams });
-        conn_peer.io_group.async(self.io, streamLoop, .{ self, peer_id, streams });
+        // self.io_group.async(self.io, handleStream, .{ self, peer_id, streams });
+        conn_peer.io_group.async(self.io, handleStream, .{ self, peer_id, streams });
     }
 }
 
 /// Run when a bistream has been established.
-fn streamLoop(self: *Self, peer_id: Peer.Id, streams_: iroh.BiStream) error{Canceled}!void {
-    defer self.publishEvent(.{ .stream_closed = peer_id });
-
-    var streams = streams_; // get a nonconst copy
-
-    // All bistreams start with client sending the protocol tag.
-    // All we do here is check this tag, and call the associated protocol
-    // function to do the actual work.
-    var protocol_buf: [1]u8 = undefined;
-    _ = streams.recv.readExact(&protocol_buf, 5000) catch |err| {
-        log.err("Failed to read protocol tag: {t}", .{err});
-        streams.deinit();
-        return;
+fn handleStream(self: *Self, peer_id: Peer.Id, streams: iroh.BiStream) error{Canceled}!void {
+    protocols.handleRequest(self, peer_id, streams) catch |err| switch (err) {
+        error.Canceled => |e| return e,
+        else => {},
     };
-    const protocol_tag = protocol_buf[0];
-    const protocol: protocols.ProtocolTag = @enumFromInt(protocol_tag);
-
-    switch (protocol) {
-        .pair => {
-            log.info("Client requested pair", .{});
-            p2p.protocols.PairProtocol.accept(self, streams, peer_id) catch |err| switch (err) {
-                error.Canceled => |e| return e,
-                else => log.err("Pair request failed: {t}", .{err}),
-            };
-        },
-        _ => {
-            log.err("Client specified unknown protocol '{d}', breaking bistream", .{protocol_tag});
-            streams.send.write(&.{1}, 5000) catch |err| {
-                log.err("Failed to write back: {t}", .{err});
-            };
-            streams.deinit();
-        },
-    }
 }

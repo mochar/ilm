@@ -1,13 +1,17 @@
 const std = @import("std");
-const sqlite = @import("sqlite");
-const Diagnostics = sqlite.Diagnostics;
-const Id = @import("Id.zig");
 const ilm = @import("../root.zig");
+const database = ilm.database;
+const Db = database.Db;
+const Diagnostics = database.Diagnostics;
+const Id = database.Id;
+const crdt = database.crdt;
+const sqlite = @import("sqlite");
 
 pub const Table = enum {
     concept,
     concept_rel,
     peer,
+    crsql_changes,
     unknown,
 };
 
@@ -19,6 +23,7 @@ pub const TableId = union(Table) {
     concept: ConceptId,
     concept_rel: ConceptRelId,
     peer: PeerId,
+    crsql_changes: void,
     unknown: void,
 };
 
@@ -35,7 +40,7 @@ pub const TableCommand = union(enum) {
         name: []const u8,
         parent_ids: []const ConceptId,
 
-        pub fn write(self: *const @This(), db: *sqlite.Db) !Write {
+        pub fn write(self: *const @This(), db: *Db) !Write {
             var diags: Diagnostics = .{};
 
             var savepoint = try db.savepoint("addconcept");
@@ -97,8 +102,8 @@ pub const TableCommand = union(enum) {
         name: []const u8,
 
         // TODO Validate that rename actually happened (in case concept not found in db)
-        pub fn write(self: *const @This(), db: *sqlite.Db) !Write {
-            var diags: sqlite.Diagnostics = .{};
+        pub fn write(self: *const @This(), db: *Db) !Write {
+            var diags: Diagnostics = .{};
 
             var stmt = db.prepareWithDiags(
                 \\UPDATE concept
@@ -125,8 +130,8 @@ pub const TableCommand = union(enum) {
         id: ConceptId,
 
         // TODO Validate that delete actually happened (in case concept not found in db)
-        pub fn write(self: *const @This(), db: *sqlite.Db) !Write {
-            var diags: sqlite.Diagnostics = .{};
+        pub fn write(self: *const @This(), db: *Db) !Write {
+            var diags: Diagnostics = .{};
             var savepoint = try db.savepoint("delconcept");
             defer savepoint.rollback();
 
@@ -181,7 +186,7 @@ pub const TableCommand = union(enum) {
         id: PeerId,
         name: []const u8,
 
-        pub fn write(self: *const @This(), db: *sqlite.Db) !Write {
+        pub fn write(self: *const @This(), db: *Db) !Write {
             try ilm.p2p.peer.addImpl(db, self.name, &self.id);
             return .{ .op = .insert, .table_id = .{ .peer = self.id } };
         }
@@ -189,7 +194,7 @@ pub const TableCommand = union(enum) {
     delete_peer: struct {
         id: PeerId,
 
-        pub fn write(self: *const @This(), db: *sqlite.Db) !Write {
+        pub fn write(self: *const @This(), db: *Db) !Write {
             try ilm.p2p.peer.deleteImpl(db, self.id);
             return .{ .op = .delete, .table_id = .{ .peer = self.id } };
         }
@@ -198,9 +203,17 @@ pub const TableCommand = union(enum) {
         id: PeerId,
         name: []const u8,
 
-        pub fn write(self: *const @This(), db: *sqlite.Db) !Write {
+        pub fn write(self: *const @This(), db: *Db) !Write {
             try ilm.p2p.peer.renameImpl(db, self.id, self.name);
             return .{ .op = .update, .table_id = .{ .peer = self.id } };
+        }
+    },
+    apply_changes: struct {
+        changes: []crdt.Change,
+
+        pub fn write(self: *const @This(), db: *Db) !Write {
+            try crdt.mergeChangesImpl(db, self.changes);
+            return .{ .op = .update, .table_id = .crsql_changes };
         }
     },
 };

@@ -95,7 +95,7 @@ pub fn destroy(self: *Self) void {
 fn dbWriteCallback(self_opaque: *anyopaque, result: DbWriter.WriteResult) void {
     const write = result.write catch return;
     switch (write.table_id) {
-        .concept, .concept_rel => {
+        .concept, .concept_rel, .crsql_changes => {
             const self: *Self = @ptrCast(@alignCast(self_opaque));
             self.db_writes_queue.putOneUncancelable(self.core.io, write) catch |err| {
                 log.err("Failed to add concept db write: {t}", .{err});
@@ -160,6 +160,11 @@ pub fn render(self: *Self) void {
             .concept_rel => |ids| {
                 _ = ids;
                 self.updateGraphContent(.retain_state);
+            },
+            .crsql_changes => {
+                self.getAllConcepts();
+                self.updateGraphContent(.reset);
+                self.unselect();
             },
             else => {},
         }
@@ -283,7 +288,13 @@ fn renderGraph(self: *Self) void {
         return utils.toastErr(@src(), err, "Failed to render graph", .{});
     }) |action| {
         switch (action) {
-            .node_select => |id| self.selectConceptById(id),
+            .node_select => |id| {
+                if (self.selected != null and self.selected.?.concept.id.int == id) {
+                    self.unselect();
+                } else {
+                    self.selectConceptById(id);
+                }
+            },
         }
     }
 }

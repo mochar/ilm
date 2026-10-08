@@ -597,7 +597,6 @@ pub const SendStream = struct {
     /// Blocks current thread.
     pub fn write(
         self: *const SendStream,
-        // data: [:0]const u8,
         data: []const u8,
         timeout_ms: ?u64,
     ) EndpointError!void {

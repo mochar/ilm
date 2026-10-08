@@ -17,6 +17,8 @@ name_edit: struct {
     name: std.ArrayList(u8) = .empty,
 } = .{},
 
+requesting_sync: *std.atomic.Value(bool),
+
 pub fn init(core: *Core, peer_id: Peer.Id) !Self {
     var arena_alloc: std.heap.ArenaAllocator = .init(core.gpa);
     errdefer arena_alloc.deinit();
@@ -24,11 +26,11 @@ pub fn init(core: *Core, peer_id: Peer.Id) !Self {
 
     const peer = try ilm.p2p.peer.getById(&core.db, arena, &peer_id) orelse return error.NotFound;
 
-    var self: Self = .{
-        .core = core,
-        .arena = arena_alloc,
-        .peer = peer,
-    };
+    const requesting_sync = try arena.create(std.atomic.Value(bool));
+    requesting_sync.* = .init(false);
+    // try core.router.addEventTrigger(.{ .ctx = @ptrCast(requesting_pair), .triggerFn = routerEventCallback });
+
+    var self: Self = .{ .core = core, .arena = arena_alloc, .peer = peer, .requesting_sync = requesting_sync };
 
     try self.name_edit.name.appendSlice(arena, peer.name);
 
@@ -102,10 +104,19 @@ pub fn render(self: *Self) void {
         var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{});
         defer hbox.deinit();
 
-        if (peer_conn == null and dvui.button(@src(), "Connect", .{}, .{})) {
-            _ = self.core.router.connectToEndpoint(self.peer.id) catch |err| {
-                utils.toastErr(@src(), err, "Failed to connect", .{});
-            };
+        if (peer_conn) |pc| {
+            _ = pc;
+            if (dvui.button(@src(), "Sync", .{}, .{})) {
+                self.sync() catch |err| {
+                    utils.toastErr(@src(), err, "Failed to connect", .{});
+                };
+            }
+        } else {
+            if (dvui.button(@src(), "Connect", .{}, .{})) {
+                _ = self.core.router.connectToEndpoint(self.peer.id) catch |err| {
+                    utils.toastErr(@src(), err, "Failed to connect", .{});
+                };
+            }
         }
 
         if (dvui.button(@src(), "Delete", .{}, .{})) {
@@ -114,4 +125,9 @@ pub fn render(self: *Self) void {
             };
         }
     }
+}
+
+fn sync(self: *Self) !void {
+    _ = self.requesting_sync.swap(true, .acq_rel);
+    self.core.router.sendSyncRequest(self.peer.id);
 }

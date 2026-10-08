@@ -94,4 +94,3 @@ CREATE TABLE IF NOT EXISTS peer (
     id   BLOB PRIMARY KEY NOT NULL, -- endpoint id
     name TEXT
 );
-SELECT crsql_as_crr('peer');

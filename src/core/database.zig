@@ -7,6 +7,7 @@ pub const helpers = @import("database/helpers.zig");
 pub const Id = @import("database/Id.zig");
 pub const tables = @import("database/tables.zig");
 pub const DbWriter = @import("database/DbWriter.zig");
+pub const crdt = @import("database/crdt.zig");
 
 const log = std.log.scoped(.database);
 
@@ -36,7 +37,12 @@ pub fn getDb(path: [:0]const u8, opts: Options) !sqlite.Db {
     };
     errdefer db.deinit();
 
-    if (opts.flags.write) {
+    // TODO I think this only fails with newly generated databases,
+    // which then require write permissions to fix, and then can be
+    // switched back again to no write. So just a bug, write permission
+    // not needed to load in ext.
+    // if (opts.flags.write) {
+    {
         // Load cr-sqlite extension. Requires write permission.
         var rc = sqlite.c.sqlite3_enable_load_extension(db.db, 1);
         if (rc != sqlite.c.SQLITE_OK) {
