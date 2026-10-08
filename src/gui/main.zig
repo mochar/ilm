@@ -101,7 +101,12 @@ pub fn appInit(win: *dvui.Window) !void {
     if (data_dir) |dir| {
         connect(dir);
     } else {
-        connect("/home/mochar/tmp/ilm/");
+        const init = dvui.App.main_init.?;
+        var args = init.minimal.args.iterate();
+        defer args.deinit();
+        _ = args.next();
+        const dir = args.next() orelse "/home/mochar/tmp/ilm/";
+        connect(dir);
         // switchView(.{ .setup = .init(gpa) });
     }
 }
