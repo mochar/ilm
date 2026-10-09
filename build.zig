@@ -130,6 +130,15 @@ pub fn build(b: *Build) void {
         .{ .name = "iroh", .module = iroh.module },
     });
 
+    // Compile step for just core, translate c, and bindings
+    const core_obj = b.addObject(.{
+        .name = "core_build",
+        .root_module = core_mod,
+    });
+    const core_step = b.step("core", "Build core module");
+    core_step.dependOn(&core_obj.step);
+    core_step.dependOn(&c_bindings.step);
+
     // Targets & Steps
     if (target.result.abi.isAndroid()) {
         buildGuiAndroid(b, target, optimize, &.{
