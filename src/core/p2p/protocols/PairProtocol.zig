@@ -1,3 +1,5 @@
+const Self = @This();
+
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ilm = @import("../../root.zig");
@@ -32,38 +34,61 @@ pub const IncomingRequest = struct {
     }
 };
 
+const State = union(enum) {
+    dormant,
+    // When sending
+    requesting,
+    // When accepting
+    accepting,
+    /// Populated if peer is waiting on a pair request
+    waiting_approval: *IncomingRequest,
+};
+
+router: *Router,
+arena: std.heap.ArenaAllocator,
+state: State = .dormant,
+
+pub fn init(gpa: Allocator, router: *Router) Self {
+    return .{
+        .router = router,
+        .arena = .init(gpa),
+    };
+}
+
+pub fn deinit(self: *Self) void {
+    self.arena.deinit();
+}
+
+fn connectedPeer(self: *Self) *ConnectedPeer {
+    return @fieldParentPtr("pair", self);
+}
+
 pub const PairError = error{
+    Busy,
     Database,
 } || Allocator.Error || iroh.EndpointError || std.Io.Cancelable;
 
 pub const PairAcceptError = error{NotConnected} || PairError;
 
-/// Called from the server side to handle a pair request from a client.
-///
-/// This is called after only the protocol tag has been consumed
-/// from the recv stream. This transfers ownership of BiStream.
-pub fn accept(
-    router: *p2p.Router,
-    peer: *ConnectedPeer,
-    streams_: iroh.BiStream,
-) PairAcceptError!void {
-    const peer_id = peer.id;
-    const core = router.getCore();
-    const io = core.io;
+pub fn accept(self: *Self, streams_: iroh.BiStream) PairAcceptError!void {
+    if (self.state != .dormant) return error.Busy;
+    self.state = .accepting;
+    defer self.state = .dormant;
 
-    var arena_alloc: std.heap.ArenaAllocator = .init(core.gpa);
-    defer arena_alloc.deinit();
-    const arena = arena_alloc.allocator();
+    const core = self.router.getCore();
+    const io = core.io;
+    const peer = self.connectedPeer();
+    const arena = self.arena.allocator();
+    defer _ = self.arena.reset(.free_all);
 
     var streams = streams_; // get a nonconst copy
     defer streams.deinit();
 
     var recv_buf: [512]u8 = undefined;
-
     var accepted: bool = undefined;
     var name: []const u8 = undefined;
 
-    const stored_peer = p2p.peer.getById(&router.db, arena, &peer_id) catch return error.Database;
+    const stored_peer = p2p.peer.getById(&self.router.db, arena, &peer.id) catch return error.Database;
 
     if (stored_peer) |known_peer| {
         log.info("Peer already known, accepting.", .{});
@@ -79,12 +104,12 @@ pub fn accept(
         log.info("Pair client name: '{s}'", .{name});
 
         var pair_req: IncomingRequest = .{
-            .peer_id = peer_id,
+            .peer_id = peer.id,
             .name = name,
         };
-        peer.pair_request = &pair_req;
-        defer peer.pair_request = null;
-        router.publishEvent(.{ .pair_request = &pair_req });
+        self.state = .{ .waiting_approval =  &pair_req };
+        defer self.state = .accepting;
+        self.router.publishEvent(.{ .pair_request = &pair_req });
 
         // Pause thread, wait for user feedback, or thread cancel.
         try pair_req.signal.wait(io); // Cancelable
@@ -95,17 +120,17 @@ pub fn accept(
     // Accept: 1-byte + name, end stream
     // Reject: 0-byte, end stream
     const response: []const u8 = if (accepted)
-        try std.mem.concat(arena, u8, &.{ &.{0}, router.name })
+        try std.mem.concat(arena, u8, &.{ &.{0}, self.router.name })
     else
         &.{1};
     streams.send.write(response, 5000) catch |err| {
-        log.err("Failed to write back to peer {x}: {t}", .{ peer_id.bytes[0..4], err });
+        log.err("Failed to write back to peer {x}: {t}", .{ peer.id.bytes[0..4], err });
         // continue if we err
     };
     streams.send.finish();
 
     if (accepted and stored_peer == null) {
-        p2p.peer.add(core, name, peer_id) catch return error.Database;
+        p2p.peer.add(core, name, peer.id) catch return error.Database;
     }
 }
 
@@ -119,36 +144,36 @@ pub const PairRequestError = error{
 ///
 /// If the peer accepts, the peer info will be stored in the
 /// db which can be queried to get info of this peer.
-pub fn request(
-    router: *p2p.Router,
-    peer: *ConnectedPeer,
-) PairRequestError!void {
-    if (requestInner(router, peer)) {
-        router.publishEvent(.{ .pair_established = peer.id });
+pub fn request(self: *Self) PairRequestError!void {
+    if (self.state != .dormant) return error.Busy;
+    self.state = .requesting;
+    defer self.state = .dormant;
+
+    const peer = self.connectedPeer();
+    
+    if (p2p.peer.exists(&self.router.db, &peer.id) catch false) return error.KnownPeer;
+    
+    if (self.requestInner()) {
+        self.router.publishEvent(.{ .pair_established = peer.id });
     } else |err| {
-        router.publishEvent(.{ .pair_failed = .{ .peer_id = peer.id, .err = err } });
+        self.router.publishEvent(.{ .pair_failed = .{ .peer_id = peer.id, .err = err } });
         return err;
     }
 }
 
-fn requestInner(
-    router: *p2p.Router,
-    peer: *ConnectedPeer,
-) PairRequestError!void {
-    if (p2p.peer.exists(&router.db, &peer.id) catch false) return error.KnownPeer;
-
-    const core = router.getCore();
-
-    var arena_alloc: std.heap.ArenaAllocator = .init(core.gpa);
-    defer arena_alloc.deinit();
-    const arena = arena_alloc.allocator();
-
+fn requestInner(self: *Self) PairRequestError!void {
+    const peer = self.connectedPeer();
     log.info("Requesting pair with {x}", .{peer.id.bytes});
+    
+    const core = self.router.getCore();
+    const conn = &peer.conn;
+    const arena = self.arena.allocator();
+    defer _ = self.arena.reset(.free_all);
 
-    var streams = try peer.conn.openBiStream();
+    var streams = try conn.openBiStream();
 
     const proto_byte: u8 = @intFromEnum(TAG);
-    const pair_bytes = try std.mem.concat(arena, u8, &.{ &.{proto_byte}, router.name });
+    const pair_bytes = try std.mem.concat(arena, u8, &.{ &.{proto_byte}, self.router.name });
     try streams.send.write(pair_bytes, 5000);
     streams.send.finish();
 

@@ -222,14 +222,14 @@ fn renderContent(self: *Self) void {
         // Pair requests
         var conn_peers = self.core.router.connections.peers.valueIterator();
         while (conn_peers.next()) |con_peer| {
-            if (con_peer.*.pair_request != null) {
+            if (con_peer.*.pair.state == .waiting_approval) {
                 renderPairingPeer(con_peer.*) catch {};
             }
         }
 
         // Known peers
         for (self.peer_views.values(), 0..) |*peer_view, i| {
-            var pbox = dvui.box(@src(), .{}, .{.id_extra = i});
+            var pbox = dvui.box(@src(), .{}, .{ .id_extra = i });
             defer pbox.deinit();
             peer_view.render();
         }
@@ -278,36 +278,40 @@ fn renderContent(self: *Self) void {
 }
 
 fn renderPairingPeer(peer: *ilm.p2p.Router.ConnectedPeer) !void {
-    const req = peer.pair_request.?;
-    var box = dvui.box(@src(), .{}, .{
-        .expand = .horizontal,
-        .border = .all(2.0),
-        .margin = .all(6.0),
-        .padding = .all(6.0),
-    });
-    defer box.deinit();
+    switch (peer.pair.state) {
+        .waiting_approval => |req| {
+            var box = dvui.box(@src(), .{}, .{
+                .expand = .horizontal,
+                .border = .all(2.0),
+                .margin = .all(6.0),
+                .padding = .all(6.0),
+            });
+            defer box.deinit();
 
-    {
-        var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
-        defer hbox.deinit();
+            {
+                var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+                defer hbox.deinit();
 
-        dvui.icon(@src(), "pair", dvui.entypo.link, .{}, .{ .gravity_y = 0.5 });
+                dvui.icon(@src(), "pair", dvui.entypo.link, .{}, .{ .gravity_y = 0.5 });
 
-        var tl = dvui.textLayout(@src(), .{}, .{ .expand = .both });
-        defer tl.deinit();
+                var tl = dvui.textLayout(@src(), .{}, .{ .expand = .both });
+                defer tl.deinit();
 
-        tl.addText("Pair request from ", .{ .font = .theme(.heading) });
-        tl.format("{s}", .{req.name}, .{ .font = .theme(.heading) });
-    }
+                tl.addText("Pair request from ", .{ .font = .theme(.heading) });
+                tl.format("{s}", .{req.name}, .{ .font = .theme(.heading) });
+            }
 
-    var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
-    defer hbox.deinit();
+            var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+            defer hbox.deinit();
 
-    if (dvui.button(@src(), "Accept", .{}, .{})) {
-        req.accept(dvui.io);
-    }
-    if (dvui.button(@src(), "Reject", .{}, .{})) {
-        req.reject(dvui.io);
+            if (dvui.button(@src(), "Accept", .{}, .{})) {
+                req.accept(dvui.io);
+            }
+            if (dvui.button(@src(), "Reject", .{}, .{})) {
+                req.reject(dvui.io);
+            }
+        },
+        else => {},
     }
 }
 

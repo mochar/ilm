@@ -62,7 +62,7 @@ pub fn accept(router: *Router, conn_peer: *ConnectedPeer, streams_: iroh.BiStrea
     switch (protocol) {
         .pair => {
             log.info("Client {x} requested pair", .{peer_id.bytes[0..4]});
-            PairProtocol.accept(router, conn_peer, streams) catch |err| {
+            conn_peer.pair.accept(streams) catch |err| {
                 log.err("Pair request failed: {t}", .{err});
                 return err;
             };

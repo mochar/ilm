@@ -20,9 +20,7 @@ pub const ConnectedPeer = struct {
     /// Use this to cancel the conn loop and all its bistream loops
     /// TODO This doesnt work at all..
     io_group: std.Io.Group,
-    /// Populated if peer is waiting on a pair request
-    pair_request: ?*protocols.PairProtocol.IncomingRequest = null,
-    /// Sync state
+    pair: protocols.PairProtocol,
     sync: protocols.SyncProtocol,
 
     pub fn create(alloc: Allocator, router: *Self, conn: iroh.Connection) Allocator.Error!*ConnectedPeer {
@@ -31,6 +29,7 @@ pub const ConnectedPeer = struct {
             .conn = conn,
             .id = .{ .bytes = conn.addr.id.copyBytes() },
             .io_group = .init,
+            .pair = .init(alloc, router),
             .sync = .init(alloc, router),
         };
         return self;
@@ -42,6 +41,7 @@ pub const ConnectedPeer = struct {
     }
 
     pub fn destroy(self: *ConnectedPeer, alloc: Allocator) void {
+        self.pair.deinit();
         self.sync.deinit();
         alloc.destroy(self);
     }
@@ -185,7 +185,7 @@ pub fn sendPairRequest(self: *Self, peer_id: Peer.Id) void {
                 return;
             };
 
-            p2p.protocols.PairProtocol.request(router, conn_peer) catch |err| {
+            conn_peer.pair.request() catch |err| {
                 // Close the connection on error. Only keep connection
                 // around if pair accepted, or the peer is already known.
                 if (err != error.KnownPeer) {

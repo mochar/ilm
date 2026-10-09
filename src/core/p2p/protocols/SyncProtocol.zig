@@ -60,10 +60,7 @@ pub const SyncAcceptError = error{
     InvalidDbVersion,
 } || SyncError;
 
-pub fn accept(
-    self: *Self,
-    streams_: iroh.BiStream,
-) SyncAcceptError!void {
+pub fn accept(self: *Self, streams_: iroh.BiStream) SyncAcceptError!void {
     if (self.state != .dormant) return error.Busy;
     self.state = .retrieving;
     defer self.state = .dormant;
