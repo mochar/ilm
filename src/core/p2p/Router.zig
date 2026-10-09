@@ -20,17 +20,24 @@ pub const ConnectedPeer = struct {
     /// Use this to cancel the conn loop and all its bistream loops
     /// TODO This doesnt work at all..
     io_group: std.Io.Group,
-    // sessions: std.ArrayList(protocols.ProtocolSession) = .empty,
     /// Populated if peer is waiting on a pair request
     pair_request: ?*protocols.PairProtocol.IncomingRequest = null,
+    /// Sync state
+    sync: ?*protocols.SyncProtocol = null,
 
-    pub fn fromConnection(conn: iroh.Connection) ConnectedPeer {
-        const id = conn.addr.id.copyBytes();
-        return .{
+    pub fn create(alloc: Allocator, conn: iroh.Connection) Allocator.Error!*ConnectedPeer {
+        const self = try alloc.create(ConnectedPeer);
+        self.* = .{
             .conn = conn,
-            .id = .{ .bytes = id },
+            .id = .{ .bytes = conn.addr.id.copyBytes() },
             .io_group = .init,
         };
+        return self;
+    }
+
+    pub fn closeAndDestroy(self: *ConnectedPeer, alloc: Allocator, io: std.Io) void {
+        self.close(io);
+        alloc.destroy(self);
     }
 
     pub fn close(self: *ConnectedPeer, io: std.Io) void {
@@ -41,7 +48,9 @@ pub const ConnectedPeer = struct {
 
 pub const Event = union(enum) {
     connected: struct {
+        // keep both in case conn_peer pointer dangled?
         peer_id: Peer.Id,
+        conn_peer: *ConnectedPeer,
         /// Did we start the connection?
         initiated: bool,
     },
@@ -57,7 +66,10 @@ pub const Event = union(enum) {
         peer_id: Peer.Id,
         err: protocols.PairProtocol.PairRequestError,
     },
-    sync_start: Peer,
+    sync_start: struct {
+        peer: Peer,
+        conn_peer: *ConnectedPeer,
+    },
     sync_done: struct {
         peer: Peer,
         err: ?anyerror = null,
@@ -94,9 +106,9 @@ name: []const u8,
 io_group: std.Io.Group,
 
 connections: struct {
-    mutex: std.Io.Mutex = .init,
+    mutex: std.Io.Mutex = .init, // TODO Use RwLock
     // TODO Use Peer.Id.Short as key
-    peers: std.AutoHashMap(Peer.Id, ConnectedPeer),
+    peers: std.AutoHashMap(Peer.Id, *ConnectedPeer),
 },
 
 event_triggers: std.ArrayList(EventTrigger),
@@ -166,20 +178,37 @@ pub fn setName(self: *Self, name: []const u8) !void {
 pub fn sendPairRequest(self: *Self, peer_id: Peer.Id) void {
     const request = struct {
         pub fn f(router: *Self, peer: Peer.Id) std.Io.Cancelable!void {
-            var recv_buf: [512]u8 = undefined;
-            _ = p2p.protocols.PairProtocol.request(router, peer, &recv_buf) catch |err| switch (err) {
-                error.Canceled => |e| return e,
-                else => |e| log.err("Pair request with {x} failed: {t}", .{ peer.bytes[0..4], e }),
+            // First establish a connection in the router.
+            const conn_peer = router.connectToEndpoint(peer) catch |err| {
+                log.err("Pair request with {x} failed: Failed to establish connection: {t}", .{ peer.bytes[0..4], err });
+                return;
+            };
+
+            p2p.protocols.PairProtocol.request(router, conn_peer) catch |err| {
+                // Close the connection on error. Only keep connection
+                // around if pair accepted, or the peer is already known.
+                if (err != error.KnownPeer) {
+                    router.disconnectPeer(peer, .{ .conn = &conn_peer.conn });
+                }
+                switch (err) {
+                    error.Canceled => |e| return e,
+                    else => |e| log.err("Pair request with {x} failed: {t}", .{ peer.bytes[0..4], e }),
+                }
             };
         }
     }.f;
     self.io_group.async(self.io, request, .{ self, peer_id });
 }
 
-pub fn sendSyncRequest(self: *Self, peer_id: Peer.Id) void {
+pub fn sendSyncRequest(self: *Self, peer_id: Peer.Id) error{NotConnected}!void {
+    if (!self.connections.peers.contains(peer_id)) return error.NotConnected;
     const request = struct {
         pub fn f(router: *Self, peer: Peer.Id) std.Io.Cancelable!void {
-            _ = p2p.protocols.SyncProtocol.request(router, peer) catch |err| switch (err) {
+            const conn_peer = router.getConnectedPeer(peer) orelse {
+                log.err("Sync request with {x} failed: Not connected", .{peer.bytes[0..4]});
+                return;
+            };
+            _ = p2p.protocols.SyncProtocol.request(router, conn_peer) catch |err| switch (err) {
                 error.Canceled => |e| return e,
                 else => |e| log.err("Sync request with {x} failed: {t}", .{ peer.bytes[0..4], e }),
             };
@@ -188,31 +217,44 @@ pub fn sendSyncRequest(self: *Self, peer_id: Peer.Id) void {
     self.io_group.async(self.io, request, .{ self, peer_id });
 }
 
-pub fn connectToEndpoint(self: *Self, peer_id: Peer.Id) !void {
+pub fn connectToEndpoint(self: *Self, peer_id: Peer.Id) !*ConnectedPeer {
     // We dont check here if peer is already in self.connections because
     // that might be false, and while we are trying to connect, this peer
     // might have in the meanwhile connected, leading to double connect.
     // Instead this logic is handled in handleConn.
     log.info("Attempting connection to peer {x}...", .{peer_id.bytes[0..4]});
     const conn = try self.endpoint.connect(.{ .id = &peer_id.bytes });
-    try self.handleConn(conn, true); // closes conn on error
+    return try self.handleConn(conn, true); // closes conn on error
 }
 
-pub fn closeConnection(
+pub fn getConnectedPeer(self: *Self, peer_id: Peer.Id) ?*ConnectedPeer {
+    self.connections.mutex.lockUncancelable(self.io);
+    defer self.connections.mutex.unlock(self.io);
+    return self.connections.peers.get(peer_id);
+}
+
+pub fn disconnectPeer(
     self: *Self,
+    peer_id: Peer.Id,
     opts: struct {
-        peer_id: Peer.Id,
         conn: ?*iroh.Connection = null,
     },
 ) void {
-    self.connections.mutex.lockUncancelable(self.io);
-    defer self.connections.mutex.unlock(self.io);
-    if (self.connections.peers.getPtr(opts.peer_id)) |conn_peer| {
+    if (self.getConnectedPeer(peer_id)) |conn_peer| {
         if (opts.conn == null or opts.conn.?.ptr == conn_peer.conn.ptr) {
-            conn_peer.close(self.io);
-            _ = self.connections.peers.remove(opts.peer_id);
-            log.info("Connection dropped to {x}", .{opts.peer_id.bytes[0..4]});
-            self.publishEvent(.{ .disconnected = opts.peer_id });
+            // Publish event first so that listeners can get rid of
+            // their pointers to ConnectedPeer which is about to be dangling.
+            self.publishEvent(.{ .disconnected = peer_id });
+
+            // TODO Because ConnectedPeer is always on the heap, this might lead
+            // to dangling pointers, so instead of destorying it here, only close()
+            // and let its corresponding conn thread destroy it?
+            {
+                self.connections.mutex.lockUncancelable(self.io);
+                defer self.connections.mutex.unlock(self.io);
+                _ = self.connections.peers.remove(peer_id);
+            }
+            conn_peer.closeAndDestroy(self.gpa, self.io);
         }
     }
 }
@@ -298,20 +340,22 @@ fn acceptLoop(self: *Self) error{Canceled}!void {
             }
         };
 
-        self.handleConn(conn, false) catch {};
+        _ = self.handleConn(conn, false) catch {};
     }
 }
 
 /// Register new connection and spawn its connLoop thread
-pub fn handleConn(self: *Self, conn: iroh.Connection, initiated: bool) Allocator.Error!void {
+pub fn handleConn(self: *Self, conn: iroh.Connection, initiated: bool) Allocator.Error!*ConnectedPeer {
     // If we already have a connection, we remove that one and
     // replace it with this new one, as the peer might have
     // lost theirs.
-    self.closeConnection(.{ .peer_id = .{ .bytes = conn.addr.id.copyBytes() } });
+    self.disconnectPeer(.{ .bytes = conn.addr.id.copyBytes() }, .{});
 
-    errdefer conn.close();
-
-    var conn_peer: ConnectedPeer = .fromConnection(conn);
+    var conn_peer = ConnectedPeer.create(self.gpa, conn) catch |err| {
+        conn.close();
+        return err;
+    };
+    errdefer conn_peer.closeAndDestroy(self.gpa, self.io);
 
     {
         self.connections.mutex.lockUncancelable(self.io);
@@ -326,43 +370,50 @@ pub fn handleConn(self: *Self, conn: iroh.Connection, initiated: bool) Allocator
         "{s} connection to peer {x}",
         .{ if (initiated) "Initiated" else "Accepted", conn_peer.id.bytes[0..4] },
     );
-    self.publishEvent(.{ .connected = .{ .peer_id = conn_peer.id, .initiated = initiated } });
-    // self.io_group.async(self.io, connLoop, .{ self, conn_peer.id });
-    conn_peer.io_group.async(self.io, connLoop, .{ self, conn_peer.id });
+    self.publishEvent(.{ .connected = .{
+        .peer_id = conn_peer.id,
+        .conn_peer = conn_peer,
+        .initiated = initiated,
+    } });
+
+    conn_peer.io_group.async(self.io, connLoop, .{ self, conn_peer });
+
+    return conn_peer;
 }
 
 /// Listens for new bi streams and spawns new streamLoop thread when
 /// one has been established.
-fn connLoop(self: *Self, peer_id: Peer.Id) error{Canceled}!void {
-    var conn_peer: ConnectedPeer = blk: {
-        self.connections.mutex.lockUncancelable(self.io);
-        defer self.connections.mutex.unlock(self.io);
-        break :blk self.connections.peers.get(peer_id) orelse unreachable;
-    };
-    var conn = &conn_peer.conn;
+fn connLoop(self: *Self, conn_peer: *ConnectedPeer) error{Canceled}!void {
+    const peer_id = conn_peer.id;
+    const conn = &conn_peer.conn;
 
+    // When done or error, close connection to the peer.
     // We specify the connection so that we dont close a newer connection.
-    defer self.closeConnection(.{ .peer_id = peer_id, .conn = conn });
+    // This has to be done concurrently, because disconnectPeer will
+    // await on all threads of ConnectedPeer.io_group. If we run it here,
+    // then we are in a deadlock state. For the same reason we use self.io_group
+    // rather than ConnectedPeer.io_group.
+    defer self.io_group.concurrent(self.io, disconnectPeer, .{self, peer_id, .{ .conn = conn }}) catch {};
 
     while (true) {
         log.info("Waiting for stream from peer {x}...", .{peer_id.bytes[0..4]});
 
         const streams = conn.acceptBiStream() catch |err| {
-            log.err("Failed to accept stream from {x}: {t}. Quitting connLoop.", .{ peer_id.bytes[0..4], err });
+            log.err("Failed to accept bistream from {x}: {t}. Quitting connLoop.", .{ peer_id.bytes[0..4], err });
             return error.Canceled;
+            // return;
         };
 
         log.info("Received stream!", .{});
         self.publishEvent(.{ .stream_received = peer_id });
 
-        // self.io_group.async(self.io, handleStream, .{ self, peer_id, streams });
-        conn_peer.io_group.async(self.io, handleStream, .{ self, peer_id, streams });
+        conn_peer.io_group.async(self.io, handleStream, .{ self, conn_peer, streams });
     }
 }
 
 /// Run when a bistream has been established.
-fn handleStream(self: *Self, peer_id: Peer.Id, streams: iroh.BiStream) error{Canceled}!void {
-    protocols.handleRequest(self, peer_id, streams) catch |err| switch (err) {
+fn handleStream(self: *Self, conn_peer: *ConnectedPeer, streams: iroh.BiStream) error{Canceled}!void {
+    protocols.accept(self, conn_peer, streams) catch |err| switch (err) {
         error.Canceled => |e| return e,
         else => {},
     };

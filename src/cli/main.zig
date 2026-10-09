@@ -65,7 +65,7 @@ fn printInfo(core: *Core, stdout: *std.Io.Writer, arena: std.mem.Allocator) !voi
         try stdout.print("Connections:\n", .{});
         var iter = core.router.connections.peers.valueIterator();
         while (iter.next()) |conn_peer| {
-            try stdout.print("  - {x}\n", .{conn_peer.id.bytes});
+            try stdout.print("  - {x}\n", .{conn_peer.*.id.bytes});
         }
     }
 
@@ -81,7 +81,5 @@ fn pair(router: *ilm.p2p.Router, endpoint_id_hex: []const u8) !void {
     var endpoint_id_bytes: [32]u8 = undefined;
     _ = try std.fmt.hexToBytes(&endpoint_id_bytes, endpoint_id_hex);
     const peer_id: ilm.p2p.Peer.Id = .{ .bytes = endpoint_id_bytes };
-    var recv_buf: [512]u8 = undefined;
-    const name = try ilm.p2p.protocols.PairProtocol.request(router, peer_id, &recv_buf);
-    _ = name;
+    router.sendPairRequest(peer_id);
 }

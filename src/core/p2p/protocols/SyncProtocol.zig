@@ -4,12 +4,23 @@ const ilm = @import("../../root.zig");
 const p2p = ilm.p2p;
 const Peer = p2p.Peer;
 const Router = p2p.Router;
+const ConnectedPeer = Router.ConnectedPeer;
 const crdt = ilm.database.crdt;
 const iroh = @import("iroh");
 
 const log = std.log.scoped(.p2p_sync_protocol);
 
 pub const TAG: p2p.protocols.ProtocolTag = .sync;
+
+
+const RequestAnswer = enum(u8) {
+    accept = 0,
+    /// Generic reject
+    reject = 1,
+    /// Unknown peer
+    unknown = 2,
+    _,
+};
 
 pub const SyncError = error{
     Database,
@@ -23,28 +34,27 @@ pub const SyncAcceptError = error{
 
 pub fn accept(
     router: *p2p.Router,
+    conn_peer: *ConnectedPeer,
     streams_: iroh.BiStream,
-    peer_id: Peer.Id,
 ) SyncAcceptError!void {
+    const peer_id = conn_peer.id;
     const core = router.getCore();
 
     var arena_alloc: std.heap.ArenaAllocator = .init(core.gpa);
     defer arena_alloc.deinit();
     const arena = arena_alloc.allocator();
 
-    const conn_peer = router.connections.peers.getPtr(peer_id) orelse return error.NotConnected;
-    _ = conn_peer;
+    var streams = streams_; // get a nonconst copy
+    defer streams.deinit();
 
     const peer = if (p2p.peer.getById(&router.db, arena, &peer_id) catch return error.Database) |peer|
         peer
     else {
         log.warn("Sync request rejected from unknown peer {x}", .{peer_id.bytes[0..4]});
+        try streams.send.write(&.{@intFromEnum(RequestAnswer.unknown)}, 5000);
         return error.UnknownPeer;
     };
     _ = peer;
-
-    var streams = streams_; // get a nonconst copy
-    defer streams.deinit();
 
     // Client is supposed to send the db version and wait for approval.
     // Db version is a u64, which we enforce the size of (8 bytes).
@@ -56,7 +66,7 @@ pub fn accept(
     log.info("Sync requested from db version {d}", .{db_version});
 
     // Send approval.
-    try streams.send.write(&.{0}, 5000);
+    try streams.send.write(&.{@intFromEnum(RequestAnswer.accept)}, 5000);
 
     // We now query the changeset and send it back.
     {
@@ -102,8 +112,10 @@ pub const SyncRequestError = error{
 
 pub fn request(
     router: *p2p.Router,
-    peer_id: Peer.Id,
+    conn_peer: *ConnectedPeer,
 ) SyncRequestError!void {
+    const peer_id = conn_peer.id;
+
     var arena_alloc: std.heap.ArenaAllocator = .init(router.getCore().gpa);
     defer arena_alloc.deinit();
     const arena = arena_alloc.allocator();
@@ -116,9 +128,9 @@ pub fn request(
     };
 
     log.info("Requesting sync with peer {x} ({s})", .{ peer.id.bytes[0..4], peer.name });
-    router.publishEvent(.{ .sync_start = peer });
+    router.publishEvent(.{ .sync_start = .{ .conn_peer = conn_peer, .peer = peer }});
 
-    if (requestInner(router, peer, arena)) {
+    if (requestInner(router, conn_peer, peer, arena)) {
         router.publishEvent(.{ .sync_done = .{ .peer = peer } });
         return;
     } else |err| {
@@ -129,12 +141,11 @@ pub fn request(
 
 fn requestInner(
     router: *p2p.Router,
+    conn_peer: *ConnectedPeer,
     peer: Peer,
     arena: std.mem.Allocator,
 ) SyncRequestError!void {
     const core = router.getCore();
-
-    const conn_peer = router.connections.peers.getPtr(peer.id) orelse return error.NotConnected;
     const conn = &conn_peer.conn;
 
     var streams = try conn.openBiStream();
@@ -149,14 +160,21 @@ fn requestInner(
     }
 
     // Wait for approval (0) or rejection (1) byte
-    {
+    blk: {
         var resp: [1]u8 = undefined;
         _ = try streams.recv.readExact(&resp, 1_000_000);
-        if (resp[0] != 0) {
-            log.warn("Sync rejected, stopping.", .{});
-            streams.send.finish(); // necessary?
-            return error.Rejected;
+        const answer: RequestAnswer = @enumFromInt(resp[0]);
+        switch (answer) {
+            .accept => break :blk,
+            .reject => log.warn("Sync rejected for unspecified reason, stopping.", .{}),
+            _ => log.warn("Sync rejected for unknown reason, stopping.", .{}),
+            .unknown => {
+                log.warn("Sync rejected as peer is no longer a friend, stopping.", .{});
+                core.deletePeerAndCloseConnection(peer.id) catch {};
+            },
         }
+        streams.send.finish(); // necessary?
+        return error.Rejected;
     }
 
     // Peer is supposed to send all the crsql changes and end the send stream.

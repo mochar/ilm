@@ -3,21 +3,28 @@ const dvui = @import("dvui");
 const ilm = @import("ilm");
 const Core = ilm.Core;
 const Peer = ilm.p2p.Peer;
+const Router = ilm.p2p.Router;
+const ConnectedPeer = Router.ConnectedPeer;
 const utils = @import("utils.zig");
 const Self = @This();
 
 const log = std.log.scoped(.peer_view);
 
+const State = struct {
+    peer_id: Peer.Id,
+    conn_peer: std.atomic.Value(?*ConnectedPeer),
+    requesting_sync: std.atomic.Value(bool),
+};
+
 core: *Core,
 arena: std.heap.ArenaAllocator,
 peer: Peer,
+state: *State,
 
 name_edit: struct {
     editing: bool = false,
     name: std.ArrayList(u8) = .empty,
 } = .{},
-
-requesting_sync: *std.atomic.Value(bool),
 
 pub fn init(core: *Core, peer_id: Peer.Id) !Self {
     var arena_alloc: std.heap.ArenaAllocator = .init(core.gpa);
@@ -26,11 +33,21 @@ pub fn init(core: *Core, peer_id: Peer.Id) !Self {
 
     const peer = try ilm.p2p.peer.getById(&core.db, arena, &peer_id) orelse return error.NotFound;
 
-    const requesting_sync = try arena.create(std.atomic.Value(bool));
-    requesting_sync.* = .init(false);
-    // try core.router.addEventTrigger(.{ .ctx = @ptrCast(requesting_pair), .triggerFn = routerEventCallback });
+    const state = try arena.create(State);
+    state.* = .{
+        .peer_id = peer_id,
+        .conn_peer = .init(core.router.getConnectedPeer(peer_id)),
+        .requesting_sync = .init(false),
+    };
 
-    var self: Self = .{ .core = core, .arena = arena_alloc, .peer = peer, .requesting_sync = requesting_sync };
+    try core.router.addEventTrigger(.{ .ctx = @ptrCast(state), .triggerFn = routerEventCallback });
+
+    var self: Self = .{
+        .core = core,
+        .arena = arena_alloc,
+        .peer = peer,
+        .state = state,
+    };
 
     try self.name_edit.name.appendSlice(arena, peer.name);
 
@@ -39,6 +56,36 @@ pub fn init(core: *Core, peer_id: Peer.Id) !Self {
 
 pub fn deinit(self: *Self) void {
     self.arena.deinit();
+}
+
+fn routerEventCallback(state_opaque: ?*anyopaque, event: Router.Event) void {
+    const state: *State = @ptrCast(@alignCast(state_opaque.?));
+    switch (event) {
+        .sync_start => |e| {
+            if (std.mem.eql(u8, &state.peer_id.bytes, &e.peer.id.bytes)) {
+                state.requesting_sync.store(true, .seq_cst);
+            }
+        },
+        .sync_done => |e| {
+            if (std.mem.eql(u8, &state.peer_id.bytes, &e.peer.id.bytes)) {
+                state.requesting_sync.store(false, .seq_cst);
+            }
+        },
+        .disconnected => |id| {
+            log.info("Disconnected", .{});
+            if (std.mem.eql(u8, &state.peer_id.bytes, &id.bytes)) {
+                state.conn_peer.store(null, .seq_cst);
+            }
+        },
+        .connected => |connected| {
+            log.info("Connected", .{});
+            const conn_peer = connected.conn_peer;
+            if (std.mem.eql(u8, &state.peer_id.bytes, &conn_peer.id.bytes)) {
+                state.conn_peer.store(conn_peer, .seq_cst);
+            }
+        },
+        else => {},
+    }
 }
 
 pub fn render(self: *Self) void {
@@ -50,7 +97,7 @@ pub fn render(self: *Self) void {
     });
     defer box.deinit();
 
-    const peer_conn = self.core.router.connections.peers.getPtr(self.peer.id);
+    const conn_peer = self.state.conn_peer.load(.seq_cst);
 
     if (self.name_edit.editing) {
         var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{});
@@ -85,7 +132,7 @@ pub fn render(self: *Self) void {
         defer hbox.deinit();
 
         dvui.labelNoFmt(@src(), "●", .{}, .{
-            .color_text = .{ .color = if (peer_conn != null) .fromHex("#42c52c") else .gray },
+            .color_text = .{ .color = if (conn_peer != null) .fromHex("#42c52c") else .gray },
             .font = .find(.{ .family = "dejavu sans" }),
             .padding = .{ .y = 5, .x = 4 },
         });
@@ -104,8 +151,8 @@ pub fn render(self: *Self) void {
         var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{});
         defer hbox.deinit();
 
-        if (peer_conn) |pc| {
-            _ = pc;
+        if (conn_peer) |cp| {
+            _ = cp;
             if (dvui.button(@src(), "Sync", .{}, .{})) {
                 self.sync() catch |err| {
                     utils.toastErr(@src(), err, "Failed to connect", .{});
@@ -128,6 +175,5 @@ pub fn render(self: *Self) void {
 }
 
 fn sync(self: *Self) !void {
-    _ = self.requesting_sync.swap(true, .acq_rel);
-    self.core.router.sendSyncRequest(self.peer.id);
+    try self.core.router.sendSyncRequest(self.peer.id);
 }

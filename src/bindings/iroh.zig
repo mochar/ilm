@@ -481,7 +481,7 @@ pub const Connection = struct {
     /// thread.
     ///
     /// Consumes the connection, no need to free it afterwards.
-    pub fn wait_close(self: *const Connection) EndpointError!void {
+    pub fn waitClose(self: *const Connection) EndpointError!void {
         // TODO Rust version returns ConnectionError enum with reason
         // for why it is closed. One of them is ConnectionClosed that
         // contains struct Closed with some info.

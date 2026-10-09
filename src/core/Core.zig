@@ -149,7 +149,7 @@ fn getPeers(core: *Core) void {
 }
 
 pub fn deletePeerAndCloseConnection(core: *Core, peer_id: Peer.Id) !void {
-    core.router.closeConnection(.{ .peer_id = peer_id });
+    core.router.disconnectPeer(peer_id, .{});
     try p2p.peer.delete(core, peer_id);
 }
 

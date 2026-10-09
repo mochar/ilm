@@ -14,8 +14,9 @@
 const std = @import("std");
 const iroh = @import("iroh");
 const ilm = @import("../root.zig");
-const Router = ilm.p2p.Router;
 const Peer = ilm.p2p.Peer;
+const Router = ilm.p2p.Router;
+const ConnectedPeer = Router.ConnectedPeer;
 pub const PairProtocol = @import("protocols/PairProtocol.zig");
 pub const SyncProtocol = @import("protocols/SyncProtocol.zig");
 
@@ -36,8 +37,12 @@ pub const Protocol = union(ProtocolTag) {
 
 pub const RequestHandleError = PairProtocol.PairAcceptError || SyncProtocol.SyncAcceptError;
 
+pub const AcceptError = PairProtocol.PairAcceptError || SyncProtocol.SyncAcceptError;
+
 /// Handle a bistream from a peer by establish the protocol and calling the corresponding handler.
-pub fn handleRequest(router: *Router, peer_id: Peer.Id, streams_: iroh.BiStream) RequestHandleError!void {
+pub fn accept(router: *Router, conn_peer: *ConnectedPeer, streams_: iroh.BiStream) AcceptError!void {
+    const peer_id = conn_peer.id;
+    
     defer router.publishEvent(.{ .stream_closed = peer_id });
 
     var streams = streams_; // get a nonconst copy
@@ -57,14 +62,14 @@ pub fn handleRequest(router: *Router, peer_id: Peer.Id, streams_: iroh.BiStream)
     switch (protocol) {
         .pair => {
             log.info("Client {x} requested pair", .{peer_id.bytes[0..4]});
-            PairProtocol.accept(router, streams, peer_id) catch |err| {
+            PairProtocol.accept(router, conn_peer, streams) catch |err| {
                 log.err("Pair request failed: {t}", .{err});
                 return err;
             };
         },
         .sync => {
             log.info("Client {x} requested sync", .{peer_id.bytes[0..4]});
-            SyncProtocol.accept(router, streams, peer_id) catch |err| {
+            SyncProtocol.accept(router, conn_peer, streams) catch |err| {
                 log.err("Sync request failed: {t}", .{err});
                 return err;
             };

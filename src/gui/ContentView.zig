@@ -54,8 +54,8 @@ fn onPeerEvent(window_opaque: ?*anyopaque, event: ilm.p2p.Router.Event) void {
             const msg = std.fmt.allocPrint(window.arena(), "Pair request from '{s}'", .{req.name}) catch "OOM";
             dvui.toast(@src(), .{ .window = window, .message = msg });
         },
-        .sync_start => |peer| {
-            const msg = std.fmt.allocPrint(window.arena(), "Syncing with '{s}'", .{peer.name}) catch "OOM";
+        .sync_start => |e| {
+            const msg = std.fmt.allocPrint(window.arena(), "Syncing with '{s}'", .{e.peer.name}) catch "OOM";
             dvui.toast(@src(), .{ .window = window, .message = msg });
         },
         .sync_done => |sync| {
@@ -133,8 +133,8 @@ pub fn render(self: *Self) void {
                 {
                     tl.addText("Connections:", .{});
                     var iter = self.core.router.connections.peers.valueIterator();
-                    while (iter.next()) |peer_conn| {
-                        tl.format("\n  - {x}", .{peer_conn.id.bytes}, .{});
+                    while (iter.next()) |conn_peer| {
+                        tl.format("\n  - {x}", .{conn_peer.*.id.bytes}, .{});
                     }
                 }
 

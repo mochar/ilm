@@ -4,6 +4,7 @@ const ilm = @import("../../root.zig");
 const p2p = ilm.p2p;
 const Peer = p2p.Peer;
 const Router = p2p.Router;
+const ConnectedPeer = Router.ConnectedPeer;
 const iroh = @import("iroh");
 
 const log = std.log.scoped(.p2p_pair_protocol);
@@ -43,9 +44,10 @@ pub const PairAcceptError = error{NotConnected} || PairError;
 /// from the recv stream. This transfers ownership of BiStream.
 pub fn accept(
     router: *p2p.Router,
+    peer: *ConnectedPeer,
     streams_: iroh.BiStream,
-    peer_id: Peer.Id,
 ) PairAcceptError!void {
+    const peer_id = peer.id;
     const core = router.getCore();
     const io = core.io;
 
@@ -56,7 +58,6 @@ pub fn accept(
     var streams = streams_; // get a nonconst copy
     defer streams.deinit();
 
-    var peer = router.connections.peers.getPtr(peer_id) orelse return error.NotConnected;
     var recv_buf: [512]u8 = undefined;
 
     var accepted: bool = undefined;
@@ -116,30 +117,25 @@ pub const PairRequestError = error{
 
 /// Request pairing with a peer. Blocks until done or error.
 ///
-/// If the peer accepts this will return the name returned by the
-/// pair, which the caller is responsible for deallocating.
+/// If the peer accepts, the peer info will be stored in the
+/// db which can be queried to get info of this peer.
 pub fn request(
     router: *p2p.Router,
-    peer_id: Peer.Id,
-    recv_buf: []u8,
-) PairRequestError![]const u8 {
-    if (requestInner(router, peer_id, recv_buf)) |name| {
-        router.publishEvent(.{ .pair_established = peer_id });
-        return name;
+    peer: *ConnectedPeer,
+) PairRequestError!void {
+    if (requestInner(router, peer)) {
+        router.publishEvent(.{ .pair_established = peer.id });
     } else |err| {
-        router.publishEvent(.{ .pair_failed = .{ .peer_id = peer_id, .err = err } });
+        router.publishEvent(.{ .pair_failed = .{ .peer_id = peer.id, .err = err } });
         return err;
     }
 }
 
 fn requestInner(
     router: *p2p.Router,
-    peer_id: Peer.Id,
-    recv_buf: []u8,
-) PairRequestError![]const u8 {
-    if (p2p.peer.exists(&router.db, &peer_id) catch false) {
-        return error.KnownPeer;
-    }
+    peer: *ConnectedPeer,
+) PairRequestError!void {
+    if (p2p.peer.exists(&router.db, &peer.id) catch false) return error.KnownPeer;
 
     const core = router.getCore();
 
@@ -147,16 +143,9 @@ fn requestInner(
     defer arena_alloc.deinit();
     const arena = arena_alloc.allocator();
 
-    log.info("Requesting pair with {x}", .{peer_id.bytes});
+    log.info("Requesting pair with {x}", .{peer.id.bytes});
 
-    // First establish connection in the router.
-    // Connection is always closed on error, so we assume this peer is
-    // not already connected to the router. On success, the connection
-    // is passed to the router to keep around.
-    // if (router.connections.peers.contains(peer_id)) {}
-    var conn = try router.endpoint.connect(.{ .id = &peer_id.bytes });
-    errdefer conn.close();
-    var streams = try conn.openBiStream();
+    var streams = try peer.conn.openBiStream();
 
     const proto_byte: u8 = @intFromEnum(TAG);
     const pair_bytes = try std.mem.concat(arena, u8, &.{ &.{proto_byte}, router.name });
@@ -165,7 +154,8 @@ fn requestInner(
 
     // Expect to receive a 1-byte for a reject, or a 0-byte plus
     // optional name bytes for accept.
-    const resp = try streams.recv.readToEnd(recv_buf, 1_000_000);
+    var recv_buf: [512]u8 = undefined;
+    const resp = try streams.recv.readToEnd(&recv_buf, 1_000_000);
     streams.recv.deinit();
 
     if (resp.len == 0) return error.InvalidResponse;
@@ -174,11 +164,10 @@ fn requestInner(
         0 => {
             const name = resp[1..];
             log.info("Pair accepted with name: '{s}'", .{name});
-            router.handleConn(conn, true) catch {}; // closes conn on error
-            p2p.peer.add(core, name, peer_id) catch |err| {
+            p2p.peer.add(core, name, peer.id) catch |err| {
                 log.warn("Failed to save peer in db: {t}", .{err});
             };
-            return name;
+            return;
         },
         1 => {
             log.err("Pair request rejected", .{});

@@ -222,8 +222,8 @@ fn renderContent(self: *Self) void {
         // Pair requests
         var conn_peers = self.core.router.connections.peers.valueIterator();
         while (conn_peers.next()) |con_peer| {
-            if (con_peer.pair_request != null) {
-                renderPairingPeer(con_peer) catch {};
+            if (con_peer.*.pair_request != null) {
+                renderPairingPeer(con_peer.*) catch {};
             }
         }
 
