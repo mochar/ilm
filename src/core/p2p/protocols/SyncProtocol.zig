@@ -49,7 +49,7 @@ const RequestAnswer = enum(u8) {
     _,
 };
 
-pub const SyncError = error{
+pub const SyncBaseError = error{
     Busy,
     Database,
     UnknownPeer,
@@ -58,15 +58,21 @@ pub const SyncError = error{
 
 pub const SyncAcceptError = error{
     InvalidDbVersion,
-} || SyncError;
+} || SyncBaseError;
 
-pub fn accept(self: *Self, streams_: iroh.BiStream) SyncAcceptError!void {
+pub const SyncRequestError = error{
+    InvalidResponse,
+    Rejected,
+} || SyncBaseError;
+
+pub const SyncTwowayError = SyncAcceptError || SyncRequestError;
+
+pub fn accept(self: *Self, streams_: iroh.BiStream) SyncTwowayError!void {
     if (self.state != .dormant) return error.Busy;
     self.state = .retrieving;
     defer self.state = .dormant;
 
     const peer = self.connectedPeer();
-    const arena = self.arena.allocator();
     defer _ = self.arena.reset(.free_all);
 
     var streams = streams_; // get a nonconst copy
@@ -77,6 +83,52 @@ pub fn accept(self: *Self, streams_: iroh.BiStream) SyncAcceptError!void {
         try streams.send.write(&.{@intFromEnum(RequestAnswer.unknown)}, 5000);
         return error.UnknownPeer;
     }
+
+    try self.doSend(&streams);
+    try self.doRetrieve(&streams);
+
+    streams.send.finish();
+}
+
+pub fn request(self: *Self) SyncTwowayError!void {
+    if (self.state != .dormant) return error.Busy;
+    self.state = .sending;
+    defer self.state = .dormant;
+
+    const peer_id = self.connectedPeer().id;
+
+    const peer = (p2p.peer.getById(&self.router.db, self.arena.allocator(), &peer_id) catch return error.Database) orelse {
+        log.err("Sync request failed as peer {x} is unknown", .{peer_id.bytes[0..4]});
+        return error.UnknownPeer;
+    };
+
+    log.info("Requesting sync with peer {x} ({s})", .{ peer.id.bytes[0..4], peer.name });
+    self.router.publishEvent(.{ .sync_start = .{ .conn_peer = self.connectedPeer(), .peer = peer } });
+
+    if (self.requestInner()) {
+        self.router.publishEvent(.{ .sync_done = .{ .peer = peer } });
+        return;
+    } else |err| {
+        self.router.publishEvent(.{ .sync_done = .{ .peer = peer, .err = err } });
+        return err;
+    }
+}
+
+fn requestInner(self: *Self) SyncTwowayError!void {
+    defer _ = self.arena.reset(.free_all);
+
+    const peer = self.connectedPeer();
+    var streams = try peer.conn.openBiStream();
+
+    try self.doRetrieve(&streams);
+    try self.doSend(&streams);
+
+    streams.send.finish();
+}
+
+fn doSend(self: *Self, streams: *iroh.BiStream) SyncAcceptError!void {
+    const peer = self.connectedPeer();
+    const arena = self.arena.allocator();
 
     // Client is supposed to send the db version and wait for approval.
     // Db version is a u64, which we enforce the size of (8 bytes).
@@ -123,49 +175,14 @@ pub fn accept(self: *Self, streams_: iroh.BiStream) SyncAcceptError!void {
             }
         }
         try streams.send.write(&.{0}, 5000); // indicate done
-        streams.send.finish();
     }
 }
 
-pub const SyncRequestError = error{
-    InvalidResponse,
-    Rejected,
-} || SyncError;
-
-pub fn request(self: *Self) SyncRequestError!void {
-    if (self.state != .dormant) return error.Busy;
-    self.state = .sending;
-    defer self.state = .dormant;
-
-    const peer_id = self.connectedPeer().id;
-    
-    const peer = (p2p.peer.getById(&self.router.db, self.arena.allocator(), &peer_id) catch return error.Database) orelse {
-        log.err("Sync request failed as peer {x} is unknown", .{peer_id.bytes[0..4]});
-        return error.UnknownPeer;
-    };
-
-    log.info("Requesting sync with peer {x} ({s})", .{ peer.id.bytes[0..4], peer.name });
-    self.router.publishEvent(.{ .sync_start = .{ .conn_peer = self.connectedPeer(), .peer = peer } });
-
-    if (self.requestInner()) {
-        self.router.publishEvent(.{ .sync_done = .{ .peer = peer } });
-        return;
-    } else |err| {
-        self.router.publishEvent(.{ .sync_done = .{ .peer = peer, .err = err } });
-        return err;
-    }
-}
-
-fn requestInner(self: *Self) SyncRequestError!void {
+fn doRetrieve(self: *Self, streams: *iroh.BiStream) SyncRequestError!void {
     const core = self.router.getCore();
     const peer = self.connectedPeer();
-    const conn = &peer.conn;
-    
     const arena = self.arena.allocator();
-    defer _ = self.arena.reset(.free_all);
-
-    var streams = try conn.openBiStream();
-
+    
     // Send protocol byte and db version
     {
         const proto_byte: u8 = @intFromEnum(TAG);
@@ -225,6 +242,4 @@ fn requestInner(self: *Self) SyncRequestError!void {
         };
         log.info("Written {d} sync changes to the db", .{changes.items.len});
     }
-
-    streams.send.finish();
 }

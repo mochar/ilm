@@ -35,14 +35,10 @@ pub const Protocol = union(ProtocolTag) {
     sync: SyncProtocol,
 };
 
-pub const RequestHandleError = PairProtocol.PairAcceptError || SyncProtocol.SyncAcceptError;
-
-pub const AcceptError = PairProtocol.PairAcceptError || SyncProtocol.SyncAcceptError;
-
 /// Handle a bistream from a peer by establish the protocol and calling the corresponding handler.
-pub fn accept(router: *Router, conn_peer: *ConnectedPeer, streams_: iroh.BiStream) AcceptError!void {
+pub fn accept(router: *Router, conn_peer: *ConnectedPeer, streams_: iroh.BiStream) !void {
     const peer_id = conn_peer.id;
-    
+
     defer router.publishEvent(.{ .stream_closed = peer_id });
 
     var streams = streams_; // get a nonconst copy
