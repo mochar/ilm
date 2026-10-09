@@ -69,7 +69,7 @@ pub fn accept(router: *Router, conn_peer: *ConnectedPeer, streams_: iroh.BiStrea
         },
         .sync => {
             log.info("Client {x} requested sync", .{peer_id.bytes[0..4]});
-            SyncProtocol.accept(router, conn_peer, streams) catch |err| {
+            conn_peer.sync.accept(streams) catch |err| {
                 log.err("Sync request failed: {t}", .{err});
                 return err;
             };

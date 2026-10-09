@@ -152,9 +152,12 @@ pub fn render(self: *Self) void {
         defer hbox.deinit();
 
         if (conn_peer) |cp| {
-            _ = cp;
-            if (dvui.button(@src(), "Sync", .{}, .{})) {
-                self.sync() catch |err| {
+            const syncing = cp.sync.state != .dormant;
+            if (dvui.button(@src(), if (syncing) "Syncing..." else "Sync", .{
+                .grayed = syncing,
+                .draw_focus = !syncing,
+            }, .{}) and !syncing) {
+                self.core.router.sendSyncRequest(self.peer.id) catch |err| {
                     utils.toastErr(@src(), err, "Failed to connect", .{});
                 };
             }
@@ -172,8 +175,4 @@ pub fn render(self: *Self) void {
             };
         }
     }
-}
-
-fn sync(self: *Self) !void {
-    try self.core.router.sendSyncRequest(self.peer.id);
 }

@@ -23,20 +23,26 @@ pub const ConnectedPeer = struct {
     /// Populated if peer is waiting on a pair request
     pair_request: ?*protocols.PairProtocol.IncomingRequest = null,
     /// Sync state
-    sync: ?*protocols.SyncProtocol = null,
+    sync: protocols.SyncProtocol,
 
-    pub fn create(alloc: Allocator, conn: iroh.Connection) Allocator.Error!*ConnectedPeer {
+    pub fn create(alloc: Allocator, router: *Self, conn: iroh.Connection) Allocator.Error!*ConnectedPeer {
         const self = try alloc.create(ConnectedPeer);
         self.* = .{
             .conn = conn,
             .id = .{ .bytes = conn.addr.id.copyBytes() },
             .io_group = .init,
+            .sync = .init(alloc, router),
         };
         return self;
     }
 
     pub fn closeAndDestroy(self: *ConnectedPeer, alloc: Allocator, io: std.Io) void {
         self.close(io);
+        self.destroy(alloc);
+    }
+
+    pub fn destroy(self: *ConnectedPeer, alloc: Allocator) void {
+        self.sync.deinit();
         alloc.destroy(self);
     }
 
@@ -73,11 +79,6 @@ pub const Event = union(enum) {
     sync_done: struct {
         peer: Peer,
         err: ?anyerror = null,
-    },
-    // own message buf to not deal with allocation
-    message: struct {
-        buf: [512]u8,
-        len: usize,
     },
 };
 
@@ -208,7 +209,7 @@ pub fn sendSyncRequest(self: *Self, peer_id: Peer.Id) error{NotConnected}!void {
                 log.err("Sync request with {x} failed: Not connected", .{peer.bytes[0..4]});
                 return;
             };
-            _ = p2p.protocols.SyncProtocol.request(router, conn_peer) catch |err| switch (err) {
+            conn_peer.sync.request() catch |err| switch (err) {
                 error.Canceled => |e| return e,
                 else => |e| log.err("Sync request with {x} failed: {t}", .{ peer.bytes[0..4], e }),
             };
@@ -351,7 +352,7 @@ pub fn handleConn(self: *Self, conn: iroh.Connection, initiated: bool) Allocator
     // lost theirs.
     self.disconnectPeer(.{ .bytes = conn.addr.id.copyBytes() }, .{});
 
-    var conn_peer = ConnectedPeer.create(self.gpa, conn) catch |err| {
+    var conn_peer = ConnectedPeer.create(self.gpa, self, conn) catch |err| {
         conn.close();
         return err;
     };
@@ -398,6 +399,11 @@ fn connLoop(self: *Self, conn_peer: *ConnectedPeer) error{Canceled}!void {
     while (true) {
         log.info("Waiting for stream from peer {x}...", .{peer_id.bytes[0..4]});
 
+        // TODO Problem is we cannot distinguish between having closed
+        // the connection ourselves or when done externally. This makes
+        // it dificult to do cleanup and other stuff. Since this uses
+        // tokio, io.cancel doesnt work. Maybe use Io.Select, with this
+        // thread on one that just listens for a cancel?
         const streams = conn.acceptBiStream() catch |err| {
             log.err("Failed to accept bistream from {x}: {t}. Quitting connLoop.", .{ peer_id.bytes[0..4], err });
             return error.Canceled;

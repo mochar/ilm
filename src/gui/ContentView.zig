@@ -43,13 +43,6 @@ fn onPeerEvent(window_opaque: ?*anyopaque, event: ilm.p2p.Router.Event) void {
         .disconnected => dvui.toast(@src(), .{ .window = window, .message = "Disconnected from p2p client" }),
         .stream_received => dvui.toast(@src(), .{ .window = window, .message = "Stream received to p2p client" }),
         .stream_closed => dvui.toast(@src(), .{ .window = window, .message = "Stream closed to p2p client" }),
-        .message => |payload| {
-            const arena = dvui.currentWindow().lifo();
-            const msg = payload.buf[0..payload.len];
-            const txt = std.fmt.allocPrint(arena, "Recieved p2p msg: {s}", .{msg}) catch "OOM";
-            defer arena.free(txt);
-            dvui.toast(@src(), .{ .window = window, .message = txt });
-        },
         .pair_request => |req| {
             const msg = std.fmt.allocPrint(window.arena(), "Pair request from '{s}'", .{req.name}) catch "OOM";
             dvui.toast(@src(), .{ .window = window, .message = msg });

@@ -1,3 +1,5 @@
+const Self = @This();
+
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ilm = @import("../../root.zig");
@@ -12,7 +14,32 @@ const log = std.log.scoped(.p2p_sync_protocol);
 
 pub const TAG: p2p.protocols.ProtocolTag = .sync;
 
+const State = union(enum) {
+    dormant,
+    sending,
+    retrieving,
+};
 
+router: *Router,
+arena: std.heap.ArenaAllocator,
+state: State = .dormant,
+
+pub fn init(gpa: Allocator, router: *Router) Self {
+    return .{
+        .router = router,
+        .arena = .init(gpa),
+    };
+}
+
+pub fn deinit(self: *Self) void {
+    self.arena.deinit();
+}
+
+fn connectedPeer(self: *Self) *ConnectedPeer {
+    return @fieldParentPtr("sync", self);
+}
+
+/// Byte that represents response to a sync request.
 const RequestAnswer = enum(u8) {
     accept = 0,
     /// Generic reject
@@ -23,6 +50,7 @@ const RequestAnswer = enum(u8) {
 };
 
 pub const SyncError = error{
+    Busy,
     Database,
     UnknownPeer,
     NotConnected,
@@ -33,28 +61,25 @@ pub const SyncAcceptError = error{
 } || SyncError;
 
 pub fn accept(
-    router: *p2p.Router,
-    conn_peer: *ConnectedPeer,
+    self: *Self,
     streams_: iroh.BiStream,
 ) SyncAcceptError!void {
-    const peer_id = conn_peer.id;
-    const core = router.getCore();
+    if (self.state != .dormant) return error.Busy;
+    self.state = .retrieving;
+    defer self.state = .dormant;
 
-    var arena_alloc: std.heap.ArenaAllocator = .init(core.gpa);
-    defer arena_alloc.deinit();
-    const arena = arena_alloc.allocator();
+    const peer = self.connectedPeer();
+    const arena = self.arena.allocator();
+    defer _ = self.arena.reset(.free_all);
 
     var streams = streams_; // get a nonconst copy
     defer streams.deinit();
 
-    const peer = if (p2p.peer.getById(&router.db, arena, &peer_id) catch return error.Database) |peer|
-        peer
-    else {
-        log.warn("Sync request rejected from unknown peer {x}", .{peer_id.bytes[0..4]});
+    if (!(p2p.peer.exists(&self.router.db, &peer.id) catch return error.Database)) {
+        log.warn("Sync request rejected from unknown peer {x}", .{peer.id.bytes[0..4]});
         try streams.send.write(&.{@intFromEnum(RequestAnswer.unknown)}, 5000);
         return error.UnknownPeer;
-    };
-    _ = peer;
+    }
 
     // Client is supposed to send the db version and wait for approval.
     // Db version is a u64, which we enforce the size of (8 bytes).
@@ -72,8 +97,8 @@ pub fn accept(
     {
         const type_info = @typeInfo(crdt.Change).@"struct";
         const changeset = crdt.getChanges(
-            &router.db,
-            peer_id.bytes[0..16],
+            &self.router.db,
+            peer.id.bytes[0..16],
             db_version,
             arena,
         ) catch |err| {
@@ -110,43 +135,37 @@ pub const SyncRequestError = error{
     Rejected,
 } || SyncError;
 
-pub fn request(
-    router: *p2p.Router,
-    conn_peer: *ConnectedPeer,
-) SyncRequestError!void {
-    const peer_id = conn_peer.id;
+pub fn request(self: *Self) SyncRequestError!void {
+    if (self.state != .dormant) return error.Busy;
+    self.state = .sending;
+    defer self.state = .dormant;
 
-    var arena_alloc: std.heap.ArenaAllocator = .init(router.getCore().gpa);
-    defer arena_alloc.deinit();
-    const arena = arena_alloc.allocator();
-
-    const peer = if (p2p.peer.getById(&router.db, arena, &peer_id) catch return error.Database) |peer|
-        peer
-    else {
+    const peer_id = self.connectedPeer().id;
+    
+    const peer = (p2p.peer.getById(&self.router.db, self.arena.allocator(), &peer_id) catch return error.Database) orelse {
         log.err("Sync request failed as peer {x} is unknown", .{peer_id.bytes[0..4]});
         return error.UnknownPeer;
     };
 
     log.info("Requesting sync with peer {x} ({s})", .{ peer.id.bytes[0..4], peer.name });
-    router.publishEvent(.{ .sync_start = .{ .conn_peer = conn_peer, .peer = peer }});
+    self.router.publishEvent(.{ .sync_start = .{ .conn_peer = self.connectedPeer(), .peer = peer } });
 
-    if (requestInner(router, conn_peer, peer, arena)) {
-        router.publishEvent(.{ .sync_done = .{ .peer = peer } });
+    if (self.requestInner()) {
+        self.router.publishEvent(.{ .sync_done = .{ .peer = peer } });
         return;
     } else |err| {
-        router.publishEvent(.{ .sync_done = .{ .peer = peer, .err = err } });
+        self.router.publishEvent(.{ .sync_done = .{ .peer = peer, .err = err } });
         return err;
     }
 }
 
-fn requestInner(
-    router: *p2p.Router,
-    conn_peer: *ConnectedPeer,
-    peer: Peer,
-    arena: std.mem.Allocator,
-) SyncRequestError!void {
-    const core = router.getCore();
-    const conn = &conn_peer.conn;
+fn requestInner(self: *Self) SyncRequestError!void {
+    const core = self.router.getCore();
+    const peer = self.connectedPeer();
+    const conn = &peer.conn;
+    
+    const arena = self.arena.allocator();
+    defer _ = self.arena.reset(.free_all);
 
     var streams = try conn.openBiStream();
 
@@ -159,7 +178,7 @@ fn requestInner(
         try streams.send.write(sync_bytes, 5000);
     }
 
-    // Wait for approval (0) or rejection (1) byte
+    // Wait for approval or rejection
     blk: {
         var resp: [1]u8 = undefined;
         _ = try streams.recv.readExact(&resp, 1_000_000);
