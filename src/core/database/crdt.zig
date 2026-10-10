@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const sqlite = @import("sqlite");
 const ilm = @import("../root.zig");
 const Core = ilm.Core;
 const database = ilm.database;
@@ -7,6 +8,43 @@ const Db = database.Db;
 const Diagnostics = database.Diagnostics;
 
 const log = std.log.scoped(.db_crdt);
+
+pub const SiteId = [16]u8;
+
+/// In Fly.io fork, changes retain the site_id and db_version of the original device that
+/// authored them. If Device B sends a change authored by Device C, it arrives with Device C's
+/// ID and C's clock version. In upstream, everything merged from a peer got stamped with your
+/// own local database's version clock.
+///
+/// Therefore, when Device A wants to sync from Device B, Device A must tell Device B exactly
+/// where it left off with every device it knows about.
+pub const SiteDbVersion = struct {
+    site_id: SiteId,
+    db_version: u64,
+};
+
+pub fn getSiteDbVersions(db: *Db, arena: Allocator) ![]SiteDbVersion {
+    var diags: Diagnostics = .{};
+
+    var stmt = db.prepareWithDiags(
+        \\SELECT site_id, db_version
+        \\FROM crsql_db_versions
+    ,
+        .{ .diags = &diags },
+    ) catch |err| {
+        log.err("Failed prepare stmt: ({t}) {f}", .{ err, diags });
+        return err;
+    };
+    defer stmt.deinit();
+
+    var iter = try stmt.iteratorAlloc(SiteDbVersion, arena, .{});
+    var rows: std.ArrayList(SiteDbVersion) = .empty;
+    defer rows.deinit(arena);
+    while (try iter.nextAlloc(arena, .{ .diags = &diags })) |row| {
+        try rows.append(arena, row);
+    }
+    return try rows.toOwnedSlice(arena);
+}
 
 /// See changes-vtab.c
 pub const Change = struct {
@@ -50,7 +88,7 @@ pub const Change = struct {
 /// sites and use that number as a cursor to fetch future changes.
 pub fn getChanges(
     db: *Db,
-    for_site_id: []const u8,
+    by_site_id: []const u8,
     since_db_version: u64,
     arena: Allocator,
 ) ![]Change {
@@ -59,7 +97,7 @@ pub fn getChanges(
     var stmt = db.prepareWithDiags(
         \\SELECT "table", "pk", "cid", "val", "col_version", "db_version", "site_id", "cl", "seq", "ts"
         \\FROM crsql_changes
-        \\WHERE site_id IS NOT ? AND db_version > ?
+        \\WHERE site_id IS ? AND db_version > ?
     ,
         .{ .diags = &diags },
     ) catch |err| {
@@ -68,7 +106,7 @@ pub fn getChanges(
     };
     defer stmt.deinit();
 
-    var iter = try stmt.iteratorAlloc(Change, arena, .{ for_site_id, since_db_version });
+    var iter = try stmt.iteratorAlloc(Change, arena, .{ sqlite.Blob{ .data = by_site_id }, since_db_version });
     var rows: std.ArrayList(Change) = .empty;
     defer rows.deinit(arena);
     while (try iter.nextAlloc(arena, .{ .diags = &diags })) |row| {

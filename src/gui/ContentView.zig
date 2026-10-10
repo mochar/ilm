@@ -6,13 +6,13 @@ const Core = ilm.Core;
 const Self = @This();
 const ConceptsView = @import("ConceptsView.zig");
 const PeersView = @import("PeersView.zig");
-const CrdtView = @import("CrdtView.zig");
+const DevView = @import("DevView.zig");
 
 gpa: std.mem.Allocator,
 core: *Core,
 concepts_view: *ConceptsView,
 peers_view: PeersView,
-crdt_view: CrdtView,
+dev_view: DevView,
 tab: usize = 0,
 
 pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
@@ -26,14 +26,14 @@ pub fn init(gpa: std.mem.Allocator, core: *Core) !Self {
         .core = core,
         .concepts_view = try .create(gpa, core),
         .peers_view = try .init(core),
-        .crdt_view = try .init(core),
+        .dev_view = try .init(core),
     };
 }
 
 pub fn deinit(self: *Self) void {
     self.concepts_view.destroy();
     self.peers_view.deinit();
-    self.crdt_view.deinit();
+    self.dev_view.deinit();
 }
 
 fn onPeerEvent(window_opaque: ?*anyopaque, event: ilm.p2p.Router.Event) void {
@@ -53,7 +53,7 @@ fn onPeerEvent(window_opaque: ?*anyopaque, event: ilm.p2p.Router.Event) void {
         },
         .sync_done => |sync| {
             const msg = if (sync.err) |err|
-                std.fmt.allocPrint(window.arena(), "Sync failed with '{s}': {t}", .{sync.peer.name, err}) catch "OOM"
+                std.fmt.allocPrint(window.arena(), "Sync failed with '{s}': {t}", .{ sync.peer.name, err }) catch "OOM"
             else
                 std.fmt.allocPrint(window.arena(), "Synced with '{s}'", .{sync.peer.name}) catch "OOM";
             dvui.toast(@src(), .{ .window = window, .message = msg });
@@ -67,7 +67,7 @@ pub fn render(self: *Self) void {
         var tabs = dvui.tabs(@src(), .{}, .{ .expand = .horizontal });
         defer tabs.deinit();
 
-        const tab_names = [_][]const u8{ "Concepts", "Peers", "Crdt", "Info" };
+        const tab_names = [_][]const u8{ "Concepts", "Peers", "Debug" };
         for (tab_names, 0..) |tab_name, tab_index| {
             const is_selected = self.tab == tab_index;
             if (tabs.addTabLabel(true, tab_name, .{ .border = if (is_selected) null else .{ .h = 1.0 } })) {
@@ -77,62 +77,19 @@ pub fn render(self: *Self) void {
 
         _ = dvui.spacer(@src(), .{ .expand = .horizontal });
 
-        dvui.label(@src(), "FPS: {d}", .{dvui.currentWindow().FPS()}, .{});
+        if (dvui.button(@src(), "Sync", .{}, .{.padding = .all(4.0)})) {
+            var iter = self.core.router.connections.peers.valueIterator();
+            while (iter.next()) |peer| {
+                self.core.router.sendSyncRequest(peer.*.id) catch {};
+            }
+        }
     }
 
     {
         switch (self.tab) {
             0 => self.concepts_view.render(),
             1 => self.peers_view.render(),
-            2 => self.crdt_view.render(),
-            3 => {
-                var box = dvui.box(@src(), .{}, .{ .expand = .both });
-                defer box.deinit();
-
-                var tl = dvui.textLayout(@src(), .{}, .{ .expand = .both, .font = .theme(.title) });
-                tl.format("Path: {s}\n", .{self.core.data_dir}, .{});
-
-                tl.addText("\n\nRouter\n", .{ .font = .theme(.heading) });
-
-                {
-                    const group_pending = self.core.router.io_group.token.load(.unordered) != null;
-                    tl.addText(
-                        std.fmt.allocPrint(
-                            dvui.currentWindow().arena(),
-                            "Group has pending tasks: {s}",
-                            .{if (group_pending) "yes" else "no"},
-                        ) catch "OOM",
-                        .{},
-                    );
-                    tl.addText("  ", .{});
-
-                    const bo: dvui.Options = .{
-                        .background = true,
-                        .color_fill = .{ .color = dvui.themeGet().control.fill.? },
-                    };
-                    if (group_pending) {
-                        if (tl.addTextClick("Stop", bo)) |_| {
-                            self.core.router.stop() catch {};
-                        }
-                    } else {
-                        if (tl.addTextClick("Start", bo)) |_| {
-                            self.core.router.start() catch {};
-                        }
-                    }
-
-                    tl.addText("\n", .{});
-                }
-
-                {
-                    tl.addText("Connections:", .{});
-                    var iter = self.core.router.connections.peers.valueIterator();
-                    while (iter.next()) |conn_peer| {
-                        tl.format("\n  - {x}", .{conn_peer.*.id.bytes}, .{});
-                    }
-                }
-
-                tl.deinit();
-            },
+            2 => self.dev_view.render(),
             else => {},
         }
     }

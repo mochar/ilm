@@ -84,6 +84,9 @@ pub fn accept(self: *Self, streams_: iroh.BiStream) SyncTwowayError!void {
         return error.UnknownPeer;
     }
 
+    // Send approval.
+    try streams.send.write(&.{@intFromEnum(RequestAnswer.accept)}, 5000);
+
     try self.doSend(&streams);
     try self.doRetrieve(&streams);
 
@@ -120,35 +123,75 @@ fn requestInner(self: *Self) SyncTwowayError!void {
     const peer = self.connectedPeer();
     var streams = try peer.conn.openBiStream();
 
+    // Send protocol byte
+    const proto_byte: u8 = @intFromEnum(TAG);
+    try streams.send.write(&.{proto_byte}, 5000);
+
+    // Wait for approval or rejection
+    blk: {
+        var resp: [1]u8 = undefined;
+        _ = try streams.recv.readExact(&resp, 1_000_000);
+        const answer: RequestAnswer = @enumFromInt(resp[0]);
+        switch (answer) {
+            .accept => break :blk,
+            .reject => log.warn("Sync rejected for unspecified reason, stopping.", .{}),
+            _ => log.warn("Sync rejected for unknown reason, stopping.", .{}),
+            .unknown => {
+                log.warn("Sync rejected as peer is no longer a friend, stopping.", .{});
+                self.router.getCore().deletePeerAndCloseConnection(peer.id) catch {};
+            },
+        }
+        streams.send.finish(); // necessary?
+        return error.Rejected;
+    }
+
     try self.doRetrieve(&streams);
     try self.doSend(&streams);
 
     streams.send.finish();
 }
 
+/// Called when sending changes to a peer.
 fn doSend(self: *Self, streams: *iroh.BiStream) SyncAcceptError!void {
-    const peer = self.connectedPeer();
     const arena = self.arena.allocator();
 
-    // Client is supposed to send the db version and wait for approval.
-    // Db version is a u64, which we enforce the size of (8 bytes).
-    const db_version = blk: {
-        var db_version_bytes: [8]u8 = undefined;
-        _ = try streams.recv.readExact(&db_version_bytes, 5000);
-        break :blk std.mem.readInt(u64, &db_version_bytes, .little);
-    };
-    log.info("Sync requested from db version {d}", .{db_version});
+    // Client is supposed to send site id and their latest db versions.
+    var peer_db_versions: std.AutoHashMap([16]u8, u64) = .init(arena);
+    defer peer_db_versions.deinit();
 
-    // Send approval.
-    try streams.send.write(&.{@intFromEnum(RequestAnswer.accept)}, 5000);
-
-    // We now query the changeset and send it back.
     {
+        // First sends a u32 indicating how many.
+        const num_sites = num: {
+            var bytes: [4]u8 = undefined;
+            _ = try streams.recv.readExact(&bytes, 5000);
+            break :num std.mem.readInt(u32, &bytes, .little);
+        };
+
+        for (0..num_sites) |_| {
+            // Each entry is [16]u8 site_id and u64 db version.
+            var site_id: [16]u8 = undefined;
+            _ = try streams.recv.readExact(&site_id, 5000);
+
+            var db_version_bytes: [8]u8 = undefined;
+            _ = try streams.recv.readExact(&db_version_bytes, 5000);
+            const db_version = std.mem.readInt(u64, &db_version_bytes, .little);
+
+            try peer_db_versions.put(site_id, db_version);
+        }
+    }
+
+    const db_versions = crdt.getSiteDbVersions(&self.router.db, arena) catch return error.Database;
+    for (db_versions) |ours| {
+        const by_site_id = ours.site_id;
+        const since_db_version = peer_db_versions.get(by_site_id) orelse 0;
+        if (ours.db_version <= since_db_version) continue;
+
+        // We now query the changeset and send it back.
         const type_info = @typeInfo(crdt.Change).@"struct";
         const changeset = crdt.getChanges(
             &self.router.db,
-            peer.id.bytes[0..16],
-            db_version,
+            &by_site_id,
+            since_db_version,
             arena,
         ) catch |err| {
             log.err("Failed to get changeset: {t}", .{err});
@@ -174,40 +217,29 @@ fn doSend(self: *Self, streams: *iroh.BiStream) SyncAcceptError!void {
                 }
             }
         }
-        try streams.send.write(&.{0}, 5000); // indicate done
     }
+    try streams.send.write(&.{0}, 5000); // indicate done
 }
 
+/// Called when requesting changes from a peer.
 fn doRetrieve(self: *Self, streams: *iroh.BiStream) SyncRequestError!void {
     const core = self.router.getCore();
-    const peer = self.connectedPeer();
     const arena = self.arena.allocator();
-    
-    // Send protocol byte and db version
-    {
-        const proto_byte: u8 = @intFromEnum(TAG);
-        const db_version: u64 = 0;
-        const db_version_bytes: *const [8]u8 = @ptrCast(@alignCast(&db_version));
-        const sync_bytes = try std.mem.concat(arena, u8, &.{ &.{proto_byte}, db_version_bytes });
-        try streams.send.write(sync_bytes, 5000);
-    }
 
-    // Wait for approval or rejection
-    blk: {
-        var resp: [1]u8 = undefined;
-        _ = try streams.recv.readExact(&resp, 1_000_000);
-        const answer: RequestAnswer = @enumFromInt(resp[0]);
-        switch (answer) {
-            .accept => break :blk,
-            .reject => log.warn("Sync rejected for unspecified reason, stopping.", .{}),
-            _ => log.warn("Sync rejected for unknown reason, stopping.", .{}),
-            .unknown => {
-                log.warn("Sync rejected as peer is no longer a friend, stopping.", .{});
-                core.deletePeerAndCloseConnection(peer.id) catch {};
-            },
+    // Send site id and db versions of all known peers.
+    {
+        const db_versions = crdt.getSiteDbVersions(&self.router.db, arena) catch return error.Database;
+
+        const num: u32 = @intCast(db_versions.len);
+        const num_bytes: *const [4]u8 = @ptrCast(@alignCast(&num));
+        try streams.send.write(num_bytes, 5000);
+
+        for (db_versions) |*v| {
+            try streams.send.write(&v.site_id, 5000);
+
+            const version_bytes: *const [8]u8 = @ptrCast(@alignCast(&v.db_version));
+            try streams.send.write(version_bytes, 5000);
         }
-        streams.send.finish(); // necessary?
-        return error.Rejected;
     }
 
     // Peer is supposed to send all the crsql changes and end the send stream.
