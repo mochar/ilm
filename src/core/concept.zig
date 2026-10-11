@@ -49,8 +49,16 @@ pub fn delete(core: *Core, id: Id) !void {
 }
 
 pub fn addParent(core: *Core, child_id: Id, parent_id: Id) !void {
+    const res = try core.db_writer.runCommand(.{ .add_concept_parent = .{
+        .child_id = child_id,
+        .parent_id = parent_id,
+    } }, .{});
+    return if (res.write) |_| {} else |err| return err;
+}
+
+pub fn addParentImpl(db: *Db, child_id: Id, parent_id: Id) !void {
     var diags: sqlite.Diagnostics = .{};
-    var stmt = try core.db.prepareWithDiags(
+    var stmt = try db.prepareWithDiags(
         "INSERT OR IGNORE INTO concept_rel(parent_id, child_id) VALUES (?, ?)",
         .{ .diags = &diags },
     );

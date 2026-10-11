@@ -86,6 +86,7 @@ pub fn animateFitToGraph(self: *Self) !void {
 
 pub const Action = union(enum) {
     node_select: u128,
+    assign_parent: struct { parent: u128, child: u128 },
 };
 
 pub fn render(self: *Self, opts: dvui.Options) !?Action {
@@ -138,7 +139,10 @@ pub fn render(self: *Self, opts: dvui.Options) !?Action {
         const debug_win = dvui.osWindow(
             @src(),
             .{ .title = "Graph", .size = .{ .w = 500, .h = 300 } },
-            .{ .open_flag = &debug_window, .id_extra = self.animation_id.asUsize(), },
+            .{
+                .open_flag = &debug_window,
+                .id_extra = self.animation_id.asUsize(),
+            },
         );
         defer debug_win.deinit();
 
@@ -200,9 +204,17 @@ fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) ?Action {
                         if (dvui.captured(wd.id)) {
                             e.handle(@src(), wd);
                             dvui.captureMouse(null, e.num);
-                            if (self.renderer.hovered) |*node| {
-                                const id = node.getId() catch unreachable;
-                                action = .{ .node_select = id };
+                            if (self.renderer.getNodeAt(x, y)) |*node_cur| {
+                                if (self.renderer.assigningToParent()) |assign| {
+                                    const child_id = assign.child.getId() catch unreachable;
+                                    const parent_id = assign.parent.getId() catch unreachable;
+                                    action = .{ .assign_parent = .{ .child = child_id, .parent = parent_id } };
+                                } else if (self.renderer.hovered) |*node| {
+                                    if (node.cnode == node_cur.cnode) {
+                                        const id = node.getId() catch unreachable;
+                                        action = .{ .node_select = id };
+                                    }
+                                }
                             }
                             _ = self.renderer.mouseUp(x, y);
                         }
@@ -236,6 +248,11 @@ fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) ?Action {
 /// Refit the graph and rerender
 pub fn updateGraph(self: *Self) !void {
     if (self.rendered_width == 0 or self.rendered_height == 0) return;
+
+    // const direction = if (self.rendered_width > self.rendered_height) "LR" else "TB";
+    const direction = if (self.rendered_width > self.rendered_height) "LR" else "LR";
+    self.graph().setAttribute("rankdir", direction, "TB");
+
     self.renderer.resize(self.rendered_width, self.rendered_height);
     self.renderer.fitToGraph();
     try self.renderGraph();

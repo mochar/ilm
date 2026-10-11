@@ -182,6 +182,15 @@ pub const TableCommand = union(enum) {
             return .{ .op = .delete, .table_id = .{ .concept = self.id } };
         }
     },
+    add_concept_parent: struct {
+        child_id: ConceptId,
+        parent_id: ConceptId,
+
+        pub fn write(self: *const @This(), db: *Db) !Write {
+            try ilm.concept.addParentImpl(db, self.child_id, self.parent_id);
+            return .{ .op = .insert, .table_id = .{ .concept_rel = .{ .parent = self.parent_id, .child = self.child_id } } };
+        }
+    },
     add_peer: struct {
         id: PeerId,
         name: []const u8,

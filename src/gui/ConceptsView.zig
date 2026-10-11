@@ -270,9 +270,7 @@ fn renderSearch(self: *Self) void {
 
 fn renderConceptView(self: *Self) void {
     if (self.selected) |*selected| {
-        // const concept = selected.concept;
         var view = selected.view;
-
         if (view.render()) |action| {
             switch (action) {
                 .quit => self.unselect(),
@@ -293,6 +291,13 @@ fn renderGraph(self: *Self) void {
                     self.unselect();
                 } else {
                     self.selectConceptById(id);
+                }
+            },
+            .assign_parent => |assign| {
+                if (ilm.concept.addParent(self.core, .{.int = assign.child}, .{.int = assign.parent})) {
+                    self.updateGraphContent(.reset);
+                } else |err| {
+                    gui.toastErr(@src(), err, "Failed to assign", .{});
                 }
             },
         }

@@ -52,6 +52,18 @@ const Camera = struct {
 
 pub const MouseButton = enum { left, right, middle };
 
+const Drag = struct {
+    start_pos: [2]f32 = .{ 0.0, 0.0 },
+    mode: union(enum) {
+        pan_camera,
+        drag_node: Node,
+        assign_parent: struct {
+            child: Node,
+            parent: ?Node = null,
+        },
+    },
+};
+
 const State = struct {
     dirty: bool = false,
     last_render_ns: i96 = 0,
@@ -63,13 +75,7 @@ const State = struct {
             pos: [2]f32,
             time_ns: i96,
         } = null,
-        drag: ?struct {
-            // start_pos: [2]f32 = .{ 0.0, 0.0 },
-            mode: union(enum) {
-                pan_camera,
-                drag_node: Node,
-            },
-        } = null,
+        drag: ?Drag = null,
     } = .{},
     animateTarget: ?struct {
         start_time: std.Io.Timestamp,
@@ -100,7 +106,7 @@ pub const Options = struct {
 
 pub fn init(options: Options) !Self {
     const gpa = options.gpa;
-    
+
     var graph = try Graph.init(gpa, options.graph_options);
     errdefer graph.deinit();
 
@@ -166,6 +172,15 @@ pub fn clear(self: *Self) void {
     self.state = .{};
 }
 
+pub fn assigningToParent(self: *const Self) ?struct { child: Node, parent: Node } {
+    const drag = self.state.mouse.drag;
+    if (drag == null) return null;
+    if (drag.?.mode != .assign_parent) return null;
+    const assign = drag.?.mode.assign_parent;
+    if (assign.parent == null) return null;
+    return .{ .child = assign.child, .parent = assign.parent.? };
+}
+
 pub fn mouseDown(self: *Self, screen_x: f32, screen_y: f32, button: MouseButton) bool {
     self.state.mouse.last_pos = .{ screen_x, screen_y };
     self.state.mouse.down = button;
@@ -189,7 +204,7 @@ pub fn mouseMove(self: *Self, screen_x: f32, screen_y: f32) bool {
             self.hovered = null;
             self.state.dirty = true;
         }
-    } else if (self.state.mouse.drag) |drag| {
+    } else if (self.state.mouse.drag) |*drag| {
         // We are in the middle of dragging
         switch (drag.mode) {
             .pan_camera => {
@@ -198,14 +213,34 @@ pub fn mouseMove(self: *Self, screen_x: f32, screen_y: f32) bool {
             .drag_node => {
                 return false;
             },
+            .assign_parent => |*assign| {
+                blk: {
+                    if (self.getNodeAt(screen_x, screen_y)) |node| {
+                        if (assign.child.cnode != node.cnode) {
+                            assign.parent = node;
+                            break :blk;
+                        }
+                    }
+                    assign.parent = null;
+                }
+
+                self.state.dirty = true;
+                return true;
+            },
         }
     } else {
         // Mouse button down but not dragging yet -> start dragging
+        var drag: Drag = undefined;
+        drag.start_pos = .{ screen_x, screen_y };
         if (self.getNodeAt(screen_x, screen_y)) |node| {
-            self.state.mouse.drag = .{ .mode = .{ .drag_node = node } };
+            switch (self.state.mouse.down.?) {
+                .left => drag = .{ .mode = .{ .assign_parent = .{ .child = node } } },
+                else => drag = .{ .mode = .{ .drag_node = node } },
+            }
         } else {
-            self.state.mouse.drag = .{ .mode = .pan_camera };
+            drag = .{ .mode = .pan_camera };
         }
+        self.state.mouse.drag = drag;
         self.state.dirty = true;
     }
 
@@ -218,7 +253,9 @@ pub fn mouseUp(self: *Self, screen_x: f32, screen_y: f32) bool {
     self.state.mouse.drag = null;
     self.state.mouse.down = null;
 
-    if (!was_dragging) {
+    if (was_dragging) {
+        self.state.dirty = true;
+    } else {
         // Register mouse click.
         const now_ns = std.Io.Clock.real.now(self.io).nanoseconds;
 
@@ -438,43 +475,65 @@ pub fn render(self: *Self) !void {
     }
 
     // Draw nodes and their labels
-    maybe_node = c.agfstnode(graph.g);
-    while (maybe_node) |node| : (maybe_node = c.agnxtnode(graph.g, node)) {
-        const node_id = try Node.getNodeId(node);
-        const node_info = graphviz.nodeInfo(node);
-        const cx: f32 = @floatCast(node_info.coord.x);
-        const cy: f32 = @floatCast(node_info.coord.y);
-        const h: f32 = @floatCast(node_info.height * 72.0 * 0.5);
+    {
+        const assign = self.assigningToParent();
+        maybe_node = c.agfstnode(graph.g);
+        while (maybe_node) |node| : (maybe_node = c.agnxtnode(graph.g, node)) {
+            const node_id = try Node.getNodeId(node);
+            const node_info = graphviz.nodeInfo(node);
+            const cx: f32 = @floatCast(node_info.coord.x);
+            const cy: f32 = @floatCast(node_info.coord.y);
+            const h: f32 = @floatCast(node_info.height * 72.0 * 0.5);
 
-        // Draw node body
-        canvas.circle(cx, cy, h / 2);
-        if (self.highlighted.contains(node_id)) {
+            // Draw node body
+            canvas.circle(cx, cy, h / 2);
+            if (self.highlighted.contains(node_id)) {
+                canvas.setRGBA(0.8, 0.85, 1.0, 1.0);
+            } else if (self.hovered != null and self.hovered.?.cnode == node) {
+                canvas.setRGBA(0.3, 0.3, 0.0, 1.0);
+            } else if (assign != null and assign.?.parent.cnode == node) {
+                canvas.setRGBA(0.0, 0.8, 0.3, 1.0);
+            } else {
+                canvas.setRGBA(0.0, 0.0, 0.0, 0.0);
+            }
+            canvas.fillPreserve();
+
+            // Draw node border
             canvas.setRGBA(0.8, 0.85, 1.0, 1.0);
-        } else if (self.hovered != null and self.hovered.?.cnode == node) {
-            canvas.setRGBA(0.3, 0.3, 0.0, 1.0);
-        } else {
-            canvas.setRGBA(0.0, 0.0, 0.0, 0.0);
+            canvas.setLineWidth(1.5);
+            canvas.stroke();
+
+            // Label
+            const label: []const u8 = std.mem.span(node_info.label.*.text);
+            const font_size: f32 = 12.0;
+
+            if (plutovg.plutovg_font != null) {
+                canvas.save();
+
+                // Translate to node center and flip Y back to right-side up
+                canvas.translate(cx, cy - h / 3);
+                canvas.scale(1.0, -1.0);
+
+                canvas.drawText(label, font_size);
+                canvas.restore();
+            }
         }
-        canvas.fillPreserve();
+    }
 
-        // Draw node border
-        canvas.setRGBA(0.8, 0.85, 1.0, 1.0);
-        canvas.setLineWidth(1.5);
-        canvas.stroke();
-
-        // Label
-        const label: []const u8 = std.mem.span(node_info.label.*.text);
-        const font_size: f32 = 12.0;
-
-        if (plutovg.plutovg_font != null) {
-            canvas.save();
-
-            // Translate to node center and flip Y back to right-side up
-            canvas.translate(cx, cy - h / 3);
-            canvas.scale(1.0, -1.0);
-
-            canvas.drawText(label, font_size);
-            canvas.restore();
+    // Draw arrow if assigning parent
+    if (self.state.mouse.drag) |drag| {
+        switch (drag.mode) {
+            .assign_parent => |*assign| {
+                const node_pos = assign.child.getPosF32();
+                const mouse_screen = self.state.mouse.last_pos;
+                const mouse_pos = self.screenToWorld(mouse_screen[0], mouse_screen[1]);
+                canvas.setRGBA(0.7, 0.75, 0.85, 0.9);
+                canvas.setLineWidth(2.0);
+                drawArrow(canvas, mouse_pos.x, mouse_pos.y, node_pos[0], node_pos[1], 8.0);
+                canvas.moveTo(node_pos[0], node_pos[1]);
+                canvas.lineTo(mouse_pos.x, mouse_pos.y);
+            },
+            else => {},
         }
     }
 }

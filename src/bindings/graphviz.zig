@@ -91,6 +91,7 @@ pub const Graph = struct {
         _ = c.agsafeset(g, @constCast("margin"), @constCast("0.0"), @constCast(""));
         _ = c.agsafeset(g, @constCast("pad"), @constCast("0.0"), @constCast(""));
         _ = c.agsafeset(g, @constCast("dpi"), @constCast(GRAPHVIZ_DPI_STR), @constCast(""));
+        _ = c.agsafeset(g, @constCast("rankdir"), @constCast("LR"), @constCast("LR"));
 
         var graph: Graph = .{
             .arena = .init(allocator),
@@ -115,6 +116,10 @@ pub const Graph = struct {
         _ = c.agclose(graph.g);
         _ = c.gvFreeContext(graph.gvc);
         graph.arena.deinit();
+    }
+
+    pub fn setAttribute(graph: *Graph, name: [:0]const u8, value: [:0]const u8, default: [:0]const u8) void {
+        _ = c.agsafeset(graph.g, @constCast(name), @constCast(value), @constCast(default));
     }
 
     /// Set target aspect ratio (height / width) for Graphviz layout algorithm.
