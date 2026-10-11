@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const builtin = @import("builtin");
 pub const sqlite = @import("sqlite");
 pub const Diagnostics = sqlite.Diagnostics;
 pub const Db = sqlite.Db;
@@ -43,18 +44,10 @@ pub fn getDb(path: [:0]const u8, opts: Options) !sqlite.Db {
     // not needed to load in ext.
     // if (opts.flags.write) {
     {
-        // Load cr-sqlite extension. Requires write permission.
-        var rc = sqlite.c.sqlite3_enable_load_extension(db.db, 1);
+        const rc = sqlite.c.sqlite3_enable_load_extension(db.db, 1);
         if (rc != sqlite.c.SQLITE_OK) {
             log.err("Failed to enable sqlite extension loading: {d}", .{rc});
             return error.SqliteExtensionLoad;
-        }
-
-        rc = sqlite.c.sqlite3_load_extension(db.db, "/home/mochar/src/cr-sqlite/core/dist/crsqlite.so", null, null);
-        if (rc != sqlite.c.SQLITE_OK) {
-            const e = db.getDetailedError();
-            log.err("Failed to load crsqlite extension: {f}", .{e});
-            return error.CrsqliteFailed;
         }
     }
 

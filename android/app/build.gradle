@@ -4,25 +4,31 @@ plugins {
 
 android {
     namespace = "org.libsdl.ilm"
-    compileSdkVersion 35
+    compileSdk = 35
     ndkVersion = "28.2.13676358"
     
     defaultConfig {
         applicationId 'org.libsdl.ilm'
-        minSdkVersion 21
-        targetSdkVersion 35
-        versionCode 1
-        versionName "1.0"
+        // SDL needs 21, but zig's std.Io calls preadv64/pwritev64, introduced in bionic at 24
+        minSdk = 24
+        targetSdk = 35
+        versionCode = 1
+        versionName = '1.0'
         
         externalNativeBuild {
             cmake {
-                //arguments "-DANDROID_PLATFORM=android-21", "-DANDROID_STL=c++_static"
-                arguments "-DANDROID_PLATFORM=android-34", "-DANDROID_STL=c++_static"
-                // abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
+                arguments '-DANDROID_STL=none', '-DANDROID_PLATFORM=android-24', '-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON'
                 abiFilters 'arm64-v8a'
             }
         }
     }
+    
+    externalNativeBuild {
+        cmake {
+            path = 'src/main/c/CMakeLists.txt'
+        }
+    }
+    
     buildTypes {
         release {
             minifyEnabled false
@@ -30,31 +36,26 @@ android {
             signingConfig signingConfigs.debug
         }
     }
-    //applicationVariants.all { variant ->
-    //    tasks["merge${variant.name.capitalize()}Assets"]
-    //        .dependsOn("externalNativeBuild${variant.name.capitalize()}")
-    //}
-    //sourceSets.main {
-    //    jniLibs.srcDir 'libs'
-    //}
-    externalNativeBuild {
-        cmake {
-            path 'src/main/c/CMakeLists.txt'
-        }
-    }
+    
     lint {
         abortOnError = false
     }
+    
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
-    buildFeatures {
-        prefab true
-    }
+    
+    // SDL's Java side (org.libsdl.app), installed by `zig build lib` from the same SDL source
+    // the native libSDL3.a is built from.
+    sourceSets {
+        main {
+            java.srcDirs += '../../zig-out/java'
+        }
+    }    
 }
 
-dependencies {
-    //implementation fileTree(include: ['*.jar'], dir: 'libs')
-    implementation files('libs/SDL3-3.4.16.aar')
-}
+//dependencies {
+//    //implementation fileTree(include: ['*.jar'], dir: 'libs')
+//    implementation files('libs/SDL3-3.4.16.aar')
+//}

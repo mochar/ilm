@@ -8,11 +8,19 @@ const ilm = @import("ilm");
 const Core = ilm.Core;
 
 const themes = @import("themes.zig");
-const androidLogFn = @import("android.zig").logFn;
+const android = @import("android.zig");
 const ContentView = @import("ContentView.zig");
 const SetupView = @import("SetupView.zig");
 
 const log = std.log.scoped(.gui_main);
+
+// For android
+export fn dvui_main(argc: c_int, argv: [*][*:0]u8) callconv(.c) c_int {
+    return android.runDvuiMain(argc, argv) catch |err| {
+        std.log.err("dvui_main failed: {t}", .{err});
+        return 1;
+    };
+}
 
 pub const dvui_app: dvui.App = .{
     .config = .{
@@ -27,28 +35,11 @@ pub const dvui_app: dvui.App = .{
     .deinitFn = appDeinit,
 };
 pub const main = dvui.App.main;
-
-export fn dvui_main() callconv(.c) void { // For android
-    // Not init passed by main so make a ourselves
-    var environ_map = std.process.Environ.Map.init(gpa);
-    defer environ_map.deinit();
-
-    var threaded: std.Io.Threaded = .init(gpa, .{});
-    defer threaded.deinit();
-
-    var real_init: std.process.Init = undefined;
-    real_init.gpa = gpa;
-    real_init.io = threaded.io();
-    real_init.environ_map = &environ_map;
-
-    _ = dvui.App.main(real_init) catch {};
-}
-
 pub const panic = dvui.App.panic;
 
 pub const std_options: std.Options = .{
     // .logFn = dvui.App.logFn,
-    .logFn = if (builtin.abi.isAndroid()) androidLogFn else std.log.defaultLog,
+    .logFn = if (builtin.abi.isAndroid()) android.logFn else std.log.defaultLog,
 };
 
 var gpa_instance = std.heap.DebugAllocator(.{

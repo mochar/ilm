@@ -4,6 +4,6 @@ import org.libsdl.app.SDLActivity;
 
 public class IlmActivity extends SDLActivity {
     protected String[] getLibraries() {
-        return new String[] { "SDL3", "ilm_gui" };
+        return new String[] { "ilm_gui" };
     }
 }

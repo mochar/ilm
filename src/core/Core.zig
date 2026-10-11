@@ -23,11 +23,6 @@ router: Router,
 /// List of known peers in sync with the db.
 peers: []Peer = &.{},
 
-// fn getDefaultDataDir(io: std.Io, alloc: std.mem.Allocator, environ: *std.process.Environ.Map) ?[]const u8 {
-//     std.process.Environ.createMap(.empty, alloc)
-//     // known_folders.getPath(io, alloc, environ, .data)
-// }
-
 pub const Options = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -40,6 +35,11 @@ pub fn create(opts: Options) !*Core {
 
     const core = try gpa.create(Core);
     errdefer gpa.destroy(core);
+
+    // Used here for setup allocations
+    var arena_alloc: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_alloc.deinit();
+    const arena = arena_alloc.allocator();
 
     const data_dir = gpa.dupe(u8, opts.data_dir) catch @panic("OOM");
     errdefer gpa.free(data_dir);
@@ -67,8 +67,7 @@ pub fn create(opts: Options) !*Core {
     };
 
     // Load sqlite database
-    const db_path = try std.fs.path.joinZ(opts.gpa, &.{ data_dir, "ilm.db" });
-    defer gpa.free(db_path);
+    const db_path = try std.fs.path.joinZ(arena, &.{ data_dir, "ilm.db" });
     // First need to check if it does not exist yet. In that case we
     // need to create the Db object using write and create
     // permissions, as a read only db cannot create a new file.

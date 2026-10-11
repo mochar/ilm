@@ -8,3 +8,6 @@
 	path = vendor/iroh-c-ffi
 	url = ../iroh-c-ffi/
 	branch = mochar
+[submodule "vendor/cr-sqlite"]
+	path = vendor/cr-sqlite
+	url = https://github.com/superfly/cr-sqlite

@@ -6,7 +6,7 @@
 //! @imported.
 //!
 //! When building for android (zig build -Dandroid), the modules are compiled to
-//! object and archive files and stored in the android project //!
+//! object and archive files and stored in the android project
 //! (/android). Gradle is then called to link to final native library and generate
 //! an APK. Because a native library is generated, we need to turn on PIC and
 //! turn off UBSan sanitizer.
@@ -15,6 +15,7 @@
 const std = @import("std");
 const Build = std.Build;
 const Module = Build.Module;
+const dvui_build = @import("dvui"); // To access installAndroidSdl3
 
 // TODO Replace with looking for $ANDROID_HOME, with -Dandroid-home fallback option.
 const ANDROID_HOME = "/home/mochar/Android/Sdk";
@@ -74,25 +75,25 @@ pub fn build(b: *Build) void {
             .abi = .android,
         });
         // optimize = .ReleaseSafe;
-        b.lib_dir = "./android/app/src/main/c/prebuilt/arm64-v8a/";
+        // b.lib_dir = "./android/app/src/main/c/prebuilt/arm64-v8a/";
     }
 
     // Dependencies
     const sqlite_dep = b.dependency("sqlite", .{ .target = target, .optimize = optimize });
-    if (target.result.abi.isAndroid()) {
-        const sqlite_lib = sqlite_dep.artifact("sqlite");
-        injectAndroidInclude(b, target, sqlite_lib.root_module);
-        // Need to export shared object so gradle can compile it
-        sqlite_lib.root_module.pic = true;
-        sqlite_lib.root_module.sanitize_c = .off;
-        b.installArtifact(sqlite_lib);
-    }
-    const zqlite_dep = b.dependency("zqlite", .{ .target = target, .optimize = optimize });
+    // if (target.result.abi.isAndroid()) {
+    //     const sqlite_lib = sqlite_dep.artifact("sqlite");
+    //     injectAndroidInclude(b, target, sqlite_lib.root_module);
+    //     // Need to export shared object so gradle can compile it
+    //     sqlite_lib.root_module.pic = true;
+    //     sqlite_lib.root_module.sanitize_c = .off;
+    //     b.installArtifact(sqlite_lib);
+    // }
+
     const known_folders_dep = b.dependency("known_folders", .{ .target = target, .optimize = optimize });
     const uuid_dep = b.dependency("uuid", .{ .target = target, .optimize = optimize });
 
-    const sqlite_mod = sqlite_dep.module("sqlite");
-    const zqlite_mod = zqlite_dep.module("zqlite");
+    // const sqlite_mod = sqlite_dep.module("sqlite");
+    const sqlite_mod = sqlite_dep.module("sqliteext");
     const known_folders_mod = known_folders_dep.module("known-folders");
     const uuid_mod = uuid_dep.module("uuid");
 
@@ -112,6 +113,8 @@ pub fn build(b: *Build) void {
     const plutovg_mod = buildPlutoVG(b, target, optimize, assets_mod, c_mod, c_bindings);
     const graphviz = buildGraphviz(b, target, optimize, c_mod, c_bindings);
     const iroh = buildIroh(b, target, optimize, c_mod, c_bindings);
+    const crsqlite_mod = buildCrSqlite(b, target, optimize, c_bindings, sqlite_mod);
+    _ = crsqlite_mod;
 
     // Ensure cargo build runs before translate-c starts parsing
     c_bindings.step.dependOn(iroh.step);
@@ -123,8 +126,8 @@ pub fn build(b: *Build) void {
         .{ .name = "assets", .module = assets_mod },
         .{ .name = "plutovg", .module = plutovg_mod },
         .{ .name = "graphviz", .module = graphviz.module },
+        // .{ .name = "crsqlite", .module = crsqlite_mod },
         .{ .name = "sqlite", .module = sqlite_mod },
-        .{ .name = "zqlite", .module = zqlite_mod },
         .{ .name = "known-folders", .module = known_folders_mod },
         .{ .name = "uuid", .module = uuid_mod },
         .{ .name = "iroh", .module = iroh.module },
@@ -146,7 +149,7 @@ pub fn build(b: *Build) void {
             .{ .name = "assets", .module = assets_mod },
             .{ .name = "known-folders", .module = known_folders_mod },
             .{ .name = "sqlite", .module = sqlite_mod },
-            .{ .name = "zqlite", .module = zqlite_mod },
+            // .{ .name = "zqlite", .module = zqlite_mod },
             .{ .name = "iroh", .module = iroh.module },
         });
     } else {
@@ -159,7 +162,7 @@ pub fn build(b: *Build) void {
         buildEmacs(b, target, optimize, &.{
             .{ .name = "ilm", .module = core_mod },
             .{ .name = "sqlite", .module = sqlite_mod },
-            .{ .name = "zqlite", .module = zqlite_mod },
+            // .{ .name = "zqlite", .module = zqlite_mod },
             .{ .name = "graphviz", .module = graphviz.module },
         });
 
@@ -173,7 +176,7 @@ pub fn build(b: *Build) void {
             .{ .name = "assets", .module = assets_mod },
             .{ .name = "known-folders", .module = known_folders_mod },
             .{ .name = "sqlite", .module = sqlite_mod },
-            .{ .name = "zqlite", .module = zqlite_mod },
+            // .{ .name = "zqlite", .module = zqlite_mod },
             .{ .name = "iroh", .module = iroh.module },
         });
         test_step.dependOn(gui_test_step);
@@ -205,6 +208,126 @@ fn buildAssets(
     return assets_mod;
 }
 
+pub fn buildCrSqlite(
+    b: *Build,
+    target: Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    translate_c: *Build.Step.TranslateC,
+    sqlite_mod: *Build.Module,
+) *Build.Module {
+    var root = b.path("vendor/cr-sqlite/core/");
+
+    const mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .pic = true,
+        .sanitize_c = .off,
+    });
+
+    // Inject headers into the universal c_bindings translation
+    translate_c.addIncludePath(root.path(b, "src/sqlite"));
+
+    // Rust
+    const cargo_build = b.addSystemCommand(&.{
+        "cargo",
+        "rustc",
+        "--release",
+        "--features",
+        "static,omit_load_extension",
+    });
+    cargo_build.setCwd(root.path(b, "rs/bundle_static"));
+    if (target.result.abi.isAndroid()) {
+        cargo_build.addArgs(&.{ "-Zbuild-std", "--target", "aarch64-linux-android" });
+        cargo_build.setEnvironmentVariable("ANDROID_NDK_HOME", ANDROID_NDK_HOME);
+        cargo_build.setEnvironmentVariable("CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER", ANDROID_NDK_HOME ++
+  "/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang");
+        cargo_build.setEnvironmentVariable("CC", ANDROID_NDK_HOME ++ "/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang");
+        cargo_build.setEnvironmentVariable("CXX", ANDROID_NDK_HOME ++ "/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android35-clang++");
+        cargo_build.addPathDir(ANDROID_NDK_HOME ++ "/toolchains/llvm/prebuilt/linux-x86_64/bin");
+    }
+    // Turn of this warning
+    cargo_build.setEnvironmentVariable("RUSTFLAGS", "-A internal_features -A improper_ctypes");
+    // TODO this should be $(git rev-parse HEAD) but dont know how in build.zig, manually for now
+    cargo_build.setEnvironmentVariable("CRSQLITE_COMMIT_SHA", "ec0d669daa9a051d4c6f4a4d9c653eac40e7a437");
+    const target_subdir = if (target.result.abi.isAndroid()) "aarch64-linux-android/release" else "release";
+    const rs_lib_path = root.path(b, b.pathJoin(&.{ "rs/bundle_static/target", target_subdir, "libcrsql_bundle_static.a"
+  }));
+
+    // Because i link multiple rust libraries, i get symbol collision.
+    // Tell objcopy to weaken the symbol that is causing the collision
+    const objcopy_bin = if (target.result.abi.isAndroid())
+        ANDROID_NDK_HOME ++ "/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-objcopy"
+    else
+        "objcopy";
+    const hygiene_step = b.addSystemCommand(&.{objcopy_bin, "-W", "rust_eh_personality"});
+    hygiene_step.addFileArg(rs_lib_path);
+    hygiene_step.step.dependOn(&cargo_build.step);
+    const cleaned_rs_lib = hygiene_step.addOutputFileArg("libcrsql_bundle_static_clean.a");
+
+    // C
+    mod.addIncludePath(root.path(b, "src"));
+    mod.addIncludePath(root.path(b, "src/sqlite"));
+
+    mod.addCMacro("SQLITE_EXTRA_INIT", "core_init");
+
+    // Add the C files. We compile sqlite3.c and core_init.c separately
+    // instead of concatenating them with `cat`. The linker will resolve the core_init symbol.
+    const write_files = b.addWriteFiles();
+    const amalgamated_c = write_files.add("sqlite_with_core_init.c",
+        \\#include "sqlite3.c"
+        \\#include "core_init.c"
+    );
+
+    // Compile generated file, plus the remaining extension files
+    mod.addCSourceFile(.{
+        .file = amalgamated_c,
+        .flags = &.{ "-fPIC", "-O2" },
+    });
+    mod.addCSourceFiles(.{
+        .root = root,
+        .files = &.{
+            // "src/sqlite/sqlite3.c",
+            // "src/core_init.c",
+            // ext_files
+            "src/crsqlite.c",
+            "src/changes-vtab.c",
+            "src/ext-data.c",
+        },
+        .flags = &.{ "-fPIC", "-O2" },
+    });
+
+    const lib = b.addLibrary(.{
+        .name = "sqlite",
+        .root_module = mod,
+        .linkage = .static,
+    });
+
+    // Make the C library wait for Cargo to finish
+    lib.step.dependOn(&cargo_build.step);
+
+    // Link it into sqlite module
+    sqlite_mod.linkLibrary(lib);
+    if (!target.result.abi.isAndroid()) {
+        sqlite_mod.addObjectFile(cleaned_rs_lib);
+    } else {
+        // Install the Rust archive for CMake to link directly
+        const install_crsql = b.addInstallFileWithDir(cleaned_rs_lib, .lib, "libcrsql_bundle.a");
+        b.getInstallStep().dependOn(&install_crsql.step);
+    }
+    
+    injectAndroidInclude(b, target, mod);
+
+    sqlite_mod.addIncludePath(root.path(b, "src/sqlite"));
+
+    if (target.result.abi.isAndroid()) {
+        injectAndroidInclude(b, target, sqlite_mod);
+        b.installArtifact(lib);
+    }
+    
+    return mod;
+}
+
 fn buildPlutoVG(
     b: *Build,
     target: Build.ResolvedTarget,
@@ -221,8 +344,8 @@ fn buildPlutoVG(
         .target = target,
         .optimize = optimize,
     });
-    injectAndroidInclude(b, target, lib_mod);
     if (target.result.abi.isAndroid()) {
+        injectAndroidInclude(b, target, lib_mod);
         lib_mod.pic = true;
         lib_mod.sanitize_c = .off;
     }
@@ -880,7 +1003,7 @@ fn buildCli(
     b.installArtifact(cli_exe);
 
     const cli_cmd = b.addRunArtifact(cli_exe);
-    cli_cmd.step.dependOn(b.getInstallStep());
+    // cli_cmd.step.dependOn(b.getInstallStep());
     cli_cmd.setEnvironmentVariable("RUST_BACKTRACE", "1");
     const cli_step = b.step("cli", "Start the CLI");
     cli_step.dependOn(&cli_cmd.step);
@@ -925,7 +1048,7 @@ fn buildEmacs(
     const install_emacs = b.addInstallArtifact(emacs_lib, .{
         .dest_sub_path = "ilm-core.so", // instead of libilm.so
     });
-    b.getInstallStep().dependOn(&install_emacs.step);
+    // b.getInstallStep().dependOn(&install_emacs.step);
 
     const emacs_step = b.step("emacs", "Build the Emacs dynamic module");
     emacs_step.dependOn(&install_emacs.step);
@@ -957,11 +1080,14 @@ fn buildGui(
     });
     b.installArtifact(gui_exe);
 
-    const gui_cmd = b.addRunArtifact(gui_exe);
-    gui_cmd.step.dependOn(b.getInstallStep());
-    gui_cmd.setEnvironmentVariable("RUST_BACKTRACE", "1");
     const gui_step = b.step("gui", "Start the GUI");
+
+    const gui_cmd = b.addRunArtifact(gui_exe);
     gui_step.dependOn(&gui_cmd.step);
+    
+    // gui_cmd.step.dependOn(b.getInstallStep());
+    gui_cmd.setEnvironmentVariable("RUST_BACKTRACE", "1");
+    
     if (b.args) |args| {
         gui_cmd.addArgs(args);
     }
@@ -1046,6 +1172,19 @@ fn buildGuiAndroid(
         .name = "ilm-gui",
         .root_module = gui_mod,
     });
-    injectDvuiAndroidHack(b, target, optimize, dvui_dep);
+    // Debug C code (SDL, stb) calls __ubsan_handle_*; the NDK linker has no zig ubsan
+    // runtime, so ship it inside this archive.
+    gui_lib.bundle_ubsan_rt = true;
+    gui_lib.bundle_compiler_rt = true; // ubsan_rt needs __extendxftf2, which the NDK lacks
+
+    // injectDvuiAndroidHack(b, target, optimize, dvui_dep);
     b.installArtifact(gui_lib);
+
+    // SDL3 built from source: the Android project links this libSDL3.a and compiles
+    // these Java sources, so native and Java SDL always come from the same version.
+    // dvui_build.installAndroidSdl3(b, dvui_dep, b.getInstallStep());
+    dvui_build.installAndroidSdl3(b, dvui_dep, &gui_lib.step);
+    
+    const android_step = b.step("android", "Build android");
+    android_step.dependOn(&gui_lib.step);
 }
