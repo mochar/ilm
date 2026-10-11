@@ -7,6 +7,7 @@ const Self = @This();
 const ConceptsView = @import("ConceptsView.zig");
 const PeersView = @import("PeersView.zig");
 const DevView = @import("DevView.zig");
+const gui = @import("gui.zig");
 
 gpa: std.mem.Allocator,
 core: *Core,
@@ -63,34 +64,55 @@ fn onPeerEvent(window_opaque: ?*anyopaque, event: ilm.p2p.Router.Event) void {
 }
 
 pub fn render(self: *Self) void {
-    {
-        var tabs = dvui.tabs(@src(), .{}, .{ .expand = .horizontal });
-        defer tabs.deinit();
+    const screen_size: gui.ScreenSize = .get();
 
-        const tab_names = [_][]const u8{ "Concepts", "Peers", "Debug" };
-        for (tab_names, 0..) |tab_name, tab_index| {
-            const is_selected = self.tab == tab_index;
-            if (tabs.addTabLabel(true, tab_name, .{ .border = if (is_selected) null else .{ .h = 1.0 } })) {
-                self.tab = tab_index;
+    if (screen_size.width == .compact) {
+        self.renderContent();
+        self.renderTabs(screen_size);
+    } else {
+        self.renderTabs(screen_size);
+        self.renderContent();
+    }
+}
+
+fn renderTabs(self: *Self, size: gui.ScreenSize) void {
+    var tabs = dvui.tabs(@src(), .{}, .{ .expand = .horizontal });
+    defer tabs.deinit();
+
+    const tab_names = [_][]const u8{ "Concepts", "Peers", "Debug" };
+    for (tab_names, 0..) |tab_name, tab_index| {
+        const is_selected = self.tab == tab_index;
+        var tab_opts: dvui.Options = .{};
+        if (size.width == .compact) {
+            tab_opts.padding = .rect(12, 18, 12, 18);
+            tab_opts.border = .all(0.0);
+            tab_opts.expand = .horizontal;
+            if (is_selected) {
+                tab_opts.color_fill = .{ .color = dvui.themeGet().highlight.fill orelse .blue };
             }
+        } else {
+            tab_opts.border = if (is_selected) null else .{ .h = 1.0 };
         }
-
-        _ = dvui.spacer(@src(), .{ .expand = .horizontal });
-
-        if (dvui.button(@src(), "Sync", .{}, .{.padding = .all(4.0)})) {
-            var iter = self.core.router.connections.peers.valueIterator();
-            while (iter.next()) |peer| {
-                self.core.router.sendSyncRequest(peer.*.id) catch {};
-            }
+        if (tabs.addTabLabel(true, tab_name, tab_opts)) {
+            self.tab = tab_index;
         }
     }
 
-    {
-        switch (self.tab) {
-            0 => self.concepts_view.render(),
-            1 => self.peers_view.render(),
-            2 => self.dev_view.render(),
-            else => {},
+    _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+
+    if (dvui.button(@src(), "Sync", .{}, .{ .padding = .all(4.0) })) {
+        var iter = self.core.router.connections.peers.valueIterator();
+        while (iter.next()) |peer| {
+            self.core.router.sendSyncRequest(peer.*.id) catch {};
         }
+    }
+}
+
+fn renderContent(self: *Self) void {
+    switch (self.tab) {
+        0 => self.concepts_view.render(),
+        1 => self.peers_view.render(),
+        2 => self.dev_view.render(),
+        else => {},
     }
 }

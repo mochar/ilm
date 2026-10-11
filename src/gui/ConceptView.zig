@@ -6,7 +6,7 @@ const Id = ilm.database.Id;
 const Concept = ilm.concept.Concept;
 const DbWriter = ilm.database.DbWriter;
 const GraphView = @import("GraphView.zig");
-const utils = @import("utils.zig");
+const gui = @import("gui.zig");
 const Self = @This();
 
 const log = std.log.scoped(.concept_view);
@@ -201,7 +201,7 @@ pub fn render(self: *Self) ?Action {
                     concept.name = self.arena.allocator().dupe(u8, self.name_edit.name.items) catch @panic("OOM");
                     action = .rename;
                 } else |err| {
-                    utils.toastErr(@src(), err, "Error when editing name", .{});
+                    gui.toastErr(@src(), err, "Error when editing name", .{});
                 }
                 self.name_edit.editing = false;
             }
@@ -224,7 +224,7 @@ pub fn render(self: *Self) ?Action {
         .expand = .ratio,
         .margin = .all(10.0),
     }) catch |err| {
-        utils.toastErr(@src(), err, "Failed to render graph", .{});
+        gui.toastErr(@src(), err, "Failed to render graph", .{});
         return action;
     }) |graph_action| {
         switch (graph_action) {
@@ -247,7 +247,7 @@ pub fn render(self: *Self) ?Action {
         )) |child_id| {
             return .{ .new = child_id };
         } else |err| {
-            utils.toastErr(@src(), err, "Failed to create child node", .{});
+            gui.toastErr(@src(), err, "Failed to create child node", .{});
         }
     }
 
@@ -265,7 +265,7 @@ pub fn render(self: *Self) ?Action {
         if (ilm.concept.delete(self.core, concept.id)) {
             return .delete;
         } else |err| {
-            utils.toastErr(@src(), err, "Failed to delete node", .{});
+            gui.toastErr(@src(), err, "Failed to delete node", .{});
         }
     }
 

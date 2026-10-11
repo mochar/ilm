@@ -9,7 +9,7 @@ const DbWriter = ilm.database.DbWriter;
 
 const GraphView = @import("GraphView.zig");
 const ConceptView = @import("ConceptView.zig");
-const utils = @import("utils.zig");
+const gui = @import("gui.zig");
 const Self = @This();
 
 const log = std.log.scoped(.concepts_view);
@@ -127,8 +127,8 @@ fn getMatchedConcepts(self: *Self) void {
 }
 
 pub fn render(self: *Self) void {
-    const win_rect = dvui.windowRect();
-    const is_wide = win_rect.w > win_rect.h;
+    const screen_size: gui.ScreenSize = .get();
+    const is_wide = screen_size.width != .compact;
     var hbox = dvui.box(@src(), .{
         .dir = if (is_wide) .horizontal else .vertical,
         .equal_space = !is_wide,
@@ -209,7 +209,7 @@ fn renderActions(self: *Self) void {
         if (ilm.concept.add(self.core, "New concept", &.{})) |child_id| {
             _ = child_id;
         } else |err| {
-            utils.toastErr(@src(), err, "Failed to create concept", .{});
+            gui.toastErr(@src(), err, "Failed to create concept", .{});
         }
     }
 }
@@ -285,7 +285,7 @@ fn renderConceptView(self: *Self) void {
 
 fn renderGraph(self: *Self) void {
     if (self.graph_view.render(.{ .expand = .both }) catch |err| {
-        return utils.toastErr(@src(), err, "Failed to render graph", .{});
+        return gui.toastErr(@src(), err, "Failed to render graph", .{});
     }) |action| {
         switch (action) {
             .node_select => |id| {
@@ -337,7 +337,7 @@ fn selectConcept(self: *Self, concept: *Concept) void {
         .io = self.core.io,
     }) catch |err| {
         log.err("Error init concept view: {t}", .{err});
-        utils.toastErr(@src(), err, "Error init concept view", .{});
+        gui.toastErr(@src(), err, "Error init concept view", .{});
         self.selected = null;
         return;
     };
@@ -370,12 +370,12 @@ fn updateGraphContent(self: *Self, how: enum { reset, retain_state }) void {
     _ = self.graph_arena.reset(.retain_capacity);
 
     ilm.concept.fillFullGraph(self.core, graph, arena, self.all_concepts) catch |err| {
-        return utils.toastErr(@src(), err, "Failed to fill graph ({t})", .{err});
+        return gui.toastErr(@src(), err, "Failed to fill graph ({t})", .{err});
     };
     renderer.layout("neato") catch |err| {
-        return utils.toastErr(@src(), err, "Failed to layout graph", .{});
+        return gui.toastErr(@src(), err, "Failed to layout graph", .{});
     };
     self.graph_view.renderGraph() catch |err| {
-        return utils.toastErr(@src(), err, "Failed to update graph", .{});
+        return gui.toastErr(@src(), err, "Failed to update graph", .{});
     };
 }

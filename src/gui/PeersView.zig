@@ -4,7 +4,7 @@ const ilm = @import("ilm");
 const Core = ilm.Core;
 const Peer = ilm.p2p.Peer;
 const DbWriter = ilm.database.DbWriter;
-const utils = @import("utils.zig");
+const gui = @import("gui.zig");
 const PeerView = @import("PeerView.zig");
 const Self = @This();
 
@@ -270,7 +270,7 @@ fn renderContent(self: *Self) void {
                 dvui.toast(@src(), .{ .message = "Peer ID must be 64 characters long" });
             } else {
                 self.pair(input) catch |err| {
-                    utils.toastErr(@src(), err, "Failed to pair", .{});
+                    gui.toastErr(@src(), err, "Failed to pair", .{});
                 };
             }
         }

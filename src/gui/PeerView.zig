@@ -5,7 +5,7 @@ const Core = ilm.Core;
 const Peer = ilm.p2p.Peer;
 const Router = ilm.p2p.Router;
 const ConnectedPeer = Router.ConnectedPeer;
-const utils = @import("utils.zig");
+const gui = @import("gui.zig");
 const Self = @This();
 
 const log = std.log.scoped(.peer_view);
@@ -123,7 +123,7 @@ pub fn render(self: *Self) void {
             if (ilm.p2p.peer.rename(self.core, self.peer.id, self.name_edit.name.items)) {
                 self.peer.name = self.arena.allocator().dupe(u8, self.name_edit.name.items) catch @panic("OOM");
             } else |err| {
-                utils.toastErr(@src(), err, "Error when editing name", .{});
+                gui.toastErr(@src(), err, "Error when editing name", .{});
             }
             self.name_edit.editing = false;
         }
@@ -158,20 +158,20 @@ pub fn render(self: *Self) void {
                 .draw_focus = !syncing,
             }, .{}) and !syncing) {
                 self.core.router.sendSyncRequest(self.peer.id) catch |err| {
-                    utils.toastErr(@src(), err, "Failed to connect", .{});
+                    gui.toastErr(@src(), err, "Failed to connect", .{});
                 };
             }
         } else {
             if (dvui.button(@src(), "Connect", .{}, .{})) {
                 _ = self.core.router.connectToEndpoint(self.peer.id) catch |err| {
-                    utils.toastErr(@src(), err, "Failed to connect", .{});
+                    gui.toastErr(@src(), err, "Failed to connect", .{});
                 };
             }
         }
 
         if (dvui.button(@src(), "Delete", .{}, .{})) {
             self.core.deletePeerAndCloseConnection(self.peer.id) catch |err| {
-                utils.toastErr(@src(), err, "Failed to delete peer", .{});
+                gui.toastErr(@src(), err, "Failed to delete peer", .{});
             };
         }
     }

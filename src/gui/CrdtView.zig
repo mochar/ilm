@@ -5,7 +5,7 @@ const dvui = @import("dvui");
 const ilm = @import("ilm");
 const Core = ilm.Core;
 const crdt = ilm.database.crdt;
-const utils = @import("utils.zig");
+const gui = @import("gui.zig");
 
 core: *Core,
 arena: std.heap.ArenaAllocator,
@@ -48,13 +48,13 @@ pub fn render(self: *Self) void {
             if (crdt.getChanges(&self.core.db, &.{ 9, 9, 9 }, 0, self.arena.allocator())) |cs| {
                 self.changeset = cs;
             } else |err| {
-                utils.toastErr(@src(), err, "Failed to get changeset", .{});
+                gui.toastErr(@src(), err, "Failed to get changeset", .{});
             }
 
             if (crdt.getSiteDbVersions(&self.core.db, self.arena.allocator())) |versions| {
                 self.versions = versions;
             } else |err| {
-                utils.toastErr(@src(), err, "Failed to get changeset", .{});
+                gui.toastErr(@src(), err, "Failed to get changeset", .{});
             }
         }
     }
