@@ -19,7 +19,11 @@ const MAX_GRAPH_HEIGHT: u32 = 2048;
 
 core: *Core,
 gpa: std.mem.Allocator,
+
 all_concepts: []Concept = &.{},
+selection_idx: std.AutoHashMap(usize, void),
+selection_inverted: bool = false,
+
 selected: ?struct {
     concept: *Concept,
     view: *ConceptView,
@@ -58,6 +62,7 @@ pub fn create(gpa: std.mem.Allocator, core: *Core) !*Self {
     self.* = .{
         .core = core,
         .gpa = gpa,
+        .selection_idx = .init(gpa),
         .db_writes_buf = db_writes_buf,
         .db_writes_queue = .init(db_writes_buf),
         .search_arena = .init(gpa),
@@ -89,6 +94,8 @@ pub fn destroy(self: *Self) void {
         s.view.destroy();
     }
 
+    self.selection_idx.deinit();
+
     self.gpa.destroy(self);
 }
 
@@ -115,7 +122,6 @@ fn getAllConcepts(self: *Self) void {
 }
 
 fn getMatchedConcepts(self: *Self) void {
-    log.info("Getting matching concepts", .{});
     const query = self.search_query.items;
     _ = self.search_arena.reset(.retain_capacity);
     if (ilm.concept.getByNameMatch(self.core, self.search_arena.allocator(), query)) |concepts| {
@@ -191,7 +197,7 @@ fn renderSidebar(self: *Self, is_wide: bool) void {
     defer box.deinit();
     if (self.selected == null) {
         self.renderActions();
-        self.renderSearch();
+        self.renderConceptList();
     } else {
         self.renderConceptView();
     }
@@ -214,57 +220,93 @@ fn renderActions(self: *Self) void {
     }
 }
 
-fn renderSearch(self: *Self) void {
-    var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
-    var search_entry = dvui.textEntry(
-        @src(),
-        .{
-            .placeholder = "Search",
-            .text = .{
-                .array_list = .{
-                    .allocator = self.gpa,
-                    .backing = &self.search_query,
+fn renderConceptList(self: *Self) void {
+    // Search bar
+    {
+        var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+        defer hbox.deinit();
+
+        var search_entry = dvui.textEntry(
+            @src(),
+            .{
+                .placeholder = "Search",
+                .text = .{
+                    .array_list = .{
+                        .allocator = self.gpa,
+                        .backing = &self.search_query,
+                    },
                 },
             },
-        },
-        .{ .expand = .horizontal },
-    );
-    const search_changed = search_entry.text_changed;
-    search_entry.deinit();
-    defer if (search_changed) {
-        log.info("Search changed to: {s}", .{self.search_query.items});
-        self.getMatchedConcepts();
-    };
-
-    if (self.search_query.items.len == 0)
-        dvui.label(@src(), "{d}", .{self.all_concepts.len}, .{ .gravity_y = 0.5 })
-    else
-        dvui.label(@src(), "{d}/{d}", .{ self.matched_concepts.len, self.all_concepts.len }, .{ .gravity_y = 0.5 });
-    hbox.deinit();
-
-    var scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both });
-    defer scroll.deinit();
-
-    const selected_id: ?u128 = if (self.selected) |s| s.concept.id.int else null;
-    const concepts = if (self.search_query.items.len == 0) self.all_concepts else self.matched_concepts;
-    for (concepts, 0..) |*concept, i| {
-        _ = i;
-        const is_selected = concept.id.int == selected_id;
-        var c_box = dvui.box(
-            @src(),
-            .{ .dir = .horizontal },
-            .{
-                // .id_extra = i,
-                .id_extra = @truncate(concept.id.int),
-                .expand = .horizontal,
-                .background = true,
-                .style = if (is_selected) .highlight else null,
-            },
+            .{ .expand = .horizontal },
         );
-        if (dvui.labelClick(@src(), "{s}", .{concept.name}, .{}, .{ .expand = .both })) {
-            if (is_selected) self.unselect() else self.selectConcept(concept);
+        const search_changed = search_entry.text_changed;
+        search_entry.deinit();
+        defer if (search_changed) {
+            log.info("Search changed to: {s}", .{self.search_query.items});
+            self.getMatchedConcepts();
+        };
+
+        if (self.search_query.items.len == 0)
+            dvui.label(@src(), "{d}", .{self.all_concepts.len}, .{ .gravity_y = 0.5 })
+        else
+            dvui.label(@src(), "{d}/{d}", .{ self.matched_concepts.len, self.all_concepts.len }, .{ .gravity_y = 0.5 });
+    }
+
+    // Selection controls
+    {
+        var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+        defer hbox.deinit();
+
+        if (dvui.button(@src(), "Select all", .{}, .{ .background = false, .margin = .all(0.0) })) {
+            self.selection_inverted = true;
+            self.selection_idx.clearAndFree();
         }
-        c_box.deinit();
+
+        if (dvui.button(@src(), "Deselect all", .{}, .{ .background = false, .margin = .all(0.0) })) {
+            self.selection_inverted = false;
+            self.selection_idx.clearAndFree();
+        }
+    }
+
+    // Concept list
+    {
+        var scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both });
+        defer scroll.deinit();
+
+        const selected_id: ?u128 = if (self.selected) |s| s.concept.id.int else null;
+        const concepts = if (self.search_query.items.len == 0) self.all_concepts else self.matched_concepts;
+        for (concepts, 0..) |*concept, i| {
+            const is_selected_concept = concept.id.int == selected_id;
+
+            var c_box = dvui.box(
+                @src(),
+                .{ .dir = .horizontal },
+                .{
+                    // .id_extra = i,
+                    .id_extra = @truncate(concept.id.int),
+                    .expand = .horizontal,
+                    .background = true,
+                    .style = if (is_selected_concept) .highlight else null,
+                },
+            );
+            defer c_box.deinit();
+
+            {
+                const in_selection = self.selection_idx.contains(i);
+                const is_selected = if (self.selection_inverted) !in_selection else in_selection;
+                if (gui.manualCheckbox(@src(), is_selected, .{})) {
+                    if (in_selection) {
+                        _ = self.selection_idx.remove(i);
+                    } else {
+                        self.selection_idx.put(i, {}) catch {};
+                    }
+                }
+            }
+
+            if (dvui.labelClick(@src(), "{s}", .{concept.name}, .{}, .{ .expand = .both })) {
+                if (is_selected_concept) self.unselect() else self.selectConcept(concept);
+            }
+        }
     }
 }
 
@@ -294,7 +336,7 @@ fn renderGraph(self: *Self) void {
                 }
             },
             .assign_parent => |assign| {
-                if (ilm.concept.addParent(self.core, .{.int = assign.child}, .{.int = assign.parent})) {
+                if (ilm.concept.addParent(self.core, .{ .int = assign.child }, .{ .int = assign.parent })) {
                     self.updateGraphContent(.reset);
                 } else |err| {
                     gui.toastErr(@src(), err, "Failed to assign", .{});
