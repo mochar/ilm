@@ -21,7 +21,8 @@ core: *Core,
 gpa: std.mem.Allocator,
 
 all_concepts: []Concept = &.{},
-selection_idx: std.AutoHashMap(usize, void),
+// TODO Shorten to u68
+selection_ids: std.AutoHashMap(u128, void),
 selection_inverted: bool = false,
 
 selected: ?struct {
@@ -62,7 +63,7 @@ pub fn create(gpa: std.mem.Allocator, core: *Core) !*Self {
     self.* = .{
         .core = core,
         .gpa = gpa,
-        .selection_idx = .init(gpa),
+        .selection_ids = .init(gpa),
         .db_writes_buf = db_writes_buf,
         .db_writes_queue = .init(db_writes_buf),
         .search_arena = .init(gpa),
@@ -94,7 +95,7 @@ pub fn destroy(self: *Self) void {
         s.view.destroy();
     }
 
-    self.selection_idx.deinit();
+    self.selection_ids.deinit();
 
     self.gpa.destroy(self);
 }
@@ -259,12 +260,12 @@ fn renderConceptList(self: *Self) void {
 
         if (dvui.button(@src(), "Select all", .{}, .{ .background = false, .margin = .all(0.0) })) {
             self.selection_inverted = true;
-            self.selection_idx.clearAndFree();
+            self.selection_ids.clearAndFree();
         }
 
         if (dvui.button(@src(), "Deselect all", .{}, .{ .background = false, .margin = .all(0.0) })) {
             self.selection_inverted = false;
-            self.selection_idx.clearAndFree();
+            self.selection_ids.clearAndFree();
         }
     }
 
@@ -276,6 +277,7 @@ fn renderConceptList(self: *Self) void {
         const selected_id: ?u128 = if (self.selected) |s| s.concept.id.int else null;
         const concepts = if (self.search_query.items.len == 0) self.all_concepts else self.matched_concepts;
         for (concepts, 0..) |*concept, i| {
+            _ = i;
             const is_selected_concept = concept.id.int == selected_id;
 
             var c_box = dvui.box(
@@ -292,13 +294,13 @@ fn renderConceptList(self: *Self) void {
             defer c_box.deinit();
 
             {
-                const in_selection = self.selection_idx.contains(i);
+                const in_selection = self.selection_ids.contains(concept.id.int);
                 const is_selected = if (self.selection_inverted) !in_selection else in_selection;
                 if (gui.manualCheckbox(@src(), is_selected, .{})) {
                     if (in_selection) {
-                        _ = self.selection_idx.remove(i);
+                        _ = self.selection_ids.remove(concept.id.int);
                     } else {
-                        self.selection_idx.put(i, {}) catch {};
+                        self.selection_ids.put(concept.id.int, {}) catch {};
                     }
                 }
             }
