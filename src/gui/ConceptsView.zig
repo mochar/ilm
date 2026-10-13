@@ -1,4 +1,5 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const dvui = @import("dvui");
 
 const ilm = @import("ilm");
@@ -18,33 +19,27 @@ const MAX_GRAPH_WIDTH: u32 = 2048;
 const MAX_GRAPH_HEIGHT: u32 = 2048;
 
 core: *Core,
-gpa: std.mem.Allocator,
+gpa: Allocator,
 
-all_concepts: []Concept = &.{},
-// TODO Shorten to u68
-selection_ids: std.AutoHashMap(u128, void),
-selection_inverted: bool = false,
+concepts: ConceptManager,
 
-selected: ?struct {
+viewing: ?struct {
     concept: *Concept,
     view: *ConceptView,
+
+    pub fn deinit(self: *@This()) void {
+        self.view.destroy();
+    }
 } = null,
 
 db_writes_buf: []DbWriter.Write,
 db_writes_queue: std.Io.Queue(DbWriter.Write),
 
-search_query: std.ArrayList(u8) = .empty,
-/// Matched concepts (the structs themselves and the strings within)
-/// are allocated using this arena. It is reset each time the search
-/// query is changed.
-search_arena: std.heap.ArenaAllocator,
-matched_concepts: []Concept = &.{},
-
 graph_view: GraphView,
 /// To allocate graph content, reset every time we fill the graph.
 graph_arena: std.heap.ArenaAllocator,
 
-pub fn create(gpa: std.mem.Allocator, core: *Core) !*Self {
+pub fn create(gpa: Allocator, core: *Core) !*Self {
     var self = try gpa.create(Self);
     errdefer gpa.destroy(self);
 
@@ -60,13 +55,15 @@ pub fn create(gpa: std.mem.Allocator, core: *Core) !*Self {
     });
     errdefer graph_view.deinit();
 
+    var concepts: ConceptManager = .init(core, gpa);
+    errdefer concepts.deinit();
+
     self.* = .{
         .core = core,
         .gpa = gpa,
-        .selection_ids = .init(gpa),
+        .concepts = concepts,
         .db_writes_buf = db_writes_buf,
         .db_writes_queue = .init(db_writes_buf),
-        .search_arena = .init(gpa),
         .graph_view = graph_view,
         .graph_arena = .init(gpa),
     };
@@ -86,16 +83,8 @@ pub fn destroy(self: *Self) void {
     self.graph_view.deinit();
     self.graph_arena.deinit();
 
-    self.gpa.free(self.all_concepts);
-
-    self.search_query.deinit(self.gpa);
-    self.search_arena.deinit();
-
-    if (self.selected) |*s| {
-        s.view.destroy();
-    }
-
-    self.selection_ids.deinit();
+    if (self.viewing) |*v| v.deinit();
+    self.concepts.deinit();
 
     self.gpa.destroy(self);
 }
@@ -110,26 +99,6 @@ fn dbWriteCallback(self_opaque: *anyopaque, result: DbWriter.WriteResult) void {
             };
         },
         else => {},
-    }
-}
-
-fn getAllConcepts(self: *Self) void {
-    if (ilm.concept.getAll(self.core, self.gpa)) |concepts| {
-        self.gpa.free(self.all_concepts);
-        self.all_concepts = concepts;
-    } else |_| {
-        dvui.toast(@src(), .{ .message = "Failed to get all concepts" });
-    }
-}
-
-fn getMatchedConcepts(self: *Self) void {
-    const query = self.search_query.items;
-    _ = self.search_arena.reset(.retain_capacity);
-    if (ilm.concept.getByNameMatch(self.core, self.search_arena.allocator(), query)) |concepts| {
-        self.matched_concepts = concepts;
-    } else |_| {
-        self.matched_concepts = &.{};
-        dvui.toast(@src(), .{ .message = "Failed to get matched concepts" });
     }
 }
 
@@ -155,12 +124,12 @@ pub fn render(self: *Self) void {
                     .insert => {
                         self.getAllConcepts();
                         self.updateGraphContent(.retain_state);
-                        self.selectConceptById(id.int);
+                        self.viewConceptById(id.int);
                     },
                     .delete => {
                         self.getAllConcepts();
                         self.updateGraphContent(.reset);
-                        self.unselect();
+                        self.unviewConcept();
                     },
                 }
             },
@@ -171,7 +140,7 @@ pub fn render(self: *Self) void {
             .crsql_changes => {
                 self.getAllConcepts();
                 self.updateGraphContent(.reset);
-                self.unselect();
+                self.unviewConcept();
             },
             else => {},
         }
@@ -196,7 +165,7 @@ fn renderSidebar(self: *Self, is_wide: bool) void {
         .max_size_content = .width(box_width),
     });
     defer box.deinit();
-    if (self.selected == null) {
+    if (self.viewing == null) {
         self.renderActions();
         self.renderConceptList();
     } else {
@@ -234,7 +203,7 @@ fn renderConceptList(self: *Self) void {
                 .text = .{
                     .array_list = .{
                         .allocator = self.gpa,
-                        .backing = &self.search_query,
+                        .backing = &self.concepts.search.query,
                     },
                 },
             },
@@ -243,14 +212,14 @@ fn renderConceptList(self: *Self) void {
         const search_changed = search_entry.text_changed;
         search_entry.deinit();
         defer if (search_changed) {
-            log.info("Search changed to: {s}", .{self.search_query.items});
-            self.getMatchedConcepts();
+            log.info("Search changed to: {s}", .{self.concepts.search.query.items});
+            self.getMatchingConcepts();
         };
 
-        if (self.search_query.items.len == 0)
-            dvui.label(@src(), "{d}", .{self.all_concepts.len}, .{ .gravity_y = 0.5 })
+        if (self.concepts.isSearching())
+            dvui.label(@src(), "{d}/{d}", .{ self.concepts.getVisible().items.len, self.concepts.all.items.len }, .{ .gravity_y = 0.5 })
         else
-            dvui.label(@src(), "{d}/{d}", .{ self.matched_concepts.len, self.all_concepts.len }, .{ .gravity_y = 0.5 });
+            dvui.label(@src(), "{d}", .{self.concepts.all.items.len}, .{ .gravity_y = 0.5 });
     }
 
     // Selection controls
@@ -259,66 +228,86 @@ fn renderConceptList(self: *Self) void {
         defer hbox.deinit();
 
         if (dvui.button(@src(), "Select all", .{}, .{ .background = false, .margin = .all(0.0) })) {
-            self.selection_inverted = true;
-            self.selection_ids.clearAndFree();
+            self.concepts.selectAll() catch |err| {
+                gui.toastErr(@src(), err, "Failed to select all", .{});
+            };
         }
 
         if (dvui.button(@src(), "Deselect all", .{}, .{ .background = false, .margin = .all(0.0) })) {
-            self.selection_inverted = false;
-            self.selection_ids.clearAndFree();
+            self.concepts.deselectAll() catch |err| {
+                gui.toastErr(@src(), err, "Failed to deselect all", .{});
+            };
         }
+
+        _ = dvui.spacer(@src(), .{ .expand = .horizontal });
+
+        // TODO This should take into account the queried concepts
+        const visible = self.concepts.getVisible();
+        dvui.label(@src(), "{d}/{d}", .{ visible.selection.ids.size, visible.items.len }, .{ .color_text = .{ .color = .gray } });
     }
+
+    // Selection actions
+    // const n_visible_concepts = if (self.selection_inverted) 1 - self.selection_ids.count()
+    // const has_selection = if (self.selection_inverted) self.selection_ids.len ==
+    // if (self.selection_ids) {
+    //     var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+    //     defer hbox.deinit();
+
+    //     if (dvui.buttonLabelAndIcon(
+    //         @src(),
+    //         .{
+    //             .label = "Delete",
+    //             .tvg_bytes = dvui.entypo.trash,
+    //         },
+    //         .{
+    //             .expand = .horizontal,
+    //             // .color_fill = .red,
+    //             .background = false,
+    //             .margin = .all(0.0),
+    //         },
+    //     )) {}
+    // }
 
     // Concept list
     {
         var scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both });
         defer scroll.deinit();
 
-        const selected_id: ?u128 = if (self.selected) |s| s.concept.id.int else null;
-        const concepts = if (self.search_query.items.len == 0) self.all_concepts else self.matched_concepts;
-        for (concepts, 0..) |*concept, i| {
+        const viewing_id = self.viewingId();
+        for (self.concepts.getVisible().items, 0..) |*concept, i| {
             _ = i;
-            const is_selected_concept = concept.id.int == selected_id;
+            const is_viewing = concept.id.int == viewing_id;
 
             var c_box = dvui.box(
                 @src(),
                 .{ .dir = .horizontal },
                 .{
-                    // .id_extra = i,
                     .id_extra = @truncate(concept.id.int),
                     .expand = .horizontal,
                     .background = true,
-                    .style = if (is_selected_concept) .highlight else null,
+                    .style = if (is_viewing) .highlight else null,
                 },
             );
             defer c_box.deinit();
 
-            {
-                const in_selection = self.selection_ids.contains(concept.id.int);
-                const is_selected = if (self.selection_inverted) !in_selection else in_selection;
-                if (gui.manualCheckbox(@src(), is_selected, .{})) {
-                    if (in_selection) {
-                        _ = self.selection_ids.remove(concept.id.int);
-                    } else {
-                        self.selection_ids.put(concept.id.int, {}) catch {};
-                    }
-                }
+            if (gui.manualCheckbox(@src(), self.concepts.isSelected(concept), .{})) {
+                self.concepts.toggleSelected(concept);
             }
 
             if (dvui.labelClick(@src(), "{s}", .{concept.name}, .{}, .{ .expand = .both })) {
-                if (is_selected_concept) self.unselect() else self.selectConcept(concept);
+                if (is_viewing) self.unviewConcept() else self.viewConcept(concept);
             }
         }
     }
 }
 
 fn renderConceptView(self: *Self) void {
-    if (self.selected) |*selected| {
+    if (self.viewing) |*selected| {
         var view = selected.view;
         if (view.render()) |action| {
             switch (action) {
-                .quit => self.unselect(),
-                .node_select => |id| self.selectConceptById(id),
+                .quit => self.unviewConcept(),
+                .node_select => |id| self.viewConceptById(id),
                 else => {},
             }
         }
@@ -331,10 +320,10 @@ fn renderGraph(self: *Self) void {
     }) |action| {
         switch (action) {
             .node_select => |id| {
-                if (self.selected != null and self.selected.?.concept.id.int == id) {
-                    self.unselect();
+                if (self.viewing != null and self.viewing.?.concept.id.int == id) {
+                    self.unviewConcept();
                 } else {
-                    self.selectConceptById(id);
+                    self.viewConceptById(id);
                 }
             },
             .assign_parent => |assign| {
@@ -348,38 +337,45 @@ fn renderGraph(self: *Self) void {
     }
 }
 
-fn selectConceptById(self: *Self, id: u128) void {
-    if (self.selected) |s| if (s.concept.id.int == id) return;
-    for (self.all_concepts) |*concept| {
+fn getAllConcepts(self: *Self) void {
+    self.concepts.fetchAll() catch |err| {
+        gui.toastErr(@src(), err, "Failed to get all concepts", .{});
+    };
+}
+
+fn getMatchingConcepts(self: *Self) void {
+    self.concepts.fetchMatching() catch |err| {
+        gui.toastErr(@src(), err, "Failed to get queried concepts", .{});
+    };
+}
+
+pub fn viewingId(self: *Self) ?u128 {
+    return if (self.viewing) |v| v.concept.id.int else null;
+}
+
+fn viewConceptById(self: *Self, id: u128) void {
+    if (self.viewing) |s| if (s.concept.id.int == id) return;
+    for (self.concepts.all.items) |*concept| {
         if (concept.id.int == id) {
-            self.selectConcept(concept);
+            self.viewConcept(concept);
             return;
         }
     }
     dvui.toast(@src(), .{ .message = "Failed to find concept" });
 }
 
-fn selectConceptByRowId(self: *Self, rowid: i64) void {
-    if (self.selected) |s| if (s.concept.rowid == rowid) return;
-    for (self.all_concepts) |*concept| {
-        if (concept.rowid == rowid) {
-            self.selectConcept(concept);
-            return;
-        }
-    }
-    dvui.toast(@src(), .{ .message = "Failed to find concept" });
-}
-
-fn selectConcept(self: *Self, concept: *Concept) void {
-    if (self.selected) |*selected| {
-        if (selected.concept == concept) return;
-        // TODO Duplicate code in unselect()
-        selected.view.destroy();
-        self.selected = null;
+fn viewConcept(self: *Self, concept: *Concept) void {
+    if (self.viewing) |*viewing| {
+        if (viewing.concept == concept) return;
+        
+        // TODO Duplicate code in unviewConcept()
+        viewing.view.destroy();
+        self.viewing = null;
+        
         self.graph_view.renderer.highlighted.clearRetainingCapacity();
     }
 
-    const view = ConceptView.create(.{
+    const concept_view = ConceptView.create(.{
         .concept_id = concept.id,
         .core = self.core,
         .gpa = self.core.gpa,
@@ -387,22 +383,24 @@ fn selectConcept(self: *Self, concept: *Concept) void {
     }) catch |err| {
         log.err("Error init concept view: {t}", .{err});
         gui.toastErr(@src(), err, "Error init concept view", .{});
-        self.selected = null;
+        self.viewing = null;
         return;
     };
-    self.selected = .{ .concept = concept, .view = view };
+
+    self.viewing = .{ .concept = concept, .view = concept_view };
 
     self.graph_view.animateToNode(concept.id.int) catch {};
     self.graph_view.renderer.highlighted.put(concept.id.int, {}) catch {};
 }
 
-fn unselect(self: *Self) void {
-    if (self.selected) |*selected| {
-        selected.view.destroy();
-        self.selected = null;
+fn unviewConcept(self: *Self) void {
+    if (self.viewing) |*viewing| {
+        viewing.view.destroy();
+        self.viewing = null;
+        
+        self.graph_view.animateFitToGraph() catch {};
+        self.graph_view.renderer.highlighted.clearRetainingCapacity();
     }
-    self.graph_view.animateFitToGraph() catch {};
-    self.graph_view.renderer.highlighted.clearRetainingCapacity();
 }
 
 /// Replace the graph nodes and edges with that of self.selected
@@ -418,7 +416,7 @@ fn updateGraphContent(self: *Self, how: enum { reset, retain_state }) void {
 
     _ = self.graph_arena.reset(.retain_capacity);
 
-    ilm.concept.fillFullGraph(self.core, graph, arena, self.all_concepts) catch |err| {
+    ilm.concept.fillFullGraph(self.core, graph, arena, self.concepts.all.items) catch |err| {
         return gui.toastErr(@src(), err, "Failed to fill graph ({t})", .{err});
     };
     renderer.layout("neato") catch |err| {
@@ -428,3 +426,169 @@ fn updateGraphContent(self: *Self, how: enum { reset, retain_state }) void {
         return gui.toastErr(@src(), err, "Failed to update graph", .{});
     };
 }
+
+const ConceptManager = struct {
+    core: *Core,
+    gpa: Allocator,
+
+    all: Concepts,
+
+    search: struct {
+        query: std.ArrayList(u8) = .empty,
+        concepts: Concepts,
+
+        pub fn init(gpa: Allocator) @This() {
+            return .{ .concepts = .init(gpa) };
+        }
+
+        pub fn deinit(self: *@This(), gpa: Allocator) void {
+            self.query.deinit(gpa);
+            self.concepts.deinit(gpa);
+        }
+    },
+
+    pub fn init(core: *Core, gpa: Allocator) ConceptManager {
+        return .{
+            .core = core,
+            .gpa = gpa,
+            .all = .init(gpa),
+            .search = .init(gpa),
+        };
+    }
+
+    pub fn deinit(self: *ConceptManager) void {
+        self.all.deinit(self.gpa);
+        self.search.deinit(self.gpa);
+    }
+
+    pub fn fetchAll(self: *ConceptManager) !void {
+        try self.all.fetchAll(self.core);
+    }
+
+    pub fn fetchMatching(self: *ConceptManager) !void {
+        try self.search.concepts.fetchMatching(self.core, self.search.query.items);
+        try self.search.concepts.copySelection(self.gpa, &self.all);
+    }
+
+    pub fn isSearching(self: *ConceptManager) bool {
+        return self.search.query.items.len > 0;
+    }
+
+    pub fn getVisible(self: *ConceptManager) Concepts {
+        return if (self.isSearching()) self.search.concepts else self.all;
+    }
+
+    pub fn isSelected(self: *ConceptManager, concept: *const Concept) bool {
+        return if (self.isSearching())
+            self.search.concepts.isSelected(concept)
+        else
+            self.all.isSelected(concept);
+    }
+
+    pub fn toggleSelected(self: *ConceptManager, concept: *const Concept) void {
+        self.all.toggleSelected(self.gpa, concept);
+        if (self.isSearching()) {
+            self.search.concepts.toggleSelected(self.gpa, concept);
+        }
+    }
+
+    pub fn selectAll(self: *ConceptManager) !void {
+        self.search.concepts.selectAll(self.gpa);
+        if (self.isSearching()) {
+            try self.all.copySelection(self.gpa, &self.search.concepts);
+        } else {
+            self.all.selectAll(self.gpa);
+        }
+    }
+
+    pub fn deselectAll(self: *ConceptManager) !void {
+        if (self.isSearching()) {
+            for (self.search.concepts.items) |*search_concept| {
+                if (self.all.selection.inverted) {
+                    try self.all.selection.ids.put(self.gpa, search_concept.id.int, {});
+                } else {
+                    _ = self.all.selection.ids.remove(search_concept.id.int);
+                }
+            }
+
+            self.search.concepts.deselectAll(self.gpa);
+        } else {
+            self.all.deselectAll(self.gpa);
+            self.search.concepts.deselectAll(self.gpa);
+        }
+    }
+};
+
+const Concepts = struct {
+    arena: std.heap.ArenaAllocator,
+    items: []Concept,
+
+    selection: struct {
+        // TODO Shorten to u68
+        ids: std.AutoHashMapUnmanaged(u128, void) = .empty,
+        inverted: bool = false,
+
+        pub fn deinit(self: *@This(), gpa: Allocator) void {
+            self.ids.deinit(gpa);
+        }
+    },
+
+    pub fn init(gpa: Allocator) Concepts {
+        return .{
+            .arena = .init(gpa),
+            .items = &.{},
+            .selection = .{},
+        };
+    }
+
+    pub fn deinit(self: *Concepts, gpa: Allocator) void {
+        self.selection.deinit(gpa);
+        self.arena.deinit();
+    }
+
+    pub fn fetchAll(self: *Concepts, core: *Core) !void {
+        _ = self.arena.reset(.retain_capacity);
+        const concepts = try ilm.concept.getAll(core, self.arena.allocator());
+        self.items = concepts;
+    }
+
+    pub fn fetchMatching(self: *Concepts, core: *Core, query: []const u8) !void {
+        _ = self.arena.reset(.retain_capacity);
+        const concepts = try ilm.concept.getByNameMatch(core, self.arena.allocator(), query);
+        self.items = concepts;
+    }
+
+    pub fn copySelection(self: *Concepts, gpa: Allocator, other: *Concepts) !void {
+        self.selection.ids.clearRetainingCapacity();
+        self.selection.inverted = false;
+        for (other.items) |*c| {
+            if (other.isSelected(c)) {
+                try self.selection.ids.put(gpa, c.id.int, {});
+            }
+        }
+    }
+
+    pub fn isSelected(self: *Concepts, concept: *const Concept) bool {
+        const in_selection = self.selection.ids.contains(concept.id.int);
+        return if (self.selection.inverted) !in_selection else in_selection;
+    }
+
+    pub fn toggleSelected(self: *Concepts, gpa: Allocator, concept: *const Concept) void {
+        const in_selection = self.selection.ids.contains(concept.id.int);
+        if (in_selection) {
+            _ = self.selection.ids.remove(concept.id.int);
+        } else {
+            self.selection.ids.put(gpa, concept.id.int, {}) catch {};
+        }
+    }
+
+    pub fn selectAll(self: *Concepts, gpa: Allocator) void {
+        self.selection.inverted = true;
+        self.selection.ids.clearAndFree(gpa);
+    }
+
+    pub fn deselectAll(self: *Concepts, gpa: Allocator) void {
+        self.selection.inverted = false;
+        self.selection.ids.clearAndFree(gpa);
+    }
+};
