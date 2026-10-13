@@ -217,9 +217,9 @@ fn renderConceptList(self: *Self) void {
         };
 
         if (self.concepts.isSearching())
-            dvui.label(@src(), "{d}/{d}", .{ self.concepts.getVisible().items.len, self.concepts.all.items.len }, .{ .gravity_y = 0.5 })
+            dvui.label(@src(), "{d}/{d}", .{ self.concepts.getVisible().items.len, self.concepts.getAll().items.len }, .{ .gravity_y = 0.5 })
         else
-            dvui.label(@src(), "{d}", .{self.concepts.all.items.len}, .{ .gravity_y = 0.5 });
+            dvui.label(@src(), "{d}", .{self.concepts.getAll().items.len}, .{ .gravity_y = 0.5 });
     }
 
     // Selection controls
@@ -241,32 +241,43 @@ fn renderConceptList(self: *Self) void {
 
         _ = dvui.spacer(@src(), .{ .expand = .horizontal });
 
-        // TODO This should take into account the queried concepts
         const visible = self.concepts.getVisible();
-        dvui.label(@src(), "{d}/{d}", .{ visible.selection.ids.size, visible.items.len }, .{ .color_text = .{ .color = .gray } });
+        dvui.label(
+            @src(),
+            "{d}/{d}",
+            .{ visible.selection.ids.size, visible.items.len },
+            .{ .color_text = .{ .color = .gray } },
+        );
     }
 
     // Selection actions
-    // const n_visible_concepts = if (self.selection_inverted) 1 - self.selection_ids.count()
-    // const has_selection = if (self.selection_inverted) self.selection_ids.len ==
-    // if (self.selection_ids) {
-    //     var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
-    //     defer hbox.deinit();
+    {
+        var hbox = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal, .padding = .all(8.0) });
+        defer hbox.deinit();
 
-    //     if (dvui.buttonLabelAndIcon(
-    //         @src(),
-    //         .{
-    //             .label = "Delete",
-    //             .tvg_bytes = dvui.entypo.trash,
-    //         },
-    //         .{
-    //             .expand = .horizontal,
-    //             // .color_fill = .red,
-    //             .background = false,
-    //             .margin = .all(0.0),
-    //         },
-    //     )) {}
-    // }
+        var scalef: f32 = 0.8;
+        var scale = dvui.scale(@src(), .{.scale = &scalef}, .{.expand = .horizontal});
+        defer scale.deinit();
+        
+        const has_selection = self.concepts.selectionSize() > 0;
+
+        if (dvui.buttonLabelAndIcon(
+            @src(),
+            .{
+                .label = " Delete",
+                .tvg_bytes = dvui.entypo.trash,
+                .icon_first = true,
+                .button_opts = .{ .grayed = !has_selection }
+            },
+            .{
+                .background = false,
+                .margin = .all(0.0),
+                .border = .all(1.0),
+            },
+        ) and has_selection) {
+            self.concepts.deleteSelection() catch {};
+        }
+    }
 
     // Concept list
     {
@@ -355,7 +366,7 @@ pub fn viewingId(self: *Self) ?u128 {
 
 fn viewConceptById(self: *Self, id: u128) void {
     if (self.viewing) |s| if (s.concept.id.int == id) return;
-    for (self.concepts.all.items) |*concept| {
+    for (self.concepts.getAll().items) |*concept| {
         if (concept.id.int == id) {
             self.viewConcept(concept);
             return;
@@ -367,11 +378,11 @@ fn viewConceptById(self: *Self, id: u128) void {
 fn viewConcept(self: *Self, concept: *Concept) void {
     if (self.viewing) |*viewing| {
         if (viewing.concept == concept) return;
-        
+
         // TODO Duplicate code in unviewConcept()
         viewing.view.destroy();
         self.viewing = null;
-        
+
         self.graph_view.renderer.highlighted.clearRetainingCapacity();
     }
 
@@ -397,7 +408,7 @@ fn unviewConcept(self: *Self) void {
     if (self.viewing) |*viewing| {
         viewing.view.destroy();
         self.viewing = null;
-        
+
         self.graph_view.animateFitToGraph() catch {};
         self.graph_view.renderer.highlighted.clearRetainingCapacity();
     }
@@ -416,7 +427,7 @@ fn updateGraphContent(self: *Self, how: enum { reset, retain_state }) void {
 
     _ = self.graph_arena.reset(.retain_capacity);
 
-    ilm.concept.fillFullGraph(self.core, graph, arena, self.concepts.all.items) catch |err| {
+    ilm.concept.fillFullGraph(self.core, graph, arena, self.concepts.getAll().items) catch |err| {
         return gui.toastErr(@src(), err, "Failed to fill graph ({t})", .{err});
     };
     renderer.layout("neato") catch |err| {
@@ -474,8 +485,19 @@ const ConceptManager = struct {
         return self.search.query.items.len > 0;
     }
 
-    pub fn getVisible(self: *ConceptManager) Concepts {
-        return if (self.isSearching()) self.search.concepts else self.all;
+    pub fn getAll(self: *ConceptManager) *Concepts {
+        return &self.all;
+    }
+
+    pub fn getVisible(self: *ConceptManager) *Concepts {
+        return if (self.isSearching()) &self.search.concepts else &self.all;
+    }
+
+    pub fn selectionSize(self: *ConceptManager) usize {
+        return if (self.isSearching())
+            self.search.concepts.selectionSize()
+        else
+            self.all.selectionSize();
     }
 
     pub fn isSelected(self: *ConceptManager, concept: *const Concept) bool {
@@ -517,12 +539,16 @@ const ConceptManager = struct {
             self.search.concepts.deselectAll(self.gpa);
         }
     }
+
+    pub fn deleteSelection(self: *ConceptManager) !void {
+        _ = self;
+        // ilm.concept.delete(self.core, id: Id);
+    }
 };
 
 const Concepts = struct {
     arena: std.heap.ArenaAllocator,
     items: []Concept,
-
     selection: struct {
         // TODO Shorten to u68
         ids: std.AutoHashMapUnmanaged(u128, void) = .empty,
@@ -558,6 +584,16 @@ const Concepts = struct {
         self.items = concepts;
     }
 
+    pub fn selectionSize(self: *Concepts) usize {
+        const size: usize = self.selection.ids.size;
+        return if (self.selection.inverted) return self.items.len - size else size;
+    }
+
+    pub fn isSelected(self: *Concepts, concept: *const Concept) bool {
+        const in_selection = self.selection.ids.contains(concept.id.int);
+        return if (self.selection.inverted) !in_selection else in_selection;
+    }
+
     pub fn copySelection(self: *Concepts, gpa: Allocator, other: *Concepts) !void {
         self.selection.ids.clearRetainingCapacity();
         self.selection.inverted = false;
@@ -567,12 +603,6 @@ const Concepts = struct {
             }
         }
     }
-
-    pub fn isSelected(self: *Concepts, concept: *const Concept) bool {
-        const in_selection = self.selection.ids.contains(concept.id.int);
-        return if (self.selection.inverted) !in_selection else in_selection;
-    }
-
     pub fn toggleSelected(self: *Concepts, gpa: Allocator, concept: *const Concept) void {
         const in_selection = self.selection.ids.contains(concept.id.int);
         if (in_selection) {
