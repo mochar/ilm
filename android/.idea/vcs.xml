@@ -2,6 +2,8 @@
 <project version="4">
   <component name="VcsDirectoryMappings">
     <mapping directory="$PROJECT_DIR$/.." vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../vendor/cr-sqlite" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/../vendor/cr-sqlite/core/rs/sqlite-rs-embedded" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/../vendor/graphviz" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/../vendor/iroh-c-ffi" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/../vendor/plutovg" vcs="Git" />
