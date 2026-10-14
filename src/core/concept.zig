@@ -5,6 +5,7 @@ const sqlite = @import("sqlite");
 const Core = @import("Core.zig");
 const database = @import("database.zig");
 const Db = database.Db;
+const Diagnostics = database.Diagnostics;
 const Id = database.Id;
 const Write = database.tables.Write;
 const Graph = @import("graphviz").Graph;
@@ -35,6 +36,61 @@ pub fn add(core: *Core, name: []const u8, parent_ids: []const Id) !Id {
     return if (res.write) |_| id else |err| return err;
 }
 
+pub fn addImpl(db: *Db, id: Id, name: []const u8, parent_ids: []const Id) !void {
+    var diags: Diagnostics = .{};
+
+    var savepoint = try db.savepoint("addconcept");
+    defer savepoint.rollback();
+    const id_blob = id.asBlob();
+
+    {
+        var stmt = db.prepareWithDiags(
+            "INSERT INTO concept(id, name) VALUES (?, ?)",
+            .{ .diags = &diags },
+        ) catch |err| {
+            log.err("SQLite prepare failed: {s}", .{diags.message});
+            return err;
+        };
+        defer {
+            _ = sqlite.c.sqlite3_reset(stmt.dynamic_stmt.stmt);
+            stmt.deinit();
+        }
+        stmt.exec(
+            .{ .diags = &diags },
+            .{ .id = id_blob, .name = name },
+        ) catch |err| {
+            log.err("SQLite exec failed: {s}", .{diags.message});
+            return err;
+        };
+    }
+
+    {
+        var stmt = db.prepareWithDiags(
+            "INSERT INTO concept_rel(parent_id, child_id) VALUES (?, ?)",
+            .{ .diags = &diags },
+        ) catch |err| {
+            log.err("SQLite prepare failed: {s}", .{diags.message});
+            return err;
+        };
+        defer {
+            _ = sqlite.c.sqlite3_reset(stmt.dynamic_stmt.stmt);
+            stmt.deinit();
+        }
+        for (parent_ids) |*parent_id| {
+            stmt.reset();
+            stmt.exec(
+                .{ .diags = &diags },
+                .{ .parent_id = parent_id.asBlob(), .child_id = id_blob },
+            ) catch |err| {
+                log.err("SQLite exec failed: {s}", .{diags.message});
+                return err;
+            };
+        }
+    }
+
+    savepoint.commit();
+}
+
 pub fn rename(core: *Core, id: Id, name: []const u8) !void {
     const res = try core.db_writer.runCommand(.{ .rename_concept = .{
         .id = id,
@@ -43,9 +99,83 @@ pub fn rename(core: *Core, id: Id, name: []const u8) !void {
     return if (res.write) |_| {} else |err| return err;
 }
 
+// TODO Validate that rename actually happened (in case concept not found in db)
+pub fn renameImpl(db: *Db, id: Id, name: []const u8) !void {
+    var diags: Diagnostics = .{};
+
+    var stmt = db.prepareWithDiags(
+        \\UPDATE concept
+        \\SET name = ?
+        \\WHERE id = ?
+    , .{ .diags = &diags }) catch |err| {
+        log.err("SQLite prepare failed: {s}", .{diags.message});
+        return err;
+    };
+    defer stmt.deinit();
+
+    stmt.exec(
+        .{ .diags = &diags },
+        .{ .name = name, .id = id.asBlob() },
+    ) catch |err| {
+        log.err("SQLite exec failed: {s}", .{diags.message});
+        return err;
+    };
+}
+
 pub fn delete(core: *Core, id: Id) !void {
     const res = try core.db_writer.runCommand(.{ .delete_concept = .{ .id = id } }, .{});
     return if (res.write) |_| {} else |err| return err;
+}
+
+// TODO Validate that delete actually happened (in case concept not found in db)
+pub fn deleteImpl(db: *Db, id: Id) !void {
+    var diags: Diagnostics = .{};
+    var savepoint = try db.savepoint("delconcept");
+    defer savepoint.rollback();
+
+    // Delete the relationship first. Otherwise inbetween there will
+    // conceptid in concept_rel of a concept that doesnt exist. This
+    // is a problem because of the sqlite update hook, which reacts
+    // immediately.
+    {
+        var stmt = db.prepareWithDiags(
+            \\DELETE FROM concept_rel
+            \\WHERE parent_id = ? OR child_id = ?
+        , .{ .diags = &diags }) catch |err| {
+            log.err("SQLite prepare failed: {s}", .{diags.message});
+            return err;
+        };
+        defer stmt.deinit();
+
+        stmt.exec(
+            .{ .diags = &diags },
+            .{ id.asBlob(), id.asBlob() },
+        ) catch |err| {
+            log.err("SQLite exec failed: {s}", .{diags.message});
+            return err;
+        };
+    }
+
+    {
+        var stmt = db.prepareWithDiags(
+            \\DELETE FROM concept
+            \\WHERE id = ?
+        , .{ .diags = &diags }) catch |err| {
+            log.err("SQLite prepare failed: {s}", .{diags.message});
+            return err;
+        };
+        defer stmt.deinit();
+
+        stmt.exec(
+            .{ .diags = &diags },
+            .{ .id = id.asBlob() },
+        ) catch |err| {
+            log.err("SQLite exec failed: {s}", .{diags.message});
+            return err;
+        };
+    }
+
+    savepoint.commit();
 }
 
 pub fn addParent(core: *Core, child_id: Id, parent_id: Id) !void {
