@@ -39,8 +39,9 @@ pub const Node = struct {
 
     pub fn getNodeId(cnode: *c.Agnode_t) !u128 {
         const name_ptr = c.agnameof(cnode) orelse return error.MissingNodeName;
-        const name = std.mem.span(name_ptr);
-        return std.fmt.parseInt(u128, name, 16);
+        // const name = std.mem.span(name_ptr);
+        // return std.fmt.parseInt(u128, name, 16);
+        return std.fmt.parseInt(u128, name_ptr[0..32], 16);
     }
 
     pub fn getInfo(node: *const Node) *c.Agnodeinfo_t {
