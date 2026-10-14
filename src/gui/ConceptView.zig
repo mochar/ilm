@@ -155,7 +155,7 @@ pub fn render(self: *Self) ?Action {
 
     var scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both });
     defer scroll.deinit();
-    
+
     var box = dvui.box(@src(), .{}, .{ .expand = .both });
     defer box.deinit();
 
@@ -223,20 +223,6 @@ pub fn render(self: *Self) ?Action {
     if (self.concept == null) return action;
     const concept = &self.concept.?;
 
-    if (self.graph_view.render(.{
-        // .expand = .ratio,
-        .expand = .horizontal,
-        .margin = .all(10.0),
-    }) catch |err| {
-        gui.toastErr(@src(), err, "Failed to render graph", .{});
-        return action;
-    }) |graph_action| {
-        switch (graph_action) {
-            .node_select => |id| action = .{ .node_select = id },
-            else => {},
-        }
-    }
-
     if (dvui.buttonLabelAndIcon(
         @src(),
         .{
@@ -271,6 +257,19 @@ pub fn render(self: *Self) ?Action {
             return .delete;
         } else |err| {
             gui.toastErr(@src(), err, "Failed to delete node", .{});
+        }
+    }
+
+    if (self.graph_view.render(.{
+        .expand = .ratio,
+        .margin = .all(10.0),
+    }) catch |err| {
+        gui.toastErr(@src(), err, "Failed to render graph", .{});
+        return action;
+    }) |graph_action| {
+        switch (graph_action) {
+            .node_select => |id| action = .{ .node_select = id },
+            else => {},
         }
     }
 
