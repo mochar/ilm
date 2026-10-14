@@ -46,9 +46,9 @@ const Camera = struct {
     center_y: f32 = 0.0,
     /// Zoom scale factor (1.0 = 100%)
     zoom: f32 = 1.0,
-    // TODO Make these relative to content density (graph width height in px)
+    // Dynamic zoom limits relative to graph bounding box and viewport
     max_zoom: f32 = 10.0,
-    min_zoom: f32 = 0.5,
+    min_zoom: f32 = 0.1,
 };
 
 pub const MouseButton = enum { left, right, middle };
@@ -141,7 +141,7 @@ pub fn init(options: Options) !Self {
     const canvas = try plutovg.Canvas.initForData(buffer.ptr, view_w, view_h, stride);
     errdefer canvas.deinit();
 
-    return .{
+    var self: Self = .{
         .gpa = gpa,
         .io = options.io,
         .graph = graph,
@@ -156,6 +156,8 @@ pub fn init(options: Options) !Self {
         .camera = options.camera,
         .managed = options.buffer == null,
     };
+    self.updateZoomLimits();
+    return self;
 }
 
 pub fn deinit(self: *Self) void {
@@ -315,6 +317,7 @@ pub fn layout(self: *Self, engine: []const u8) !void {
         self.graph.setRatio(target_ratio);
     }
     try self.graph.layout(engine);
+    self.updateZoomLimits();
     self.state.dirty = true;
 }
 
@@ -325,6 +328,7 @@ pub fn resize(self: *Self, width: u32, height: u32) void {
     self.view_width = @max(1, @min(width, max_w));
     self.view_height = @max(1, @min(height, max_h));
     self.graph.setRatio(@as(f32, @floatFromInt(self.view_height)) / @as(f32, @floatFromInt(self.view_width)));
+    self.updateZoomLimits();
 
     self.state.dirty = true;
 }
@@ -335,11 +339,21 @@ fn graphFittedCamera(self: *const Self) Camera {
     const gh = bb.height();
     const vw = @max(1.0, @as(f32, @floatFromInt(self.view_width)) - self.padding * 2.0);
     const vh = @max(1.0, @as(f32, @floatFromInt(self.view_height)) - self.padding * 2.0);
+    const fit_zoom = @min(vw / gw, vh / gh);
     return .{
-        .zoom = @min(vw / gw, vh / gh),
+        .zoom = fit_zoom,
         .center_x = bb.centerX(),
         .center_y = bb.centerY(),
+        .min_zoom = @min(0.1, fit_zoom * 0.5),
+        .max_zoom = @max(10.0, fit_zoom * 15.0),
     };
+}
+
+/// Update camera min_zoom and max_zoom relative to current graph bounding box and viewport.
+pub fn updateZoomLimits(self: *Self) void {
+    const cam = self.graphFittedCamera();
+    self.camera.min_zoom = cam.min_zoom;
+    self.camera.max_zoom = cam.max_zoom;
 }
 
 /// Fit camera to current graph's bounding box and center it in the viewport.
@@ -348,6 +362,8 @@ pub fn fitToGraph(self: *Self) void {
     self.camera.zoom = cam.zoom;
     self.camera.center_x = cam.center_x;
     self.camera.center_y = cam.center_y;
+    self.camera.min_zoom = cam.min_zoom;
+    self.camera.max_zoom = cam.max_zoom;
     self.state.dirty = true;
 }
 
@@ -360,6 +376,7 @@ pub fn pan(self: *Self, delta_screen_x: f32, delta_screen_y: f32) void {
 
 /// Zoom camera by a multiplication factor, optionally centered at a screen focus coordinate.
 pub fn zoomBy(self: *Self, factor: f32, screen_focus_x: ?f32, screen_focus_y: ?f32) void {
+    self.updateZoomLimits();
     const old_zoom = self.camera.zoom;
     const new_zoom = std.math.clamp(old_zoom * factor, self.camera.min_zoom, self.camera.max_zoom);
     if (screen_focus_x != null and screen_focus_y != null) {
@@ -416,6 +433,7 @@ pub fn animateToNode(self: *Self, node_id: u128, duration: std.Io.Duration) !voi
 }
 
 pub fn animateFitToGraph(self: *Self, duration: std.Io.Duration) !void {
+    self.updateZoomLimits();
     const cam = self.graphFittedCamera();
     self.state.animateTarget = .{
         .start_time = .now(self.io, .real),
@@ -488,55 +506,197 @@ pub fn render(self: *Self) !void {
     canvas.scale(self.camera.zoom, -self.camera.zoom);
     canvas.translate(-self.camera.center_x, -self.camera.center_y);
 
-    // Draw edge splines and arrowheads
+    // Visible viewport in world coordinates for culling
+    const half_vw = (vw / 2.0) / self.camera.zoom;
+    const half_vh = (vh / 2.0) / self.camera.zoom;
+    const view_min_x = self.camera.center_x - half_vw;
+    const view_max_x = self.camera.center_x + half_vw;
+    const view_min_y = self.camera.center_y - half_vh;
+    const view_max_y = self.camera.center_y + half_vh;
+
+    // Draw edge splines (batched in a single stroke)
+    var has_splines = false;
     var maybe_node = c.agfstnode(graph.g);
     while (maybe_node) |node| : (maybe_node = c.agnxtnode(graph.g, node)) {
         var maybe_edge = c.agfstout(graph.g, node);
         while (maybe_edge) |edge| : (maybe_edge = c.agnxtout(graph.g, edge)) {
-            try drawEdgeSpline(canvas, edge);
+            const edge_info = graphviz.edgeInfo(edge);
+            const splines = edge_info.*.spl.*;
+            if (splines.size == 0) continue;
+
+            for (0..@intCast(splines.size)) |spline_i| {
+                const bezier = splines.list[spline_i];
+                const num_ctrl_points: usize = @intCast(bezier.size);
+                const ctrl_points = bezier.list;
+
+                if (!isBezierVisible(ctrl_points, num_ctrl_points, view_min_x, view_max_x, view_min_y, view_max_y)) continue;
+
+                canvas.moveTo(@floatCast(ctrl_points[0].x), @floatCast(ctrl_points[0].y));
+                var i: usize = 1;
+                while (i + 2 < num_ctrl_points) : (i += 3) {
+                    canvas.cubicTo(
+                        @floatCast(ctrl_points[i].x),
+                        @floatCast(ctrl_points[i].y),
+                        @floatCast(ctrl_points[i + 1].x),
+                        @floatCast(ctrl_points[i + 1].y),
+                        @floatCast(ctrl_points[i + 2].x),
+                        @floatCast(ctrl_points[i + 2].y),
+                    );
+                }
+                has_splines = true;
+            }
         }
+    }
+    if (has_splines) {
+        canvas.setRGBA(0.7, 0.75, 0.85, 0.9);
+        canvas.setLineWidth(2.0);
+        canvas.stroke();
+    }
+
+    // Draw edge arrowheads (batched in a single fill)
+    var has_arrows = false;
+    maybe_node = c.agfstnode(graph.g);
+    while (maybe_node) |node| : (maybe_node = c.agnxtnode(graph.g, node)) {
+        var maybe_edge = c.agfstout(graph.g, node);
+        while (maybe_edge) |edge| : (maybe_edge = c.agnxtout(graph.g, edge)) {
+            const edge_info = graphviz.edgeInfo(edge);
+            const splines = edge_info.*.spl.*;
+            if (splines.size == 0) continue;
+
+            for (0..@intCast(splines.size)) |spline_i| {
+                const bezier = splines.list[spline_i];
+                const num_ctrl_points: usize = @intCast(bezier.size);
+                const ctrl_points = bezier.list;
+
+                if (!isBezierVisible(ctrl_points, num_ctrl_points, view_min_x, view_max_x, view_min_y, view_max_y)) continue;
+
+                // End arrowhead
+                if (bezier.eflag == 1) {
+                    appendArrow(
+                        canvas,
+                        @floatCast(ctrl_points[num_ctrl_points - 1].x),
+                        @floatCast(ctrl_points[num_ctrl_points - 1].y),
+                        @floatCast(bezier.ep.x),
+                        @floatCast(bezier.ep.y),
+                        8.0,
+                    );
+                    has_arrows = true;
+                }
+
+                // Start arrowhead (if bi-directional)
+                if (bezier.sflag == 1) {
+                    appendArrow(
+                        canvas,
+                        @floatCast(ctrl_points[0].x),
+                        @floatCast(ctrl_points[0].y),
+                        @floatCast(bezier.sp.x),
+                        @floatCast(bezier.sp.y),
+                        8.0,
+                    );
+                    has_arrows = true;
+                }
+            }
+        }
+    }
+    if (has_arrows) {
+        canvas.setRGBA(0.7, 0.75, 0.85, 0.9);
+        canvas.fill();
     }
 
     // Draw nodes and their labels
     {
         const assign = self.assigningToParent();
+        const has_highlighted = self.highlighted.count() > 0;
+        const font_size: f32 = 12.0;
+        const render_labels = (font_size * self.camera.zoom >= 5.0) and (plutovg.plutovg_font != null);
+
+        // 1. Fill special node bodies (highlighted, hovered, assigned parent)
+        if (has_highlighted or self.hovered != null or assign != null) {
+            maybe_node = c.agfstnode(graph.g);
+            while (maybe_node) |node| : (maybe_node = c.agnxtnode(graph.g, node)) {
+                const node_info = graphviz.nodeInfo(node);
+                const cx: f32 = @floatCast(node_info.coord.x);
+                const cy: f32 = @floatCast(node_info.coord.y);
+                const h: f32 = @floatCast(node_info.height * 72.0 * 0.5);
+                const radius = h / 2.0;
+                const margin = @max(radius, 40.0);
+
+                if (cx + margin < view_min_x or cx - margin > view_max_x or
+                    cy + margin < view_min_y or cy - margin > view_max_y)
+                {
+                    continue;
+                }
+
+                const is_highlighted = if (has_highlighted) blk: {
+                    const node_id = Node.getNodeId(node) catch break :blk false;
+                    break :blk self.highlighted.contains(node_id);
+                } else false;
+
+                if (is_highlighted) {
+                    canvas.circle(cx, cy, radius);
+                    canvas.setRGBA(0.8, 0.85, 1.0, 1.0);
+                    canvas.fill();
+                } else if (self.hovered != null and self.hovered.?.cnode == node) {
+                    canvas.circle(cx, cy, radius);
+                    canvas.setRGBA(0.3, 0.3, 0.0, 1.0);
+                    canvas.fill();
+                } else if (assign != null and assign.?.parent.cnode == node) {
+                    canvas.circle(cx, cy, radius);
+                    canvas.setRGBA(0.0, 0.8, 0.3, 1.0);
+                    canvas.fill();
+                }
+            }
+        }
+
+        // 2. Stroke all visible node borders in one single pass
+        var has_borders = false;
         maybe_node = c.agfstnode(graph.g);
         while (maybe_node) |node| : (maybe_node = c.agnxtnode(graph.g, node)) {
-            const node_id = try Node.getNodeId(node);
             const node_info = graphviz.nodeInfo(node);
             const cx: f32 = @floatCast(node_info.coord.x);
             const cy: f32 = @floatCast(node_info.coord.y);
             const h: f32 = @floatCast(node_info.height * 72.0 * 0.5);
+            const radius = h / 2.0;
+            const margin = @max(radius, 40.0);
 
-            // Draw node body
-            canvas.circle(cx, cy, h / 2);
-            if (self.highlighted.contains(node_id)) {
-                canvas.setRGBA(0.8, 0.85, 1.0, 1.0);
-            } else if (self.hovered != null and self.hovered.?.cnode == node) {
-                canvas.setRGBA(0.3, 0.3, 0.0, 1.0);
-            } else if (assign != null and assign.?.parent.cnode == node) {
-                canvas.setRGBA(0.0, 0.8, 0.3, 1.0);
-            } else {
-                canvas.setRGBA(0.0, 0.0, 0.0, 0.0);
+            if (cx + margin < view_min_x or cx - margin > view_max_x or
+                cy + margin < view_min_y or cy - margin > view_max_y)
+            {
+                continue;
             }
-            canvas.fillPreserve();
 
-            // Draw node border
+            canvas.circle(cx, cy, radius);
+            has_borders = true;
+        }
+
+        if (has_borders) {
             canvas.setRGBA(0.8, 0.85, 1.0, 1.0);
             canvas.setLineWidth(1.5);
             canvas.stroke();
+        }
 
-            // Label
-            const label: []const u8 = std.mem.span(node_info.label.*.text);
-            const font_size: f32 = 12.0;
+        // 3. Draw labels with LOD check
+        if (render_labels) {
+            maybe_node = c.agfstnode(graph.g);
+            while (maybe_node) |node| : (maybe_node = c.agnxtnode(graph.g, node)) {
+                const node_info = graphviz.nodeInfo(node);
+                const cx: f32 = @floatCast(node_info.coord.x);
+                const cy: f32 = @floatCast(node_info.coord.y);
+                const h: f32 = @floatCast(node_info.height * 72.0 * 0.5);
+                const radius = h / 2.0;
+                const margin = @max(radius, 40.0);
 
-            if (plutovg.plutovg_font != null) {
+                if (cx + margin < view_min_x or cx - margin > view_max_x or
+                    cy + margin < view_min_y or cy - margin > view_max_y)
+                {
+                    continue;
+                }
+
+                const label: []const u8 = std.mem.span(node_info.label.*.text);
                 canvas.save();
-
-                // Translate to node center and flip Y back to right-side up
-                canvas.translate(cx, cy - h / 3);
+                canvas.setRGBA(0.8, 0.85, 1.0, 1.0);
+                canvas.translate(cx, cy - h / 3.0);
                 canvas.scale(1.0, -1.0);
-
                 canvas.drawText(label, font_size);
                 canvas.restore();
             }
@@ -555,92 +715,32 @@ pub fn render(self: *Self) !void {
                 drawArrow(canvas, mouse_pos.x, mouse_pos.y, node_pos[0], node_pos[1], 8.0);
                 canvas.moveTo(node_pos[0], node_pos[1]);
                 canvas.lineTo(mouse_pos.x, mouse_pos.y);
+                canvas.stroke();
             },
             else => {},
         }
     }
 }
 
-/// Render graphviz edge's Bezier splines and arrowheads
-fn drawEdgeSpline(canvas: *const plutovg.Canvas, edge: *c.struct_Agedge_s) !void {
-    // Each bezier structure has a list field pointing to an array containing
-    // the control points and a size field giving the number of points in list,
-    // which will always have the form (3 ∗ n + 1).
-    //
-    // In addition, there are fields for specifying arrowheads:
-    //
-    // If bp points to a bezier structure and the bp->sflag field is true, there
-    // should be an arrowhead attached to the beginning of the bezier.
-    //
-    // The field bp->sp gives the point where the nominal tip of the arrowhead
-    // would touch the tail node. (If there is no arrowhead, bp->list[0] will
-    // touch the node.) Thus, the length and direction of the arrowhead is
-    // determined by the vector going from bp->list[0] to bp->sp.
-    //
-    // The actual shape and width of the arrowhead is determined by the
-    // arrowtail and arrowsize attributes.
-    //
-    // Analogously, an arrowhead at the head node is specified by bp->eflag and
-    // the vector from bp->list[bp->size-1] to bp->ep.
-    const edge_info = graphviz.edgeInfo(edge);
-    const splines = edge_info.*.spl.*;
-
-    if (splines.size == 0) return;
-
-    for (0..@intCast(splines.size)) |spline_i| {
-        const bezier = splines.list[spline_i];
-        const num_ctrl_points: usize = @intCast(bezier.size); // always (3 * n + 1)
-        const ctrl_points = bezier.list;
-
-        canvas.setRGBA(0.7, 0.75, 0.85, 0.9);
-        canvas.setLineWidth(2.0);
-        canvas.moveTo(@floatCast(ctrl_points[0].x), @floatCast(ctrl_points[0].y));
-
-        var i: usize = 1;
-        while (i + 2 < num_ctrl_points) : (i += 3) {
-            canvas.cubicTo(
-                @floatCast(ctrl_points[i].x),
-                @floatCast(ctrl_points[i].y),
-                @floatCast(ctrl_points[i + 1].x),
-                @floatCast(ctrl_points[i + 1].y),
-                @floatCast(ctrl_points[i + 2].x),
-                @floatCast(ctrl_points[i + 2].y),
-            );
-        }
-        canvas.stroke();
-
-        // Draw end arrowhead
-        if (bezier.eflag == 1) {
-            canvas.setRGBA(0.7, 0.75, 0.85, 0.9);
-            drawArrow(
-                canvas,
-                @floatCast(ctrl_points[num_ctrl_points - 1].x),
-                @floatCast(ctrl_points[num_ctrl_points - 1].y),
-                @floatCast(bezier.ep.x),
-                @floatCast(bezier.ep.y),
-                8.0,
-            );
-        }
-
-        // Draw start arrowhead (if bi-directional)
-        if (bezier.sflag == 1) {
-            canvas.setRGBA(0.7, 0.75, 0.85, 0.9);
-            drawArrow(
-                canvas,
-                @floatCast(ctrl_points[0].x),
-                @floatCast(ctrl_points[0].y),
-                @floatCast(bezier.sp.x),
-                @floatCast(bezier.sp.y),
-                8.0,
-            );
-        }
+fn isBezierVisible(ctrl_points: [*c]c.pointf, num_ctrl_points: usize, min_x: f32, max_x: f32, min_y: f32, max_y: f32) bool {
+    const margin: f32 = 10.0;
+    var all_left = true;
+    var all_right = true;
+    var all_below = true;
+    var all_above = true;
+    for (0..num_ctrl_points) |i| {
+        const x: f32 = @floatCast(ctrl_points[i].x);
+        const y: f32 = @floatCast(ctrl_points[i].y);
+        if (x >= min_x - margin) all_left = false;
+        if (x <= max_x + margin) all_right = false;
+        if (y >= min_y - margin) all_below = false;
+        if (y <= max_y + margin) all_above = false;
     }
+    return !(all_left or all_right or all_below or all_above);
 }
 
-/// Draw a solid triangular arrowhead
-fn drawArrow(canvas: *const plutovg.Canvas, from_x: f32, from_y: f32, to_x: f32, to_y: f32, size: f32) void {
-    // TODO: The actual shape and width of the arrowhead is determined by the
-    // arrowtail and arrowsize attributes
+/// Append a solid triangular arrowhead to the canvas path
+fn appendArrow(canvas: *const plutovg.Canvas, from_x: f32, from_y: f32, to_x: f32, to_y: f32, size: f32) void {
     var dx = to_x - from_x;
     var dy = to_y - from_y;
     const len = @sqrt(dx * dx + dy * dy);
@@ -659,6 +759,11 @@ fn drawArrow(canvas: *const plutovg.Canvas, from_x: f32, from_y: f32, to_x: f32,
     canvas.lineTo(base_x + px * half_w, base_y + py * half_w);
     canvas.lineTo(base_x - px * half_w, base_y - py * half_w);
     canvas.closePath();
+}
+
+/// Draw a solid triangular arrowhead
+fn drawArrow(canvas: *const plutovg.Canvas, from_x: f32, from_y: f32, to_x: f32, to_y: f32, size: f32) void {
+    appendArrow(canvas, from_x, from_y, to_x, to_y, size);
     canvas.fill();
 }
 
@@ -703,4 +808,32 @@ test "Graph buffer rendering, camera panning, zooming, and hit testing" {
     try renderer.resize(450, 350);
     try std.testing.expectEqual(@as(u32, 450), renderer.view_width);
     try std.testing.expectEqual(@as(u32, 350), renderer.view_height);
+}
+
+test "Dynamic zoom limits for large graph" {
+    const allocator = std.testing.allocator;
+
+    var renderer = try init(.{
+        .gpa = allocator,
+        .io = std.testing.io,
+        .view_width = 400,
+        .view_height = 300,
+        .buffer_stride = 512,
+        .buffer_height = 512,
+    });
+    defer renderer.deinit();
+
+    try renderer.graph.addNode(1, "Node A");
+    try renderer.graph.addNode(2, "Node B");
+    try renderer.graph.addEdge(1, 2);
+
+    try renderer.layout("dot");
+
+    const cam = renderer.graphFittedCamera();
+    try std.testing.expect(renderer.camera.min_zoom < cam.zoom);
+
+    // Zooming out all the way reaches min_zoom which is strictly smaller than fitted zoom
+    renderer.zoomBy(0.001, null, null);
+    try std.testing.expect(renderer.camera.zoom < cam.zoom);
+    try std.testing.expectEqual(renderer.camera.min_zoom, renderer.camera.zoom);
 }
