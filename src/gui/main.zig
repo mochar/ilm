@@ -113,12 +113,13 @@ pub fn appDeinit(win: *dvui.Window) void {
 }
 
 pub fn appFrame() !dvui.App.Result {
-    var scaler = dvui.scale(
-        @src(),
-        .{ .scale = &dvui.currentWindow().content_scale, .pinch_zoom = .global },
-        .{ .rect = .cast(dvui.windowRect()) },
-    );
-    scaler.deinit();
+    // Eatchs pinch events, cannot use it downstream...
+    // var scaler = dvui.scale(
+    //     @src(),
+    //     .{ .scale = &dvui.currentWindow().content_scale, .pinch_zoom = .global },
+    //     .{ .rect = .cast(dvui.windowRect()) },
+    // );
+    // scaler.deinit();
 
     var box = dvui.box(@src(), .{}, .{ .expand = .both });
     defer box.deinit();

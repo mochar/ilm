@@ -171,9 +171,26 @@ pub fn render(self: *Self, opts: dvui.Options) !?Action {
 fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) ?Action {
     var action: ?Action = null;
     for (dvui.events()) |*e| {
+        if (e.evt != .gesture and e.evt != .mouse) continue;
         if (!dvui.eventMatchSimple(e, wd)) continue;
 
         switch (e.evt) {
+            .gesture => |gesture| {
+                // TODO Dvui does not check if gesture happened within rect
+                // https://github.com/david-vanderson/dvui/issues/998
+                switch (gesture.action) {
+                    .pinch_begin => {
+                        _ = self.renderer.pinchBegin();
+                    },
+                    .pinch_end => {
+                        _ = self.renderer.pinchEnd();
+                    },
+                    .pinch_update => |scale| {
+                        // e.handle(@src(), wd);
+                        _ = self.renderer.pinchUpdate(scale);
+                    },
+                }
+            },
             .mouse => |me| {
                 // Map graph texture coordinates to screen coordinates
                 const rs_w = @max(1.0, rs.r.w);

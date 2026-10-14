@@ -77,6 +77,7 @@ const State = struct {
         } = null,
         drag: ?Drag = null,
     } = .{},
+    pinching: bool = false,
     animateTarget: ?struct {
         start_time: std.Io.Timestamp,
         duration: std.Io.Duration,
@@ -183,13 +184,15 @@ pub fn assigningToParent(self: *const Self) ?struct { child: Node, parent: Node 
 
 pub fn mouseDown(self: *Self, screen_x: f32, screen_y: f32, button: MouseButton) bool {
     self.state.mouse.last_pos = .{ screen_x, screen_y };
-    self.state.mouse.down = button;
     self.state.mouse.drag = null;
     self.state.animateTarget = null;
+    if (!self.state.pinching) self.state.mouse.down = button;
     return self.state.dirty;
 }
 
 pub fn mouseMove(self: *Self, screen_x: f32, screen_y: f32) bool {
+    if (self.state.pinching) return false;
+    
     const last_pos = self.state.mouse.last_pos;
     defer self.state.mouse.last_pos = .{ screen_x, screen_y };
 
@@ -248,6 +251,8 @@ pub fn mouseMove(self: *Self, screen_x: f32, screen_y: f32) bool {
 }
 
 pub fn mouseUp(self: *Self, screen_x: f32, screen_y: f32) bool {
+    // if (self.state.pinching) return false;
+    
     self.state.mouse.last_pos = .{ screen_x, screen_y };
     const was_dragging = self.state.mouse.drag != null;
     self.state.mouse.drag = null;
@@ -283,6 +288,23 @@ pub fn mouseScroll(self: *Self, factor: f32) bool {
     self.zoomBy(factor, self.state.mouse.last_pos[0], self.state.mouse.last_pos[1]);
     self.state.animateTarget = null;
     return self.state.dirty;
+}
+
+pub fn pinchBegin(self: *Self) bool {
+    // self.mouseUp(screen_x: f32, screen_y: f32)
+    self.state.pinching = true;
+    self.state.dirty = true;
+    return true;
+}
+
+pub fn pinchEnd(self: *Self) bool {
+    self.state.pinching = false;
+    self.state.dirty = true;
+    return true;
+}
+
+pub fn pinchUpdate(self: *Self, scale: f32) bool {
+    return self.mouseScroll(scale);
 }
 
 /// Layout graph with aspect ratio set to match current viewport.
