@@ -24,7 +24,8 @@ pub const WriteRequestId = usize;
 
 pub const WriteResult = struct {
     id: WriteRequestId,
-    write: anyerror!tables.Write,
+    cmd: tables.TableCommand,
+    err: ?anyerror,
 };
 
 const WriteRequest = struct {
@@ -186,8 +187,16 @@ fn runLoop(self: *Self) !void {
 
         const result: WriteResult = .{
             .id = req.id,
-            .write = switch (req.cmd) {
-                inline else => |cmd| cmd.write(&self.db),
+            .cmd = req.cmd,
+            .err = switch (req.cmd) {
+                inline else => |cmd| blk: {
+                    if (cmd.write(&self.db)) {
+                        break :blk null;
+                    } else |err| {
+                        log.err("Table write cmd failed: {t}", .{err});
+                        break :blk err;
+                    }
+                },
             },
         };
 
@@ -208,21 +217,3 @@ pub fn spawnWriteThread(self: *Self) !void {
     thread.detach();
     self.thread = thread;
 }
-
-// Convienence for subscribers that maintain their own queue.
-// pub const WriteResultQueue = struct {
-//     pub const Queue = std.Io.Queue(Write);
-
-//     buf: []Write,
-//     queue: Queue,
-
-//     pub fn init(alloc: std.mem.Allocator, buf_size: usize) !@This() {
-//         const buf = try alloc.alloc(Write, buf_size);
-//         return .{ .buf = buf, .queue = .init(buf) };
-//     }
-
-//     pub fn deinit(self: *@This(), alloc: std.mem.Allocator) void {
-//         alloc.free(self.buf);
-//         self.queue.close(io: Io)
-//     }
-// };

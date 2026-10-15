@@ -33,7 +33,7 @@ pub fn add(core: *Core, name: []const u8, parent_ids: []const Id) !Id {
         .name = name,
         .parent_ids = parent_ids,
     } }, .{});
-    return if (res.write) |_| id else |err| return err;
+    return if (res.err) |err| err else id;
 }
 
 pub fn addImpl(db: *Db, id: Id, name: []const u8, parent_ids: []const Id) !void {
@@ -96,7 +96,7 @@ pub fn rename(core: *Core, id: Id, name: []const u8) !void {
         .id = id,
         .name = name,
     } }, .{});
-    return if (res.write) |_| {} else |err| return err;
+    return res.err orelse {};
 }
 
 // TODO Validate that rename actually happened (in case concept not found in db)
@@ -122,51 +122,51 @@ pub fn renameImpl(db: *Db, id: Id, name: []const u8) !void {
     };
 }
 
-pub fn delete(core: *Core, id: Id) !void {
-    const res = try core.db_writer.runCommand(.{ .delete_concept = .{ .id = id } }, .{});
-    return if (res.write) |_| {} else |err| return err;
+pub fn deleteMany(core: *Core, ids: []const Id) !void {
+    const res = try core.db_writer.runCommand(.{ .delete_concepts = .{ .ids = ids } }, .{});
+    return res.err orelse {};
 }
 
-// TODO Validate that delete actually happened (in case concept not found in db)
-pub fn deleteImpl(db: *Db, id: Id) !void {
+pub fn delete(core: *Core, id: Id) !void {
+    return deleteMany(core, &.{id});
+}
+
+pub fn deleteManyImpl(db: *Db, ids: []const Id) !void {
     var diags: Diagnostics = .{};
     var savepoint = try db.savepoint("delconcept");
     defer savepoint.rollback();
 
-    // Delete the relationship first. Otherwise inbetween there will
-    // conceptid in concept_rel of a concept that doesnt exist. This
-    // is a problem because of the sqlite update hook, which reacts
-    // immediately.
-    {
-        var stmt = db.prepareWithDiags(
-            \\DELETE FROM concept_rel
-            \\WHERE parent_id = ? OR child_id = ?
-        , .{ .diags = &diags }) catch |err| {
-            log.err("SQLite prepare failed: {s}", .{diags.message});
-            return err;
-        };
-        defer stmt.deinit();
+    var del_rel_stmt = db.prepareWithDiags(
+        \\DELETE FROM concept_rel
+        \\WHERE parent_id = ? OR child_id = ?
+    , .{ .diags = &diags }) catch |err| {
+        log.err("SQLite prepare failed: {s}", .{diags.message});
+        return err;
+    };
+    defer del_rel_stmt.deinit();
 
-        stmt.exec(
+    var del_conc_stmt = db.prepareWithDiags(
+        \\DELETE FROM concept
+        \\WHERE id = ?
+    , .{ .diags = &diags }) catch |err| {
+        log.err("SQLite prepare failed: {s}", .{diags.message});
+        return err;
+    };
+    defer del_conc_stmt.deinit();
+
+    for (ids) |*id| {
+        del_rel_stmt.reset();
+        del_conc_stmt.reset();
+        
+        del_rel_stmt.exec(
             .{ .diags = &diags },
             .{ id.asBlob(), id.asBlob() },
         ) catch |err| {
             log.err("SQLite exec failed: {s}", .{diags.message});
             return err;
         };
-    }
 
-    {
-        var stmt = db.prepareWithDiags(
-            \\DELETE FROM concept
-            \\WHERE id = ?
-        , .{ .diags = &diags }) catch |err| {
-            log.err("SQLite prepare failed: {s}", .{diags.message});
-            return err;
-        };
-        defer stmt.deinit();
-
-        stmt.exec(
+        del_conc_stmt.exec(
             .{ .diags = &diags },
             .{ .id = id.asBlob() },
         ) catch |err| {
@@ -183,7 +183,7 @@ pub fn addParent(core: *Core, child_id: Id, parent_id: Id) !void {
         .child_id = child_id,
         .parent_id = parent_id,
     } }, .{});
-    return if (res.write) |_| {} else |err| return err;
+    return res.err orelse {};
 }
 
 pub fn addParentImpl(db: *Db, child_id: Id, parent_id: Id) !void {

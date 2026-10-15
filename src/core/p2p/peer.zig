@@ -103,7 +103,7 @@ pub fn add(core: *Core, name: []const u8, id: Peer.Id) !void {
         .id = id,
         .name = name,
     } }, .{});
-    return if (res.write) |_| {} else |err| return err;
+    return res.err orelse {};
 }
 
 /// Inserts blindly wihout checking if ID is valid.
@@ -130,7 +130,7 @@ pub fn addImpl(db: *Db, name: []const u8, id: *const Peer.Id) !void {
 
 pub fn delete(core: *Core, id: Peer.Id) !void {
     const res = try core.db_writer.runCommand(.{ .delete_peer = .{ .id = id } }, .{});
-    return if (res.write) |_| {} else |err| return err;
+    return res.err orelse {};
 }
 
 pub fn deleteImpl(db: *Db, id: Peer.Id) !void {
@@ -146,7 +146,7 @@ pub fn rename(core: *Core, id: Peer.Id, name: []const u8) !void {
         .id = id,
         .name = name,
     } }, .{});
-    return if (res.write) |_| {} else |err| return err;
+    return res.err orelse {};
 }
 
 pub fn renameImpl(db: *Db, id: Peer.Id, name: []const u8) !void {

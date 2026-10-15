@@ -17,7 +17,7 @@ pub const Table = enum {
 
 pub const ConceptId = Id;
 pub const ConceptRelId = struct { parent: Id, child: Id };
-pub const PeerId = ilm.p2p.peer.Peer.Id;
+pub const PeerId = ilm.p2p.Peer.Id;
 
 pub const TableId = union(Table) {
     concept: ConceptId,
@@ -35,74 +35,102 @@ pub const Write = struct {
 pub const TableCommand = union(enum) {
     const log = std.log.scoped(.database_table_writer);
 
+    pub fn affectedTables(self: TableCommand) []const Table {
+        return switch(self) {
+            inline else => |cmd| @TypeOf(cmd).tables,
+        };
+    }
+
+    pub fn affectsTable(self: *const TableCommand, table: Table) bool {
+        for (self.affectedTables()) |affected_table| {
+            if (table == affected_table) return true;
+        }
+        return false;
+    }
+
+    pub fn affectsTables(self: *const TableCommand, tables: []const Table) bool {
+        for (tables) |table| {
+            if (self.affectsTable(table)) return true;
+        }
+        return false;
+    }
+
     add_concept: struct {
+        pub const tables = &[_]Table{ .concept, .concept_rel };
+        
         id: ConceptId,
         name: []const u8,
         parent_ids: []const ConceptId,
 
-        pub fn write(self: *const @This(), db: *Db) !Write {
+        pub fn write(self: *const @This(), db: *Db) !void {
             try ilm.concept.addImpl(db, self.id, self.name, self.parent_ids);
-            return .{ .op = .insert, .table_id = .{ .concept = self.id } };
         }
     },
     rename_concept: struct {
+        pub const tables = &[_]Table{ .concept };
+        
         id: ConceptId,
         name: []const u8,
 
-        pub fn write(self: *const @This(), db: *Db) !Write {
+        pub fn write(self: *const @This(), db: *Db) !void {
             try ilm.concept.renameImpl(db, self.id, self.name);
-            return .{ .op = .update, .table_id = .{ .concept = self.id } };
         }
     },
-    delete_concept: struct {
-        id: ConceptId,
+    delete_concepts: struct {
+        pub const tables = &[_]Table{ .concept, .concept_rel };
+        
+        ids: []const ConceptId,
 
-        pub fn write(self: *const @This(), db: *Db) !Write {
-            try ilm.concept.deleteImpl(db, self.id);
-            return .{ .op = .delete, .table_id = .{ .concept = self.id } };
+        pub fn write(self: *const @This(), db: *Db) !void {
+            try ilm.concept.deleteManyImpl(db, self.ids);
         }
     },
     add_concept_parent: struct {
+        pub const tables = &[_]Table{ .concept_rel };
+        
         child_id: ConceptId,
         parent_id: ConceptId,
 
-        pub fn write(self: *const @This(), db: *Db) !Write {
+        pub fn write(self: *const @This(), db: *Db) !void {
             try ilm.concept.addParentImpl(db, self.child_id, self.parent_id);
-            return .{ .op = .insert, .table_id = .{ .concept_rel = .{ .parent = self.parent_id, .child = self.child_id } } };
         }
     },
     add_peer: struct {
+        pub const tables = &[_]Table{ .peer };
+        
         id: PeerId,
         name: []const u8,
 
-        pub fn write(self: *const @This(), db: *Db) !Write {
+        pub fn write(self: *const @This(), db: *Db) !void {
             try ilm.p2p.peer.addImpl(db, self.name, &self.id);
-            return .{ .op = .insert, .table_id = .{ .peer = self.id } };
         }
     },
     delete_peer: struct {
+        pub const tables = &[_]Table{ .peer };
+        
         id: PeerId,
 
-        pub fn write(self: *const @This(), db: *Db) !Write {
+        pub fn write(self: *const @This(), db: *Db) !void {
             try ilm.p2p.peer.deleteImpl(db, self.id);
-            return .{ .op = .delete, .table_id = .{ .peer = self.id } };
         }
     },
     rename_peer: struct {
+        pub const tables = &[_]Table{ .peer };
+        
         id: PeerId,
         name: []const u8,
 
-        pub fn write(self: *const @This(), db: *Db) !Write {
+        pub fn write(self: *const @This(), db: *Db) !void {
             try ilm.p2p.peer.renameImpl(db, self.id, self.name);
-            return .{ .op = .update, .table_id = .{ .peer = self.id } };
         }
     },
     apply_changes: struct {
+        pub const tables = &[_]Table{ .crsql_changes };
+        
         changes: []crdt.Change,
 
-        pub fn write(self: *const @This(), db: *Db) !Write {
+        pub fn write(self: *const @This(), db: *Db) !void {
             try crdt.mergeChangesImpl(db, self.changes);
-            return .{ .op = .update, .table_id = .crsql_changes };
         }
     },
 };

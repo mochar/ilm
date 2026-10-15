@@ -32,8 +32,8 @@ viewing: ?struct {
     }
 } = null,
 
-db_writes_buf: []DbWriter.Write,
-db_writes_queue: std.Io.Queue(DbWriter.Write),
+db_writes_buf: []DbWriter.WriteResult,
+db_writes_queue: std.Io.Queue(DbWriter.WriteResult),
 
 graph_view: GraphView,
 /// To allocate graph content, reset every time we fill the graph.
@@ -43,7 +43,7 @@ pub fn create(gpa: Allocator, core: *Core) !*Self {
     var self = try gpa.create(Self);
     errdefer gpa.destroy(self);
 
-    const db_writes_buf = try gpa.alloc(DbWriter.Write, 12);
+    const db_writes_buf = try gpa.alloc(DbWriter.WriteResult, 12);
     errdefer gpa.free(db_writes_buf);
 
     var graph_view: GraphView = try .init(.{
@@ -72,7 +72,7 @@ pub fn create(gpa: Allocator, core: *Core) !*Self {
     try core.db_writer.subscribe(.{ .cb = dbWriteCallback, .ctx = @ptrCast(self) });
 
     self.getAllConcepts();
-    self.updateGraphContent(.reset);
+    self.updateGraphContent(.clear_all);
     return self;
 }
 
@@ -90,19 +90,27 @@ pub fn destroy(self: *Self) void {
 }
 
 fn dbWriteCallback(self_opaque: *anyopaque, result: DbWriter.WriteResult) void {
-    const write = result.write catch return;
-    switch (write.table_id) {
-        .concept, .concept_rel, .crsql_changes => {
-            const self: *Self = @ptrCast(@alignCast(self_opaque));
-            self.db_writes_queue.putOneUncancelable(self.core.io, write) catch |err| {
-                log.err("Failed to add concept db write: {t}", .{err});
-            };
-        },
-        else => {},
-    }
+    if (result.err != null) return;
+    if (!result.cmd.affectsTables(&.{.concept, .concept_rel, .crsql_changes})) return;
+    const self: *Self = @ptrCast(@alignCast(self_opaque));
+    self.db_writes_queue.putOneUncancelable(self.core.io, result) catch |err| {
+        log.err("Failed to add concept db write: {t}", .{err});
+    };
 }
 
 pub fn render(self: *Self) void {
+    // Process writes buffer
+    var write: DbWriter.WriteResult = undefined;
+    while (self.db_writes_queue.getUncancelable(self.core.io, @ptrCast(&write), 0) catch 0 != 0) {
+        if (write.cmd.affectsTables(&.{.concept, .crsql_changes})) self.getAllConcepts();
+        self.updateGraphContent(.clear_all);
+        switch (write.cmd) {
+            .add_concept => |payload| self.viewConceptById(payload.id.int),
+            .delete_concepts, .apply_changes => self.unviewConcept(),
+            else => {},
+        }
+    }
+    
     const screen_size: gui.ScreenSize = .get();
     const is_wide = screen_size.width != .compact;
     var hbox = dvui.box(@src(), .{
@@ -111,42 +119,6 @@ pub fn render(self: *Self) void {
     }, .{ .expand = .both });
     defer hbox.deinit();
 
-    // Process writes buffer
-    var write: DbWriter.Write = undefined;
-    while (self.db_writes_queue.getUncancelable(self.core.io, @ptrCast(&write), 0) catch 0 != 0) {
-        switch (write.table_id) {
-            .concept => |id| {
-                switch (write.op) {
-                    .update => {
-                        self.getAllConcepts();
-                        self.updateGraphContent(.retain_state);
-                    },
-                    .insert => {
-                        self.getAllConcepts();
-                        self.updateGraphContent(.retain_state);
-                        self.viewConceptById(id.int);
-                    },
-                    .delete => {
-                        self.getAllConcepts();
-                        self.updateGraphContent(.reset);
-                        self.unviewConcept();
-                    },
-                }
-            },
-            .concept_rel => |ids| {
-                _ = ids;
-                self.updateGraphContent(.retain_state);
-            },
-            .crsql_changes => {
-                self.getAllConcepts();
-                self.updateGraphContent(.reset);
-                self.unviewConcept();
-            },
-            else => {},
-        }
-    }
-
-    // Left sidebar scroll area
     if (is_wide) {
         self.renderSidebar(is_wide);
         self.renderGraph();
@@ -245,7 +217,7 @@ fn renderConceptList(self: *Self) void {
         dvui.label(
             @src(),
             "{d}/{d}",
-            .{ visible.selection.ids.size, visible.items.len },
+            .{ visible.selectionSize(), visible.items.len },
             .{ .color_text = .{ .color = .gray } },
         );
     }
@@ -339,7 +311,7 @@ fn renderGraph(self: *Self) void {
             },
             .assign_parent => |assign| {
                 if (ilm.concept.addParent(self.core, .{ .int = assign.child }, .{ .int = assign.parent })) {
-                    self.updateGraphContent(.reset);
+                    self.updateGraphContent(.clear_all);
                 } else |err| {
                     gui.toastErr(@src(), err, "Failed to assign", .{});
                 }
@@ -352,6 +324,7 @@ fn getAllConcepts(self: *Self) void {
     self.concepts.fetchAll() catch |err| {
         gui.toastErr(@src(), err, "Failed to get all concepts", .{});
     };
+    self.getMatchingConcepts();
 }
 
 fn getMatchingConcepts(self: *Self) void {
@@ -414,26 +387,25 @@ fn unviewConcept(self: *Self) void {
     }
 }
 
-/// Replace the graph nodes and edges with that of self.selected
-fn updateGraphContent(self: *Self, how: enum { reset, retain_state }) void {
+fn updateGraphContent(self: *Self, how: enum { clear_all, clear_graph }) void {
     var renderer = &self.graph_view.renderer;
     const graph = self.graph_view.graph();
-    const arena = self.graph_arena.allocator();
 
     switch (how) {
-        .reset => renderer.clear(),
-        .retain_state => renderer.graph.clear(),
+        .clear_all => renderer.clear(),
+        .clear_graph => renderer.graph.clear(),
     }
-
     _ = self.graph_arena.reset(.retain_capacity);
 
+    const arena = self.graph_arena.allocator();
     ilm.concept.fillFullGraph(self.core, graph, arena, self.concepts.getAll().items) catch |err| {
         return gui.toastErr(@src(), err, "Failed to fill graph ({t})", .{err});
     };
     renderer.layout("neato") catch |err| {
         return gui.toastErr(@src(), err, "Failed to layout graph", .{});
     };
-    self.graph_view.renderGraph() catch |err| {
+    // self.graph_view.renderGraph() catch |err| {
+    self.graph_view.updateGraph() catch |err| {
         return gui.toastErr(@src(), err, "Failed to update graph", .{});
     };
 }
@@ -454,7 +426,7 @@ const ConceptManager = struct {
 
         pub fn deinit(self: *@This(), gpa: Allocator) void {
             self.query.deinit(gpa);
-            self.concepts.deinit(gpa);
+            self.concepts.deinit();
         }
     },
 
@@ -468,7 +440,7 @@ const ConceptManager = struct {
     }
 
     pub fn deinit(self: *ConceptManager) void {
-        self.all.deinit(self.gpa);
+        self.all.deinit();
         self.search.deinit(self.gpa);
     }
 
@@ -478,7 +450,7 @@ const ConceptManager = struct {
 
     pub fn fetchMatching(self: *ConceptManager) !void {
         try self.search.concepts.fetchMatching(self.core, self.search.query.items);
-        try self.search.concepts.copySelection(self.gpa, &self.all);
+        try self.search.concepts.copySelection(&self.all);
     }
 
     pub fn isSearching(self: *ConceptManager) bool {
@@ -508,18 +480,18 @@ const ConceptManager = struct {
     }
 
     pub fn toggleSelected(self: *ConceptManager, concept: *const Concept) void {
-        self.all.toggleSelected(self.gpa, concept);
+        self.all.toggleSelected(concept);
         if (self.isSearching()) {
-            self.search.concepts.toggleSelected(self.gpa, concept);
+            self.search.concepts.toggleSelected(concept);
         }
     }
 
     pub fn selectAll(self: *ConceptManager) !void {
-        self.search.concepts.selectAll(self.gpa);
+        self.search.concepts.selectAll();
         if (self.isSearching()) {
-            try self.all.copySelection(self.gpa, &self.search.concepts);
+            try self.all.copySelection(&self.search.concepts);
         } else {
-            self.all.selectAll(self.gpa);
+            self.all.selectAll();
         }
     }
 
@@ -527,22 +499,36 @@ const ConceptManager = struct {
         if (self.isSearching()) {
             for (self.search.concepts.items) |*search_concept| {
                 if (self.all.selection.inverted) {
-                    try self.all.selection.ids.put(self.gpa, search_concept.id.int, {});
+                    try self.all.selection.ids.put(search_concept.id.int, {});
                 } else {
                     _ = self.all.selection.ids.remove(search_concept.id.int);
                 }
             }
 
-            self.search.concepts.deselectAll(self.gpa);
+            self.search.concepts.deselectAll();
         } else {
-            self.all.deselectAll(self.gpa);
-            self.search.concepts.deselectAll(self.gpa);
+            self.all.deselectAll();
+            self.search.concepts.deselectAll();
         }
     }
 
     pub fn deleteSelection(self: *ConceptManager) !void {
-        _ = self;
-        // ilm.concept.delete(self.core, id: Id);
+        const concepts = self.getVisible();
+        const n_selected = concepts.selectionSize();
+        
+        const ids = try self.gpa.alloc(Id, n_selected);
+        defer self.gpa.free(ids);
+        
+        var i: usize = 0;
+        for (concepts.items) |*concept| {
+            if (concepts.isSelected(concept)) {
+                ids[i] = concept.id;
+                i += 1;
+                if (i == n_selected) break;
+            }
+        }
+        
+        try ilm.concept.deleteMany(self.core, ids);
     }
 };
 
@@ -551,11 +537,11 @@ const Concepts = struct {
     items: []Concept,
     selection: struct {
         // TODO Shorten to u68
-        ids: std.AutoHashMapUnmanaged(u128, void) = .empty,
+        ids: std.AutoHashMap(u128, void),
         inverted: bool = false,
 
-        pub fn deinit(self: *@This(), gpa: Allocator) void {
-            self.ids.deinit(gpa);
+        pub fn deinit(self: *@This()) void {
+            self.ids.deinit();
         }
     },
 
@@ -563,29 +549,33 @@ const Concepts = struct {
         return .{
             .arena = .init(gpa),
             .items = &.{},
-            .selection = .{},
+            .selection = .{.ids = .init(gpa)},
         };
     }
 
-    pub fn deinit(self: *Concepts, gpa: Allocator) void {
-        self.selection.deinit(gpa);
+    pub fn deinit(self: *Concepts) void {
+        self.selection.deinit();
         self.arena.deinit();
     }
 
     pub fn fetchAll(self: *Concepts, core: *Core) !void {
         _ = self.arena.reset(.retain_capacity);
+        self.selection.ids.clearAndFree();
+        
         const concepts = try ilm.concept.getAll(core, self.arena.allocator());
         self.items = concepts;
     }
 
     pub fn fetchMatching(self: *Concepts, core: *Core, query: []const u8) !void {
         _ = self.arena.reset(.retain_capacity);
+        self.selection.ids.clearAndFree();
+        
         const concepts = try ilm.concept.getByNameMatch(core, self.arena.allocator(), query);
         self.items = concepts;
     }
 
     pub fn selectionSize(self: *Concepts) usize {
-        const size: usize = self.selection.ids.size;
+        const size: usize = self.selection.ids.count();
         return if (self.selection.inverted) return self.items.len - size else size;
     }
 
@@ -594,31 +584,31 @@ const Concepts = struct {
         return if (self.selection.inverted) !in_selection else in_selection;
     }
 
-    pub fn copySelection(self: *Concepts, gpa: Allocator, other: *Concepts) !void {
+    pub fn copySelection(self: *Concepts, other: *Concepts) !void {
         self.selection.ids.clearRetainingCapacity();
         self.selection.inverted = false;
         for (other.items) |*c| {
             if (other.isSelected(c)) {
-                try self.selection.ids.put(gpa, c.id.int, {});
+                try self.selection.ids.put(c.id.int, {});
             }
         }
     }
-    pub fn toggleSelected(self: *Concepts, gpa: Allocator, concept: *const Concept) void {
+    pub fn toggleSelected(self: *Concepts, concept: *const Concept) void {
         const in_selection = self.selection.ids.contains(concept.id.int);
         if (in_selection) {
             _ = self.selection.ids.remove(concept.id.int);
         } else {
-            self.selection.ids.put(gpa, concept.id.int, {}) catch {};
+            self.selection.ids.put(concept.id.int, {}) catch {};
         }
     }
 
-    pub fn selectAll(self: *Concepts, gpa: Allocator) void {
+    pub fn selectAll(self: *Concepts) void {
         self.selection.inverted = true;
-        self.selection.ids.clearAndFree(gpa);
+        self.selection.ids.clearAndFree();
     }
 
-    pub fn deselectAll(self: *Concepts, gpa: Allocator) void {
+    pub fn deselectAll(self: *Concepts) void {
         self.selection.inverted = false;
-        self.selection.ids.clearAndFree(gpa);
+        self.selection.ids.clearAndFree();
     }
 };

@@ -120,7 +120,7 @@ pub fn mergeChanges(core: *Core, changes: []Change) !void {
         .{ .apply_changes = .{ .changes = changes } },
         .{ .arena = .init(core.gpa) },
     );
-    return if (res.write) |_| {} else |err| return err;
+    return res.err orelse {};
 }
 
 pub fn mergeChangesImpl(db: *Db, changes: []Change) !void {

@@ -104,20 +104,34 @@ fn setConcept(self: *Self, concept: ?Concept) void {
 }
 
 fn dbWriteCallback(self_opaque: *anyopaque, result: DbWriter.WriteResult) void {
-    const write = result.write catch return;
+    if (result.err != null) return;
+    if (!result.cmd.affectsTable(.concept) and !result.cmd.affectsTable(.concept_rel)) return;
+    
     const self: *Self = @ptrCast(@alignCast(self_opaque));
+    
     if (self.concept) |*concept| {
-        switch (write.table_id) {
-            .concept => |id| {
-                if (id.int != concept.id.int) return;
-                self.dirty.store(true, .seq_cst);
-            },
-            .concept_rel => |ids| {
-                if (ids.parent.int == concept.id.int or ids.child.int == concept.id.int) {
-                    self.dirty.store(true, .seq_cst);
+        const affected: bool = affected: switch (result.cmd) {
+            .rename_concept => |payload| payload.id.int == concept.id.int,
+            .add_concept => |payload| {
+                if (payload.id.int == concept.id.int) break :affected true;
+                for (payload.parent_ids) |*id| {
+                    if (id.int == concept.id.int) break :affected true;
                 }
+                break :affected false;
             },
-            else => {},
+            .delete_concepts => |payload| {
+                for (payload.ids) |*id| {
+                    if (id.int == concept.id.int) break :affected true;
+                }
+                break :affected false;
+            },
+            .add_concept_parent => |payload|
+                payload.parent_id.int == concept.id.int or payload.child_id.int == concept.id.int,
+            else => false,
+        };
+
+        if (affected) {
+            self.dirty.store(true, .seq_cst);
         }
     }
 }

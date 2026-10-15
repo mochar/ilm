@@ -11,8 +11,8 @@ const Self = @This();
 const log = std.log.scoped(.peers_view);
 
 const DbWrites = struct {
-    buf: [12]DbWriter.Write,
-    queue: std.Io.Queue(DbWriter.Write),
+    buf: [12]DbWriter.WriteResult,
+    queue: std.Io.Queue(DbWriter.WriteResult),
 };
 
 core: *Core,
@@ -76,40 +76,33 @@ fn routerEventCallback(requesting_pair_opaque: ?*anyopaque, event: ilm.p2p.Route
 }
 
 fn dbWriteCallback(writes_opaque: *anyopaque, result: DbWriter.WriteResult) void {
-    const write = result.write catch return;
-    switch (write.table_id) {
-        .peer => {
-            const writes: *DbWrites = @ptrCast(@alignCast(writes_opaque));
-            writes.queue.putOneUncancelable(dvui.io, write) catch |err| {
-                log.err("Failed to add peer to write: {t}", .{err});
-            };
-        },
-        else => {},
+    if (result.err != null) return;
+    if (result.cmd.affectsTable(.peer)) {
+        const writes: *DbWrites = @ptrCast(@alignCast(writes_opaque));
+        writes.queue.putOneUncancelable(dvui.io, result) catch |err| {
+            log.err("Failed to add peer to write: {t}", .{err});
+        };
     }
 }
 
 fn processDbWrites(self: *Self) !void {
-    var write: DbWriter.Write = undefined;
+    var write: DbWriter.WriteResult = undefined;
     while (self.db_writes.queue.getUncancelable(dvui.io, @ptrCast(&write), 0) catch 0 != 0) {
-        switch (write.table_id) {
-            .peer => |id| {
-                switch (write.op) {
-                    .insert => {
-                        const peer_view = PeerView.init(self.core, id) catch continue;
-                        self.peer_views.put(self.core.gpa, id, peer_view) catch continue;
-                    },
-                    .update => {
-                        if (self.peer_views.getPtr(id)) |v| v.deinit();
-                        _ = self.peer_views.orderedRemove(id);
+        switch (write.cmd) {
+            .add_peer => |payload| {
+                const peer_view = PeerView.init(self.core, payload.id) catch continue;
+                self.peer_views.put(self.core.gpa, payload.id, peer_view) catch continue;
+            },
+            .delete_peer => |payload| {
+                if (self.peer_views.getPtr(payload.id)) |v| v.deinit();
+                _ = self.peer_views.orderedRemove(payload.id);
+            },
+            .rename_peer => |payload| {
+                if (self.peer_views.getPtr(payload.id)) |v| v.deinit();
+                _ = self.peer_views.orderedRemove(payload.id);
 
-                        const peer_view = PeerView.init(self.core, id) catch continue;
-                        self.peer_views.put(self.core.gpa, id, peer_view) catch continue;
-                    },
-                    .delete => {
-                        if (self.peer_views.getPtr(id)) |v| v.deinit();
-                        _ = self.peer_views.orderedRemove(id);
-                    },
-                }
+                const peer_view = PeerView.init(self.core, payload.id) catch continue;
+                self.peer_views.put(self.core.gpa, payload.id, peer_view) catch continue;
             },
             else => {},
         }

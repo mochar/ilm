@@ -127,13 +127,10 @@ pub fn setup(core: *Core) !void {
 }
 
 fn dbWriteCallback(core_opaque: *anyopaque, result: DbWriter.WriteResult) void {
-    const write = result.write catch return;
-    switch (write.table_id) {
-        .peer => {
-            const core: *Core = @ptrCast(@alignCast(core_opaque));
-            core.getPeers();
-        },
-        else => return,
+    if (result.err != null) return;
+    if (result.cmd.affectsTable(.peer)) {
+        const core: *Core = @ptrCast(@alignCast(core_opaque));
+        core.getPeers();
     }
 }
 
