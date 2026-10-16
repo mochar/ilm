@@ -222,7 +222,7 @@ fn renderContent(self: *Self) void {
 
         // Known peers
         for (self.peer_views.values(), 0..) |*peer_view, i| {
-            var pbox = dvui.box(@src(), .{}, .{ .id_extra = i });
+            var pbox = dvui.box(@src(), .{}, .{ .id_extra = i, .expand = .horizontal });
             defer pbox.deinit();
             peer_view.render();
         }

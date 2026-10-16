@@ -1,3 +1,5 @@
+const Self = @This();
+
 const std = @import("std");
 const dvui = @import("dvui");
 const ilm = @import("ilm");
@@ -8,8 +10,6 @@ const Graph = GraphRenderer.Graph;
 const Node = GraphRenderer.Node;
 
 const log = std.log.scoped(.graph_view);
-
-const Self = @This();
 
 var debug_window: bool = false;
 
