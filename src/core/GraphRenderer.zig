@@ -3,14 +3,16 @@
 //! The pixel buffer has a fixed capacity (buffer_stride * buffer_height). The visible
 //! viewport is defined by (view_width, view_height). Moving around or zooming the graph
 //! simply moves the camera within world space without altering graph layout coordinates.
+const Self = @This();
+
 const std = @import("std");
 const c = @import("c");
 const graphviz = @import("graphviz");
 pub const Graph = graphviz.Graph;
 pub const Node = graphviz.Node;
 pub const BoundingBox = graphviz.BoundingBox;
+pub const Pos = graphviz.Pos;
 const plutovg = @import("plutovg");
-const Self = @This();
 
 const log = std.log.scoped(.graph_renderer);
 
@@ -55,11 +57,6 @@ const Camera = struct {
 
 pub const MouseButton = enum { left, right, middle };
 
-const Pos = struct {
-    x: f32,
-    y: f32,
-};
-
 const Drag = struct {
     start_pos: Pos = .{ .x = 0.0, .y = 0.0 },
     mode: union(enum) {
@@ -79,9 +76,9 @@ const State = struct {
     mouse: struct {
         /// Which button is currently pressed
         down: ?MouseButton = null,
-        last_pos: [2]f32 = .{ 0.0, 0.0 },
+        last_pos: Pos = .{ .x = 0.0, .y = 0.0 },
         last_click: ?struct {
-            pos: [2]f32,
+            pos: Pos,
             time_ns: i96,
         } = null,
         drag: ?Drag = null,
@@ -94,6 +91,12 @@ const State = struct {
         y: f32,
         zoom: f32,
     } = null,
+};
+
+pub const Action = union(enum) {
+    assign_parent: struct { parent: u128, child: u128 },
+    select: u128,
+    selection,
 };
 
 pub const Options = struct {
@@ -112,12 +115,6 @@ pub const Options = struct {
     /// ARGB32 pixel buffer. If null, buffer allocation is managed internally.
     buffer: ?[]u8 = null,
     camera: Camera = .{},
-};
-
-pub const Action = union(enum) {
-    assign_parent: struct { parent: u128, child: u128 },
-    select: u128,
-    selection,
 };
 
 pub fn init(options: Options) !Self {
@@ -203,7 +200,7 @@ pub fn assigningToParent(self: *const Self) ?struct { child: Node, parent: Node 
 }
 
 pub fn mouseDown(self: *Self, screen_x: f32, screen_y: f32, button: MouseButton) bool {
-    self.state.mouse.last_pos = .{ screen_x, screen_y };
+    self.state.mouse.last_pos = .{ .x = screen_x, .y = screen_y };
     self.state.mouse.drag = null;
     self.state.animateTarget = null;
     if (!self.state.pinching) self.state.mouse.down = button;
@@ -216,7 +213,7 @@ pub fn mouseMove(self: *Self, screen_x: f32, screen_y: f32) bool {
     const world_pos = self.screenToWorld(screen_x, screen_y);
 
     const last_pos = self.state.mouse.last_pos;
-    defer self.state.mouse.last_pos = .{ screen_x, screen_y };
+    defer self.state.mouse.last_pos = .{ .x = screen_x, .y = screen_y };
 
     if (self.state.mouse.down == null) {
         // No mouse button down, so we react on hover events.
@@ -233,7 +230,7 @@ pub fn mouseMove(self: *Self, screen_x: f32, screen_y: f32) bool {
         // We are in the middle of dragging
         switch (drag.mode) {
             .pan_camera => {
-                self.pan(screen_x - last_pos[0], screen_y - last_pos[1]);
+                self.pan(screen_x - last_pos.x, screen_y - last_pos.y);
             },
             .drag_node => {},
             .assign_parent => |*assign| {
@@ -251,10 +248,14 @@ pub fn mouseMove(self: *Self, screen_x: f32, screen_y: f32) bool {
             },
             .selection => |*bb| {
                 self.state.dirty = true;
-                bb.llx = @min(world_pos.x, drag.start_pos.x);
-                bb.lly = @min(world_pos.y, drag.start_pos.y);
-                bb.urx = @max(world_pos.x, drag.start_pos.x);
-                bb.ury = @max(world_pos.y, drag.start_pos.y);
+                bb.ll = .{
+                    .x = @min(world_pos.x, drag.start_pos.x),
+                    .y = @min(world_pos.y, drag.start_pos.y),
+                };
+                bb.ur = .{
+                    .x = @max(world_pos.x, drag.start_pos.x),
+                    .y = @max(world_pos.y, drag.start_pos.y),
+                };
             },
         }
     } else {
@@ -284,7 +285,7 @@ pub fn mouseMove(self: *Self, screen_x: f32, screen_y: f32) bool {
 
 pub fn mouseUp(self: *Self, screen_x: f32, screen_y: f32) ?Action {
     var action: ?Action = null;
-    self.state.mouse.last_pos = .{ screen_x, screen_y };
+    self.state.mouse.last_pos = .{ .x = screen_x, .y = screen_y };
 
     defer {
         self.state.mouse.down = null;
@@ -298,12 +299,12 @@ pub fn mouseUp(self: *Self, screen_x: f32, screen_y: f32) ?Action {
             .selection => |*bb| {
                 self.selection.clearRetainingCapacity();
 
-                var maybe_node = c.agfstnode(self.graph.g);
-                while (maybe_node) |node| : (maybe_node = c.agnxtnode(self.graph.g, node)) {
-                    const node_info = graphviz.nodeInfo(node);
+                var node_iter = self.graph.nodeIterator();
+                while (node_iter.next()) |node| {
+                    const node_info = node.getInfo();
                     const node_pos: Pos = .{ .x = @floatCast(node_info.coord.x), .y = @floatCast(node_info.coord.y) };
-                    if (node_pos.x < bb.urx and node_pos.x > bb.llx and node_pos.y < bb.ury and node_pos.y > bb.lly) {
-                        const node_id = Node.getNodeId(node) catch continue;
+                    if (node_pos.x < bb.ur.x and node_pos.x > bb.ll.x and node_pos.y < bb.ur.y and node_pos.y > bb.ll.y) {
+                        const node_id = node.getId() catch continue;
                         self.selection.put(node_id, {}) catch continue;
                     }
                 }
@@ -341,15 +342,15 @@ pub fn mouseUp(self: *Self, screen_x: f32, screen_y: f32) ?Action {
         if (self.state.mouse.last_click) |last_click| {
             // Check if its a double click.
             const dt_ns = now_ns - last_click.time_ns;
-            const dx = screen_x - last_click.pos[0];
-            const dy = screen_y - last_click.pos[1];
+            const dx = screen_x - last_click.pos.x;
+            const dy = screen_y - last_click.pos.y;
             if (dt_ns <= 400 * std.time.ns_per_ms and (dx * dx + dy * dy <= 25.0)) {
                 self.state.mouse.last_click = null;
                 self.fitToGraph();
             }
         }
         self.state.mouse.last_click = .{
-            .pos = .{ screen_x, screen_y },
+            .pos = .{ .x = screen_x, .y = screen_y },
             .time_ns = now_ns,
         };
     }
@@ -358,7 +359,7 @@ pub fn mouseUp(self: *Self, screen_x: f32, screen_y: f32) ?Action {
 }
 
 pub fn mouseScroll(self: *Self, factor: f32) bool {
-    self.zoomBy(factor, self.state.mouse.last_pos[0], self.state.mouse.last_pos[1]);
+    self.zoomBy(factor, self.state.mouse.last_pos.x, self.state.mouse.last_pos.y);
     self.state.animateTarget = null;
     return self.state.dirty;
 }
@@ -491,13 +492,13 @@ pub fn getNodeAt(self: *const Self, screen_x: f32, screen_y: f32) ?Node {
 }
 
 pub fn animateToNode(self: *Self, node_id: u128, duration: std.Io.Duration) !void {
-    const node = self.graph.getNode(node_id) orelse return error.NodeNotFound;
-    const pos = node.getPosF32();
+    const node = self.graph.getNodeById(node_id) orelse return error.NodeNotFound;
+    const pos = node.getPos();
     self.state.animateTarget = .{
         .start_time = .now(self.io, .real),
         .duration = duration,
-        .x = pos[0],
-        .y = pos[1],
+        .x = pos.x,
+        .y = pos.y,
         .zoom = 3.0,
     };
 }
@@ -559,14 +560,12 @@ pub fn render(self: *Self) !void {
         if (progress == 1.0) self.state.animateTarget = null;
     }
 
-    // Clear background (dark theme background)
     canvas.save();
     defer canvas.restore();
 
+    // Clear background (dark theme background)
     canvas.setRGBA(0.12, 0.12, 0.15, 1.0);
-    canvas.setOperator(.src);
-    canvas.paint();
-    canvas.setOperator(.src_over);
+    canvas.fillRect(0, 0, @floatFromInt(render_w), @floatFromInt(render_h));
 
     // Apply camera transformation:
     // Viewport center -> zoom & flip Y (Graphviz Y-up -> PlutoVG Y-down) -> camera center
@@ -585,92 +584,99 @@ pub fn render(self: *Self) !void {
     const view_max_y = self.camera.center_y + half_vh;
 
     // Draw edge splines (batched in a single stroke)
-    var has_splines = false;
-    var maybe_node = c.agfstnode(graph.g);
-    while (maybe_node) |node| : (maybe_node = c.agnxtnode(graph.g, node)) {
-        var maybe_edge = c.agfstout(graph.g, node);
-        while (maybe_edge) |edge| : (maybe_edge = c.agnxtout(graph.g, edge)) {
-            const edge_info = graphviz.edgeInfo(edge);
-            const splines = edge_info.*.spl.*;
-            if (splines.size == 0) continue;
+    {
+        var has_splines = false;
+        var node_iter = graph.nodeIterator();
+        while (node_iter.next()) |node| {
+            var edge_iter = node.edgeIterator(graph);
+            while (edge_iter.next()) |edge| {
+                const edge_info = edge.getInfo();
+                const splines = edge_info.*.spl.*;
+                if (splines.size == 0) continue;
 
-            for (0..@intCast(splines.size)) |spline_i| {
-                const bezier = splines.list[spline_i];
-                const num_ctrl_points: usize = @intCast(bezier.size);
-                const ctrl_points = bezier.list;
+                for (0..@intCast(splines.size)) |spline_i| {
+                    const bezier = splines.list[spline_i];
+                    const num_ctrl_points: usize = @intCast(bezier.size);
+                    const ctrl_points = bezier.list;
 
-                if (!isBezierVisible(ctrl_points, num_ctrl_points, view_min_x, view_max_x, view_min_y, view_max_y)) continue;
+                    if (!isBezierVisible(ctrl_points, num_ctrl_points, view_min_x, view_max_x, view_min_y, view_max_y)) continue;
 
-                canvas.moveTo(@floatCast(ctrl_points[0].x), @floatCast(ctrl_points[0].y));
-                var i: usize = 1;
-                while (i + 2 < num_ctrl_points) : (i += 3) {
-                    canvas.cubicTo(
-                        @floatCast(ctrl_points[i].x),
-                        @floatCast(ctrl_points[i].y),
-                        @floatCast(ctrl_points[i + 1].x),
-                        @floatCast(ctrl_points[i + 1].y),
-                        @floatCast(ctrl_points[i + 2].x),
-                        @floatCast(ctrl_points[i + 2].y),
-                    );
+                    canvas.moveTo(@floatCast(ctrl_points[0].x), @floatCast(ctrl_points[0].y));
+                    var i: usize = 1;
+                    while (i + 2 < num_ctrl_points) : (i += 3) {
+                        canvas.cubicTo(
+                            @floatCast(ctrl_points[i].x),
+                            @floatCast(ctrl_points[i].y),
+                            @floatCast(ctrl_points[i + 1].x),
+                            @floatCast(ctrl_points[i + 1].y),
+                            @floatCast(ctrl_points[i + 2].x),
+                            @floatCast(ctrl_points[i + 2].y),
+                        );
+                    }
+                    has_splines = true;
                 }
-                has_splines = true;
             }
         }
-    }
-    if (has_splines) {
-        canvas.setRGBA(0.7, 0.75, 0.85, 0.9);
-        canvas.setLineWidth(2.0);
-        canvas.stroke();
+        if (has_splines) {
+            canvas.setRGBA(0.7, 0.75, 0.85, 0.9);
+            canvas.setLineWidth(2.0);
+            // canvas.setLineWidth(2.0 / self.camera.zoom);
+            canvas.stroke();
+        }
     }
 
     // Draw edge arrowheads (batched in a single fill)
-    var has_arrows = false;
-    maybe_node = c.agfstnode(graph.g);
-    while (maybe_node) |node| : (maybe_node = c.agnxtnode(graph.g, node)) {
-        var maybe_edge = c.agfstout(graph.g, node);
-        while (maybe_edge) |edge| : (maybe_edge = c.agnxtout(graph.g, edge)) {
-            const edge_info = graphviz.edgeInfo(edge);
-            const splines = edge_info.*.spl.*;
-            if (splines.size == 0) continue;
+    {
+        var has_arrows = false;
+        // const arrow_size = 8.0 / self.camera.zoom;
+        const arrow_size = 8.0;
+        var node_iter = graph.nodeIterator();
+        while (node_iter.next()) |node| {
+            var edge_iter = node.edgeIterator(graph);
+            while (edge_iter.next()) |edge| {
+                const edge_info = edge.getInfo();
+                const splines = edge_info.*.spl.*;
+                if (splines.size == 0) continue;
 
-            for (0..@intCast(splines.size)) |spline_i| {
-                const bezier = splines.list[spline_i];
-                const num_ctrl_points: usize = @intCast(bezier.size);
-                const ctrl_points = bezier.list;
+                for (0..@intCast(splines.size)) |spline_i| {
+                    const bezier = splines.list[spline_i];
+                    const num_ctrl_points: usize = @intCast(bezier.size);
+                    const ctrl_points = bezier.list;
 
-                if (!isBezierVisible(ctrl_points, num_ctrl_points, view_min_x, view_max_x, view_min_y, view_max_y)) continue;
+                    if (!isBezierVisible(ctrl_points, num_ctrl_points, view_min_x, view_max_x, view_min_y, view_max_y)) continue;
 
-                // End arrowhead
-                if (bezier.eflag == 1) {
-                    appendArrow(
-                        canvas,
-                        @floatCast(ctrl_points[num_ctrl_points - 1].x),
-                        @floatCast(ctrl_points[num_ctrl_points - 1].y),
-                        @floatCast(bezier.ep.x),
-                        @floatCast(bezier.ep.y),
-                        8.0,
-                    );
-                    has_arrows = true;
-                }
+                    // End arrowhead
+                    if (bezier.eflag == 1) {
+                        appendArrow(
+                            canvas,
+                            @floatCast(ctrl_points[num_ctrl_points - 1].x),
+                            @floatCast(ctrl_points[num_ctrl_points - 1].y),
+                            @floatCast(bezier.ep.x),
+                            @floatCast(bezier.ep.y),
+                            arrow_size,
+                        );
+                        has_arrows = true;
+                    }
 
-                // Start arrowhead (if bi-directional)
-                if (bezier.sflag == 1) {
-                    appendArrow(
-                        canvas,
-                        @floatCast(ctrl_points[0].x),
-                        @floatCast(ctrl_points[0].y),
-                        @floatCast(bezier.sp.x),
-                        @floatCast(bezier.sp.y),
-                        8.0,
-                    );
-                    has_arrows = true;
+                    // Start arrowhead (if bi-directional)
+                    if (bezier.sflag == 1) {
+                        appendArrow(
+                            canvas,
+                            @floatCast(ctrl_points[0].x),
+                            @floatCast(ctrl_points[0].y),
+                            @floatCast(bezier.sp.x),
+                            @floatCast(bezier.sp.y),
+                            arrow_size,
+                        );
+                        has_arrows = true;
+                    }
                 }
             }
         }
-    }
-    if (has_arrows) {
-        canvas.setRGBA(0.7, 0.75, 0.85, 0.9);
-        canvas.fill();
+        if (has_arrows) {
+            canvas.setRGBA(0.7, 0.75, 0.85, 0.9);
+            canvas.fill();
+        }
     }
 
     // Draw nodes and their labels
@@ -683,9 +689,9 @@ pub fn render(self: *Self) !void {
 
         // 1. Fill special node bodies (highlighted, hovered, selection, assigned parent)
         if (has_highlighted or has_selected or self.hovered != null or assign != null) {
-            maybe_node = c.agfstnode(graph.g);
-            while (maybe_node) |node| : (maybe_node = c.agnxtnode(graph.g, node)) {
-                const node_info = graphviz.nodeInfo(node);
+            var node_iter = graph.nodeIterator();
+            while (node_iter.next()) |node| {
+                const node_info = node.getInfo();
                 const cx: f32 = @floatCast(node_info.coord.x);
                 const cy: f32 = @floatCast(node_info.coord.y);
                 const h: f32 = @floatCast(node_info.height * 72.0 * 0.5);
@@ -699,12 +705,12 @@ pub fn render(self: *Self) !void {
                 }
 
                 const is_highlighted = if (has_highlighted) blk: {
-                    const node_id = Node.getNodeId(node) catch break :blk false;
+                    const node_id = node.getId() catch break :blk false;
                     break :blk self.highlighted.contains(node_id);
                 } else false;
-                
+
                 const is_selected = if (has_selected) blk: {
-                    const node_id = Node.getNodeId(node) catch break :blk false;
+                    const node_id = node.getId() catch break :blk false;
                     break :blk self.selection.contains(node_id);
                 } else false;
 
@@ -716,11 +722,11 @@ pub fn render(self: *Self) !void {
                     canvas.circle(cx, cy, radius);
                     canvas.setRGBA(0.8, 0.85, 1.0, 1.0);
                     canvas.fill();
-                } else if (self.hovered != null and self.hovered.?.cnode == node) {
+                } else if (self.hovered != null and self.hovered.?.cnode == node.cnode) {
                     canvas.circle(cx, cy, radius);
                     canvas.setRGBA(0.3, 0.3, 0.0, 1.0);
                     canvas.fill();
-                } else if (assign != null and assign.?.parent.cnode == node) {
+                } else if (assign != null and assign.?.parent.cnode == node.cnode) {
                     canvas.circle(cx, cy, radius);
                     canvas.setRGBA(0.0, 0.8, 0.3, 1.0);
                     canvas.fill();
@@ -729,37 +735,39 @@ pub fn render(self: *Self) !void {
         }
 
         // 2. Stroke all visible node borders in one single pass
-        var has_borders = false;
-        maybe_node = c.agfstnode(graph.g);
-        while (maybe_node) |node| : (maybe_node = c.agnxtnode(graph.g, node)) {
-            const node_info = graphviz.nodeInfo(node);
-            const cx: f32 = @floatCast(node_info.coord.x);
-            const cy: f32 = @floatCast(node_info.coord.y);
-            const h: f32 = @floatCast(node_info.height * 72.0 * 0.5);
-            const radius = h / 2.0;
-            const margin = @max(radius, 40.0);
+        {
+            var has_borders = false;
+            var node_iter = graph.nodeIterator();
+            while (node_iter.next()) |node| {
+                const node_info = node.getInfo();
+                const cx: f32 = @floatCast(node_info.coord.x);
+                const cy: f32 = @floatCast(node_info.coord.y);
+                const h: f32 = @floatCast(node_info.height * 72.0 * 0.5);
+                const radius = h / 2.0;
+                const margin = @max(radius, 40.0);
 
-            if (cx + margin < view_min_x or cx - margin > view_max_x or
-                cy + margin < view_min_y or cy - margin > view_max_y)
-            {
-                continue;
+                if (cx + margin < view_min_x or cx - margin > view_max_x or
+                    cy + margin < view_min_y or cy - margin > view_max_y)
+                {
+                    continue;
+                }
+
+                canvas.circle(cx, cy, radius);
+                has_borders = true;
             }
 
-            canvas.circle(cx, cy, radius);
-            has_borders = true;
-        }
-
-        if (has_borders) {
-            canvas.setRGBA(0.8, 0.85, 1.0, 1.0);
-            canvas.setLineWidth(1.5);
-            canvas.stroke();
+            if (has_borders) {
+                canvas.setRGBA(0.8, 0.85, 1.0, 1.0);
+                canvas.setLineWidth(1.5);
+                canvas.stroke();
+            }
         }
 
         // 3. Draw labels with LOD check
         if (render_labels) {
-            maybe_node = c.agfstnode(graph.g);
-            while (maybe_node) |node| : (maybe_node = c.agnxtnode(graph.g, node)) {
-                const node_info = graphviz.nodeInfo(node);
+            var node_iter = graph.nodeIterator();
+            while (node_iter.next()) |node| {
+                const node_info = node.getInfo();
                 const cx: f32 = @floatCast(node_info.coord.x);
                 const cy: f32 = @floatCast(node_info.coord.y);
                 const h: f32 = @floatCast(node_info.height * 72.0 * 0.5);
@@ -785,23 +793,23 @@ pub fn render(self: *Self) !void {
 
     if (self.state.mouse.drag) |drag| {
         const mouse_screen = self.state.mouse.last_pos;
-        const mouse_pos = self.screenToWorld(mouse_screen[0], mouse_screen[1]);
+        const mouse_pos = self.screenToWorld(mouse_screen.x, mouse_screen.y);
 
         switch (drag.mode) {
             // Draw arrow to assigning parent
             .assign_parent => |*assign| {
-                const node_pos = assign.child.getPosF32();
+                const node_pos = assign.child.getPos();
                 canvas.setRGBA(0.7, 0.75, 0.85, 0.9);
                 canvas.setLineWidth(2.0);
-                drawArrow(canvas, mouse_pos.x, mouse_pos.y, node_pos[0], node_pos[1], 8.0);
-                canvas.moveTo(node_pos[0], node_pos[1]);
+                drawArrow(canvas, mouse_pos.x, mouse_pos.y, node_pos.x, node_pos.y, 8.0);
+                canvas.moveTo(node_pos.x, node_pos.y);
                 canvas.lineTo(mouse_pos.x, mouse_pos.y);
                 canvas.stroke();
             },
             // Draw selection rectangle
             .selection => |bb| {
                 canvas.setRGBA(0.3, 0.3, 0.3, 0.5);
-                canvas.fillRect(bb.llx, bb.lly, bb.width(), bb.height());
+                canvas.fillRect(bb.ll.x, bb.ll.y, bb.width(), bb.height());
             },
             else => {},
         }
