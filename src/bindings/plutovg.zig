@@ -212,6 +212,14 @@ pub const Canvas = struct {
         c.plutovg_canvas_fill(canvas.ptr);
     }
 
+    pub fn rect(canvas: *const Canvas, x: f32, y: f32, w: f32, h: f32) void {
+        c.plutovg_canvas_rect(canvas.ptr, x, y, w, h);
+    }
+    
+    pub fn fillRect(canvas: *const Canvas, x: f32, y: f32, w: f32, h: f32) void {
+        c.plutovg_canvas_fill_rect(canvas.ptr, x, y, w, h);
+    }
+
     /// A drawing operator that fills the current path according to the current
     /// fill rule.
     /// 

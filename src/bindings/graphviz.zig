@@ -13,6 +13,15 @@ pub const BoundingBox = struct {
     urx: f32,
     ury: f32,
 
+    pub fn zeroArea(x: f32, y: f32) BoundingBox {
+        return .{
+            .llx = x,
+            .lly = y,
+            .urx = x,
+            .ury = y,
+        };
+    }
+
     pub fn width(self: BoundingBox) f32 {
         return @max(1.0, self.urx - self.llx);
     }

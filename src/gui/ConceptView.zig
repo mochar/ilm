@@ -282,7 +282,7 @@ pub fn render(self: *Self) ?Action {
         return action;
     }) |graph_action| {
         switch (graph_action) {
-            .node_select => |id| action = .{ .node_select = id },
+            .select => |id| action = .{ .node_select = id },
             else => {},
         }
     }

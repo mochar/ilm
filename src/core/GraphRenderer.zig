@@ -8,6 +8,7 @@ const c = @import("c");
 const graphviz = @import("graphviz");
 pub const Graph = graphviz.Graph;
 pub const Node = graphviz.Node;
+pub const BoundingBox = graphviz.BoundingBox;
 const plutovg = @import("plutovg");
 const Self = @This();
 
@@ -21,6 +22,7 @@ padding: f32,
 hovered: ?Node = null,
 // highlighted: std.AutoHashMap(u128, graphviz.Node),
 highlighted: std.AutoHashMap(u128, void),
+selection: std.AutoHashMap(u128, void),
 state: State = .{},
 canvas: plutovg.Canvas,
 /// ARGB32 pixel buffer.
@@ -53,8 +55,13 @@ const Camera = struct {
 
 pub const MouseButton = enum { left, right, middle };
 
+const Pos = struct {
+    x: f32,
+    y: f32,
+};
+
 const Drag = struct {
-    start_pos: [2]f32 = .{ 0.0, 0.0 },
+    start_pos: Pos = .{ .x = 0.0, .y = 0.0 },
     mode: union(enum) {
         pan_camera,
         drag_node: Node,
@@ -62,6 +69,7 @@ const Drag = struct {
             child: Node,
             parent: ?Node = null,
         },
+        selection: BoundingBox,
     },
 };
 
@@ -106,6 +114,12 @@ pub const Options = struct {
     camera: Camera = .{},
 };
 
+pub const Action = union(enum) {
+    assign_parent: struct { parent: u128, child: u128 },
+    select: u128,
+    selection,
+};
+
 pub fn init(options: Options) !Self {
     const gpa = options.gpa;
 
@@ -147,6 +161,7 @@ pub fn init(options: Options) !Self {
         .graph = graph,
         .padding = options.padding,
         .highlighted = .init(gpa),
+        .selection = .init(gpa),
         .buffer = buffer,
         .stride = stride,
         .height = height,
@@ -162,6 +177,7 @@ pub fn init(options: Options) !Self {
 
 pub fn deinit(self: *Self) void {
     self.highlighted.deinit();
+    self.selection.deinit();
     self.graph.deinit();
     if (self.managed) {
         self.gpa.free(self.buffer);
@@ -172,6 +188,7 @@ pub fn deinit(self: *Self) void {
 pub fn clear(self: *Self) void {
     self.graph.clear();
     self.highlighted.clearRetainingCapacity();
+    self.selection.clearAndFree();
     self.hovered = null;
     self.state = .{};
 }
@@ -195,7 +212,9 @@ pub fn mouseDown(self: *Self, screen_x: f32, screen_y: f32, button: MouseButton)
 
 pub fn mouseMove(self: *Self, screen_x: f32, screen_y: f32) bool {
     if (self.state.pinching) return false;
-    
+
+    const world_pos = self.screenToWorld(screen_x, screen_y);
+
     const last_pos = self.state.mouse.last_pos;
     defer self.state.mouse.last_pos = .{ screen_x, screen_y };
 
@@ -216,9 +235,7 @@ pub fn mouseMove(self: *Self, screen_x: f32, screen_y: f32) bool {
             .pan_camera => {
                 self.pan(screen_x - last_pos[0], screen_y - last_pos[1]);
             },
-            .drag_node => {
-                return false;
-            },
+            .drag_node => {},
             .assign_parent => |*assign| {
                 blk: {
                     if (self.getNodeAt(screen_x, screen_y)) |node| {
@@ -231,20 +248,32 @@ pub fn mouseMove(self: *Self, screen_x: f32, screen_y: f32) bool {
                 }
 
                 self.state.dirty = true;
-                return true;
+            },
+            .selection => |*bb| {
+                self.state.dirty = true;
+                bb.llx = @min(world_pos.x, drag.start_pos.x);
+                bb.lly = @min(world_pos.y, drag.start_pos.y);
+                bb.urx = @max(world_pos.x, drag.start_pos.x);
+                bb.ury = @max(world_pos.y, drag.start_pos.y);
             },
         }
     } else {
         // Mouse button down but not dragging yet -> start dragging
         var drag: Drag = undefined;
-        drag.start_pos = .{ screen_x, screen_y };
+        drag.start_pos = world_pos;
         if (self.getNodeAt(screen_x, screen_y)) |node| {
             switch (self.state.mouse.down.?) {
-                .left => drag = .{ .mode = .{ .assign_parent = .{ .child = node } } },
-                else => drag = .{ .mode = .{ .drag_node = node } },
+                .left => drag.mode = .{ .assign_parent = .{ .child = node } },
+                else => drag.mode = .{ .drag_node = node },
             }
         } else {
-            drag = .{ .mode = .pan_camera };
+            switch (self.state.mouse.down.?) {
+                .right => {
+                    drag.mode = .{ .selection = .zeroArea(world_pos.x, world_pos.y) };
+                    self.state.dirty = true;
+                },
+                else => drag.mode = .pan_camera,
+            }
         }
         self.state.mouse.drag = drag;
         self.state.dirty = true;
@@ -253,20 +282,62 @@ pub fn mouseMove(self: *Self, screen_x: f32, screen_y: f32) bool {
     return self.state.dirty;
 }
 
-pub fn mouseUp(self: *Self, screen_x: f32, screen_y: f32) bool {
-    // if (self.state.pinching) return false;
-    
+pub fn mouseUp(self: *Self, screen_x: f32, screen_y: f32) ?Action {
+    var action: ?Action = null;
     self.state.mouse.last_pos = .{ screen_x, screen_y };
-    const was_dragging = self.state.mouse.drag != null;
-    self.state.mouse.drag = null;
-    self.state.mouse.down = null;
 
-    if (was_dragging) {
+    defer {
+        self.state.mouse.down = null;
+        self.state.mouse.drag = null;
+    }
+
+    if (self.state.mouse.drag) |*drag| {
         self.state.dirty = true;
-    } else {
-        // Register mouse click.
-        const now_ns = std.Io.Clock.real.now(self.io).nanoseconds;
 
+        switch (drag.mode) {
+            .selection => |*bb| {
+                self.selection.clearRetainingCapacity();
+
+                var maybe_node = c.agfstnode(self.graph.g);
+                while (maybe_node) |node| : (maybe_node = c.agnxtnode(self.graph.g, node)) {
+                    const node_info = graphviz.nodeInfo(node);
+                    const node_pos: Pos = .{ .x = @floatCast(node_info.coord.x), .y = @floatCast(node_info.coord.y) };
+                    if (node_pos.x < bb.urx and node_pos.x > bb.llx and node_pos.y < bb.ury and node_pos.y > bb.lly) {
+                        const node_id = Node.getNodeId(node) catch continue;
+                        self.selection.put(node_id, {}) catch continue;
+                    }
+                }
+
+                action = .selection;
+            },
+            else => {},
+        }
+    } else {
+
+        // Determine action
+        if (self.state.mouse.down.? == .right) {
+            // Toggle selection if clicked on node, otherwise clear selection
+            action = .selection;
+            self.state.dirty = true;
+            if (self.hovered) |*node| {
+                const id = node.getId() catch unreachable;
+                if (!self.selection.remove(id)) {
+                    self.selection.put(id, {}) catch {};
+                }
+            } else {
+                self.selection.clearAndFree();
+            }
+        } else if (self.assigningToParent()) |*assign| {
+            const child_id = assign.child.getId() catch unreachable;
+            const parent_id = assign.parent.getId() catch unreachable;
+            action = .{ .assign_parent = .{ .child = child_id, .parent = parent_id } };
+        } else if (self.hovered) |*node| {
+            const id = node.getId() catch unreachable;
+            action = .{ .select = id };
+        }
+
+        // Register mouse click
+        const now_ns = std.Io.Clock.real.now(self.io).nanoseconds;
         if (self.state.mouse.last_click) |last_click| {
             // Check if its a double click.
             const dt_ns = now_ns - last_click.time_ns;
@@ -275,7 +346,6 @@ pub fn mouseUp(self: *Self, screen_x: f32, screen_y: f32) bool {
             if (dt_ns <= 400 * std.time.ns_per_ms and (dx * dx + dy * dy <= 25.0)) {
                 self.state.mouse.last_click = null;
                 self.fitToGraph();
-                return true;
             }
         }
         self.state.mouse.last_click = .{
@@ -284,7 +354,7 @@ pub fn mouseUp(self: *Self, screen_x: f32, screen_y: f32) bool {
         };
     }
 
-    return self.state.dirty;
+    return action;
 }
 
 pub fn mouseScroll(self: *Self, factor: f32) bool {
@@ -395,7 +465,7 @@ pub fn zoomBy(self: *Self, factor: f32, screen_focus_x: ?f32, screen_focus_y: ?f
 }
 
 /// Convert screen pixel coordinates (origin at top-left of viewport) to world coordinates.
-pub fn screenToWorld(self: *const Self, screen_x: f32, screen_y: f32) struct { x: f32, y: f32 } {
+pub fn screenToWorld(self: *const Self, screen_x: f32, screen_y: f32) Pos {
     const vw: f32 = @floatFromInt(self.view_width);
     const vh: f32 = @floatFromInt(self.view_height);
     return .{
@@ -405,7 +475,7 @@ pub fn screenToWorld(self: *const Self, screen_x: f32, screen_y: f32) struct { x
 }
 
 /// Convert world coordinates to screen pixel coordinates.
-pub fn worldToScreen(self: *const Self, world_x: f32, world_y: f32) struct { x: f32, y: f32 } {
+pub fn worldToScreen(self: *const Self, world_x: f32, world_y: f32) Pos {
     const vw: f32 = @floatFromInt(self.view_width);
     const vh: f32 = @floatFromInt(self.view_height);
     return .{
@@ -607,11 +677,12 @@ pub fn render(self: *Self) !void {
     {
         const assign = self.assigningToParent();
         const has_highlighted = self.highlighted.count() > 0;
+        const has_selected = self.selection.count() > 0;
         const font_size: f32 = 12.0;
         const render_labels = (font_size * self.camera.zoom >= 5.0) and (plutovg.plutovg_font != null);
 
-        // 1. Fill special node bodies (highlighted, hovered, assigned parent)
-        if (has_highlighted or self.hovered != null or assign != null) {
+        // 1. Fill special node bodies (highlighted, hovered, selection, assigned parent)
+        if (has_highlighted or has_selected or self.hovered != null or assign != null) {
             maybe_node = c.agfstnode(graph.g);
             while (maybe_node) |node| : (maybe_node = c.agnxtnode(graph.g, node)) {
                 const node_info = graphviz.nodeInfo(node);
@@ -631,8 +702,17 @@ pub fn render(self: *Self) !void {
                     const node_id = Node.getNodeId(node) catch break :blk false;
                     break :blk self.highlighted.contains(node_id);
                 } else false;
+                
+                const is_selected = if (has_selected) blk: {
+                    const node_id = Node.getNodeId(node) catch break :blk false;
+                    break :blk self.selection.contains(node_id);
+                } else false;
 
-                if (is_highlighted) {
+                if (is_selected) {
+                    canvas.circle(cx, cy, radius);
+                    canvas.setRGBA(0.8, 0.85, 0.0, 1.0);
+                    canvas.fill();
+                } else if (is_highlighted) {
                     canvas.circle(cx, cy, radius);
                     canvas.setRGBA(0.8, 0.85, 1.0, 1.0);
                     canvas.fill();
@@ -703,19 +783,25 @@ pub fn render(self: *Self) !void {
         }
     }
 
-    // Draw arrow if assigning parent
     if (self.state.mouse.drag) |drag| {
+        const mouse_screen = self.state.mouse.last_pos;
+        const mouse_pos = self.screenToWorld(mouse_screen[0], mouse_screen[1]);
+
         switch (drag.mode) {
+            // Draw arrow to assigning parent
             .assign_parent => |*assign| {
                 const node_pos = assign.child.getPosF32();
-                const mouse_screen = self.state.mouse.last_pos;
-                const mouse_pos = self.screenToWorld(mouse_screen[0], mouse_screen[1]);
                 canvas.setRGBA(0.7, 0.75, 0.85, 0.9);
                 canvas.setLineWidth(2.0);
                 drawArrow(canvas, mouse_pos.x, mouse_pos.y, node_pos[0], node_pos[1], 8.0);
                 canvas.moveTo(node_pos[0], node_pos[1]);
                 canvas.lineTo(mouse_pos.x, mouse_pos.y);
                 canvas.stroke();
+            },
+            // Draw selection rectangle
+            .selection => |bb| {
+                canvas.setRGBA(0.3, 0.3, 0.3, 0.5);
+                canvas.fillRect(bb.llx, bb.lly, bb.width(), bb.height());
             },
             else => {},
         }

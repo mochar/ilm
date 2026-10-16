@@ -3,6 +3,7 @@ const dvui = @import("dvui");
 const ilm = @import("ilm");
 const Core = ilm.Core;
 const GraphRenderer = ilm.GraphRenderer;
+const Action = GraphRenderer.Action;
 const Graph = GraphRenderer.Graph;
 const Node = GraphRenderer.Node;
 
@@ -83,11 +84,6 @@ pub fn animateFitToGraph(self: *Self) !void {
         .end_time = @intCast(self.animation_duration.toMicroseconds()),
     });
 }
-
-pub const Action = union(enum) {
-    node_select: u128,
-    assign_parent: struct { parent: u128, child: u128 },
-};
 
 pub fn render(self: *Self, opts: dvui.Options) !?Action {
     var vbox = dvui.box(@src(), .{ .dir = .vertical }, opts);
@@ -170,6 +166,7 @@ pub fn render(self: *Self, opts: dvui.Options) !?Action {
 /// dirty.
 fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) ?Action {
     var action: ?Action = null;
+    
     for (dvui.events()) |*e| {
         if (e.evt != .gesture and e.evt != .mouse) continue;
         if (!dvui.eventMatchSimple(e, wd)) continue;
@@ -221,19 +218,7 @@ fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) ?Action {
                         if (dvui.captured(wd.id)) {
                             e.handle(@src(), wd);
                             dvui.captureMouse(null, e.num);
-                            if (self.renderer.getNodeAt(x, y)) |*node_cur| {
-                                if (self.renderer.assigningToParent()) |assign| {
-                                    const child_id = assign.child.getId() catch unreachable;
-                                    const parent_id = assign.parent.getId() catch unreachable;
-                                    action = .{ .assign_parent = .{ .child = child_id, .parent = parent_id } };
-                                } else if (self.renderer.hovered) |*node| {
-                                    if (node.cnode == node_cur.cnode) {
-                                        const id = node.getId() catch unreachable;
-                                        action = .{ .node_select = id };
-                                    }
-                                }
-                            }
-                            _ = self.renderer.mouseUp(x, y);
+                            action = self.renderer.mouseUp(x, y);
                         }
                     },
                     .motion => {
