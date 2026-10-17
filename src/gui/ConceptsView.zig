@@ -7,7 +7,7 @@ const dvui = @import("dvui");
 const ilm = @import("ilm");
 const Core = ilm.Core;
 const Concept = ilm.concept.Concept;
-const Id = ilm.Id;
+const Uuid = ilm.Uuid;
 const DbWriter = ilm.database.DbWriter;
 
 const GraphView = @import("GraphView.zig");
@@ -558,7 +558,7 @@ const ConceptManager = struct {
     }
 
     pub fn deleteSelection(self: *ConceptManager) !void {
-        const ids = try self.gpa.alloc(Id, self.selectionSize());
+        const ids = try self.gpa.alloc(Uuid, self.selectionSize());
         defer self.gpa.free(ids);
 
         var sel_iter = self.selectionIter();

@@ -6,27 +6,27 @@ const Core = @import("Core.zig");
 const database = @import("database.zig");
 const Db = database.Db;
 const Diagnostics = database.Diagnostics;
-const Id = database.Id;
+const Uuid = database.Uuid;
 const Write = database.tables.Write;
 const Graph = @import("graphviz").Graph;
 
 pub const Concept = struct {
     rowid: i64,
-    id: Id,
+    id: Uuid,
     name: []const u8,
 };
 
 pub const ConceptAncestor = struct {
-    id: Id,
+    id: Uuid,
     name: []const u8,
-    child_id: Id,
+    child_id: Uuid,
     depth: usize,
     is_direct: bool,
 };
 
 // ** DB operations
 
-pub fn add(core: *Core, name: []const u8, parent_ids: []const Id) !Id {
+pub fn add(core: *Core, name: []const u8, parent_ids: []const Uuid) !Uuid {
     const id = core.newId();
     const res = try core.db_writer.runCommand(.{ .add_concept = .{
         .id = id,
@@ -36,7 +36,7 @@ pub fn add(core: *Core, name: []const u8, parent_ids: []const Id) !Id {
     return if (res.err) |err| err else id;
 }
 
-pub fn addImpl(db: *Db, id: Id, name: []const u8, parent_ids: []const Id) !void {
+pub fn addImpl(db: *Db, id: Uuid, name: []const u8, parent_ids: []const Uuid) !void {
     var diags: Diagnostics = .{};
 
     var savepoint = try db.savepoint("addconcept");
@@ -91,7 +91,7 @@ pub fn addImpl(db: *Db, id: Id, name: []const u8, parent_ids: []const Id) !void 
     savepoint.commit();
 }
 
-pub fn rename(core: *Core, id: Id, name: []const u8) !void {
+pub fn rename(core: *Core, id: Uuid, name: []const u8) !void {
     const res = try core.db_writer.runCommand(.{ .rename_concept = .{
         .id = id,
         .name = name,
@@ -100,7 +100,7 @@ pub fn rename(core: *Core, id: Id, name: []const u8) !void {
 }
 
 // TODO Validate that rename actually happened (in case concept not found in db)
-pub fn renameImpl(db: *Db, id: Id, name: []const u8) !void {
+pub fn renameImpl(db: *Db, id: Uuid, name: []const u8) !void {
     var diags: Diagnostics = .{};
 
     var stmt = db.prepareWithDiags(
@@ -122,16 +122,16 @@ pub fn renameImpl(db: *Db, id: Id, name: []const u8) !void {
     };
 }
 
-pub fn deleteMany(core: *Core, ids: []const Id) !void {
+pub fn deleteMany(core: *Core, ids: []const Uuid) !void {
     const res = try core.db_writer.runCommand(.{ .delete_concepts = .{ .ids = ids } }, .{});
     return res.err orelse {};
 }
 
-pub fn delete(core: *Core, id: Id) !void {
+pub fn delete(core: *Core, id: Uuid) !void {
     return deleteMany(core, &.{id});
 }
 
-pub fn deleteManyImpl(db: *Db, ids: []const Id) !void {
+pub fn deleteManyImpl(db: *Db, ids: []const Uuid) !void {
     var diags: Diagnostics = .{};
     var savepoint = try db.savepoint("delconcept");
     defer savepoint.rollback();
@@ -178,7 +178,7 @@ pub fn deleteManyImpl(db: *Db, ids: []const Id) !void {
     savepoint.commit();
 }
 
-pub fn addParent(core: *Core, child_id: Id, parent_id: Id) !void {
+pub fn addParent(core: *Core, child_id: Uuid, parent_id: Uuid) !void {
     const res = try core.db_writer.runCommand(.{ .add_concept_parent = .{
         .child_id = child_id,
         .parent_id = parent_id,
@@ -186,7 +186,7 @@ pub fn addParent(core: *Core, child_id: Id, parent_id: Id) !void {
     return res.err orelse {};
 }
 
-pub fn addParentImpl(db: *Db, child_id: Id, parent_id: Id) !void {
+pub fn addParentImpl(db: *Db, child_id: Uuid, parent_id: Uuid) !void {
     var diags: sqlite.Diagnostics = .{};
     var stmt = try db.prepareWithDiags(
         "INSERT OR IGNORE INTO concept_rel(parent_id, child_id) VALUES (?, ?)",
@@ -202,7 +202,7 @@ pub fn addParentImpl(db: *Db, child_id: Id, parent_id: Id) !void {
     });
 }
 
-pub fn removeParent(core: *Core, child_id: Id, parent_id: Id) !void {
+pub fn removeParent(core: *Core, child_id: Uuid, parent_id: Uuid) !void {
     var diags: sqlite.Diagnostics = .{};
     var stmt = try core.db.prepareWithDiags(
         "DELETE FROM concept_rel WHERE parent_id = ? AND child_id = ?",
@@ -240,7 +240,7 @@ pub fn getAll(core: *Core, alloc: Allocator) ![]Concept {
     return try queryConcepts(alloc, &stmt, .{});
 }
 
-pub fn getById(core: *Core, alloc: Allocator, id: Id) !?Concept {
+pub fn getById(core: *Core, alloc: Allocator, id: Uuid) !?Concept {
     var diags: sqlite.Diagnostics = .{};
     var stmt = try core.db.prepareWithDiags(
         "SELECT rowid, id, name FROM concept WHERE id = ?",
@@ -250,7 +250,7 @@ pub fn getById(core: *Core, alloc: Allocator, id: Id) !?Concept {
     return try stmt.oneAlloc(Concept, alloc, .{ .diags = &diags }, .{id});
 }
 
-pub fn getByIds(core: *Core, alloc: Allocator, ids: []const Id) ![]Concept {
+pub fn getByIds(core: *Core, alloc: Allocator, ids: []const Uuid) ![]Concept {
     if (ids.len == 0) return &.{};
 
     var arena_alloc: std.heap.ArenaAllocator = .init(alloc);
@@ -286,8 +286,8 @@ pub fn getByNameMatch(core: *Core, alloc: Allocator, substr: []const u8) ![]Conc
     return try queryConcepts(alloc, &stmt, .{substr});
 }
 
-pub fn getIdByRowId(core: *Core, rowid: i64) !?Id {
-    if (try core.db.one(Id.ByteT, "SELECT id FROM concept WHERE rowid = ?", .{}, .{rowid})) |id_bytes| {
+pub fn getIdByRowId(core: *Core, rowid: i64) !?Uuid {
+    if (try core.db.one(Uuid.ByteT, "SELECT id FROM concept WHERE rowid = ?", .{}, .{rowid})) |id_bytes| {
         return .{ .uuid = @bitCast(id_bytes) };
     }
     return null;
@@ -305,7 +305,7 @@ pub fn getAncestors(
     core: *Core,
     alloc: std.mem.Allocator,
     opts: struct {
-        ids: ?[]const Id = null,
+        ids: ?[]const Uuid = null,
         direct_only: bool = false,
     },
 ) ![]ConceptAncestor {
@@ -407,11 +407,11 @@ pub fn getRoots(core: *Core, allocator: std.mem.Allocator) ![]Concept {
 }
 
 pub const Relation = struct {
-    parent_id: Id,
-    child_id: Id,
+    parent_id: Uuid,
+    child_id: Uuid,
 };
 
-pub fn getRelations(core: *Core, alloc: Allocator, ids: ?[]const Id) ![]Relation {
+pub fn getRelations(core: *Core, alloc: Allocator, ids: ?[]const Uuid) ![]Relation {
     var query_builder: std.ArrayList(u8) = .empty;
     defer query_builder.deinit(alloc);
 
@@ -461,7 +461,7 @@ pub fn getRelations(core: *Core, alloc: Allocator, ids: ?[]const Id) ![]Relation
 // ** Graph
 
 pub fn fillAncestorGraph(core: *Core, graph: *Graph, alloc: Allocator, concept: *Concept) !void {
-    var ids: std.ArrayList(Id) = .empty;
+    var ids: std.ArrayList(Uuid) = .empty;
     defer ids.deinit(alloc);
 
     graph.addNode(concept.id.int, concept.name) catch |err| {

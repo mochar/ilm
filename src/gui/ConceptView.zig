@@ -2,7 +2,7 @@ const std = @import("std");
 const dvui = @import("dvui");
 const ilm = @import("ilm");
 const Core = ilm.Core;
-const Id = ilm.database.Id;
+const Uuid = ilm.database.Uuid;
 const Concept = ilm.concept.Concept;
 const DbWriter = ilm.database.DbWriter;
 const GraphView = @import("GraphView.zig");
@@ -24,7 +24,7 @@ arena: std.heap.ArenaAllocator,
 /// error occurs when retrieving the concept. By setting this to null
 /// we can put this view in an invalid, but still functional state.
 concept: ?Concept = null,
-concept_id: Id,
+concept_id: Uuid,
 
 graph_view: GraphView,
 
@@ -37,7 +37,7 @@ name_edit: struct {
 } = .{},
 
 pub const Options = struct {
-    concept_id: Id,
+    concept_id: Uuid,
     core: *Core,
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -156,7 +156,7 @@ pub const Action = union(enum) {
     node_select: u128,
     quit: void,
     rename: void,
-    new: Id,
+    new: Uuid,
     delete: void,
 };
 

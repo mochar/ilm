@@ -3,7 +3,7 @@ const ilm = @import("../root.zig");
 const database = ilm.database;
 const Db = database.Db;
 const Diagnostics = database.Diagnostics;
-const Id = database.Id;
+const Uuid = database.Uuid;
 const crdt = database.crdt;
 const sqlite = @import("sqlite");
 
@@ -15,8 +15,8 @@ pub const Table = enum {
     unknown,
 };
 
-pub const ConceptId = Id;
-pub const ConceptRelId = struct { parent: Id, child: Id };
+pub const ConceptId = Uuid;
+pub const ConceptRelId = struct { parent: Uuid, child: Uuid };
 pub const PeerId = ilm.p2p.Peer.Id;
 
 pub const TableId = union(Table) {

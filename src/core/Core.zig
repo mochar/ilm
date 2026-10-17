@@ -4,7 +4,7 @@ const iroh = @import("iroh");
 const sqlite = @import("sqlite");
 const database = @import("database.zig");
 const DbWriter = database.DbWriter;
-const Id = database.Id;
+const Uuid = database.Uuid;
 const p2p = @import("p2p.zig");
 const Router = p2p.Router;
 const Peer = p2p.Peer;
@@ -154,8 +154,8 @@ pub fn isValid(core: *Core) bool {
     return database.isValid(&core.db);
 }
 
-pub fn newId(core: *Core) Id {
-    return Id.new(core.io);
+pub fn newId(core: *Core) Uuid {
+    return Uuid.new(core.io);
 }
 
 pub fn exec(core: *Core, comptime query: []const u8, args: anytype) !void {
