@@ -1,3 +1,5 @@
+const Self = @This();
+
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const dvui = @import("dvui");
@@ -11,7 +13,6 @@ const DbWriter = ilm.database.DbWriter;
 const GraphView = @import("GraphView.zig");
 const ConceptView = @import("ConceptView.zig");
 const gui = @import("gui.zig");
-const Self = @This();
 
 const log = std.log.scoped(.concepts_view);
 
@@ -49,6 +50,7 @@ pub fn create(gpa: Allocator, core: *Core) !*Self {
     var graph_view: GraphView = try .init(.{
         .gpa = gpa,
         .io = core.io,
+        .layout_engine = .neato,
         .max_width = MAX_GRAPH_WIDTH,
         .max_height = MAX_GRAPH_HEIGHT,
         .src = @src(),
@@ -85,6 +87,8 @@ pub fn destroy(self: *Self) void {
 
     if (self.viewing) |*v| v.deinit();
     self.concepts.deinit();
+    
+    self.core.db_writer.unsubscribe(.{ .cb = dbWriteCallback, .ctx = @ptrCast(self) });
 
     self.gpa.destroy(self);
 }
@@ -300,6 +304,9 @@ fn renderGraph(self: *Self) void {
                     self.viewConceptById(id);
                 }
             },
+            .context => |id| {
+                _ = id;
+            },
             .assign_parent => |assign| {
                 if (ilm.concept.addParent(self.core, .{ .int = assign.child }, .{ .int = assign.parent })) {
                     self.updateGraphContent(.clear_all);
@@ -438,7 +445,7 @@ fn updateGraphContent(self: *Self, how: enum { clear_all, clear_graph }) void {
     ilm.concept.fillFullGraph(self.core, graph, arena, self.concepts.getAll().items) catch |err| {
         return gui.toastErr(@src(), err, "Failed to fill graph ({t})", .{err});
     };
-    renderer.layout("neato") catch |err| {
+    renderer.layout() catch |err| {
         return gui.toastErr(@src(), err, "Failed to layout graph", .{});
     };
     // self.graph_view.renderGraph() catch |err| {

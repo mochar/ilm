@@ -31,6 +31,8 @@ pub const Options = struct {
     extra_id: usize = 0,
     gpa: std.mem.Allocator,
     io: std.Io,
+    layout_engine: GraphRenderer.LayoutEngine,
+    attributes: ?[]GraphRenderer.Attribute = null,
     max_width: u32 = 2048,
     max_height: u32 = 2048,
     animation_duration: std.Io.Duration = .fromMilliseconds(3000),
@@ -40,7 +42,10 @@ pub fn init(opts: Options) !Self {
     var renderer = try GraphRenderer.init(.{
         .gpa = opts.gpa,
         .io = opts.io,
-        .graph_options = .{},
+        .graph_options = .{
+            .layout_engine = opts.layout_engine,
+            .attributes = opts.attributes,
+        },
         .buffer_stride = opts.max_width,
         .buffer_height = opts.max_height,
     });
@@ -85,8 +90,8 @@ pub fn animateFitToGraph(self: *Self) !void {
     });
 }
 
-pub fn render(self: *Self, opts: dvui.Options) !?Action {
-    var vbox = dvui.box(@src(), .{ .dir = .vertical }, opts);
+pub fn render(self: *Self, box_opts: dvui.Options) !?Action {
+    var vbox = dvui.box(@src(), .{ .dir = .vertical }, box_opts);
     defer vbox.deinit();
 
     // By retrieving the animation, dvui takes note of it and
@@ -94,6 +99,16 @@ pub fn render(self: *Self, opts: dvui.Options) !?Action {
     // idea is to use the animation value of the returned Animation,
     // but GraphRenderer handles that internally.
     _ = dvui.animationGet(self.animation_id, "_");
+
+    // Floating buttons
+    {
+        // if (dvui.button(@src(), "Layout", .{}, .{ .rect = .all(0.0) })) {
+        if (dvui.button(@src(), "Layout", .{}, .{})) {
+            log.info("Running layout", .{});
+            self.renderer.layout() catch {};
+            self.renderGraph() catch {};
+        }
+    }
 
     var texture_box = dvui.box(@src(), .{}, .{
         .expand = .both,
@@ -131,6 +146,7 @@ pub fn render(self: *Self, opts: dvui.Options) !?Action {
         });
     }
 
+    // Debug window
     if (debug_window) {
         const debug_win = dvui.osWindow(
             @src(),
@@ -166,13 +182,12 @@ pub fn render(self: *Self, opts: dvui.Options) !?Action {
 /// dirty.
 fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) ?Action {
     var action: ?Action = null;
-    
-    for (dvui.events()) |*e| {
-        if (e.evt != .gesture and e.evt != .mouse) continue;
-        if (!dvui.eventMatchSimple(e, wd)) continue;
 
+    for (dvui.events()) |*e| {
         switch (e.evt) {
             .gesture => |gesture| {
+                if (!dvui.eventMatchSimple(e, wd)) continue;
+
                 // TODO Dvui does not check if gesture happened within rect
                 // https://github.com/david-vanderson/dvui/issues/998
                 switch (gesture.action) {
@@ -189,6 +204,10 @@ fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) ?Action {
                 }
             },
             .mouse => |me| {
+                if (!dvui.eventMatchSimple(e, wd)) continue;
+
+                // TODO Use me.mod?
+
                 // Map graph texture coordinates to screen coordinates
                 const rs_w = @max(1.0, rs.r.w);
                 const rs_h = @max(1.0, rs.r.h);
@@ -239,6 +258,18 @@ fn handleEvents(self: *Self, wd: *dvui.WidgetData, rs: dvui.RectScale) ?Action {
                         }
                     },
                     else => {},
+                }
+            },
+            .key => |ke| {
+                const mod: GraphRenderer.Modifier = switch (ke.code) {
+                    .left_alt, .right_alt => .alt,
+                    .left_shift, .right_shift => .shift,
+                    else => continue,
+                };
+                switch (ke.action) {
+                    .up => self.renderer.modifierUp(mod),
+                    .down => self.renderer.modifierDown(mod),
+                    else => continue,
                 }
             },
             else => {},

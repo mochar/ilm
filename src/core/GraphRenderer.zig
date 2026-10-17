@@ -8,6 +8,8 @@ const Self = @This();
 const std = @import("std");
 const c = @import("c");
 const graphviz = @import("graphviz");
+pub const LayoutEngine = graphviz.LayoutEngine;
+pub const Attribute = graphviz.Attribute;
 pub const Graph = graphviz.Graph;
 pub const Node = graphviz.Node;
 pub const BoundingBox = graphviz.BoundingBox;
@@ -57,6 +59,8 @@ const Camera = struct {
 
 pub const MouseButton = enum { left, right, middle };
 
+pub const Modifier = enum { shift, alt };
+
 const Drag = struct {
     start_pos: Pos = .{ .x = 0.0, .y = 0.0 },
     mode: union(enum) {
@@ -83,6 +87,7 @@ const State = struct {
         } = null,
         drag: ?Drag = null,
     } = .{},
+    modifier: ?Modifier = null,
     pinching: bool = false,
     animateTarget: ?struct {
         start_time: std.Io.Timestamp,
@@ -95,14 +100,17 @@ const State = struct {
 
 pub const Action = union(enum) {
     assign_parent: struct { parent: u128, child: u128 },
+    /// Left mouse click on node (select)
     select: u128,
+    /// Right mouse click on node (context menu)
+    context: u128,
     selection,
 };
 
 pub const Options = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
-    graph_options: Graph.Options = .{},
+    graph_options: Graph.Options,
     padding: f32 = 20.0,
     /// Viewport width in pixels. If 0, uses buffer_stride.
     view_width: u32 = 0,
@@ -317,16 +325,24 @@ pub fn mouseUp(self: *Self, screen_x: f32, screen_y: f32) ?Action {
 
         // Determine action
         if (self.state.mouse.down.? == .right) {
-            // Toggle selection if clicked on node, otherwise clear selection
-            action = .selection;
-            self.state.dirty = true;
-            if (self.hovered) |*node| {
-                const id = node.getId() catch unreachable;
-                if (!self.selection.remove(id)) {
-                    self.selection.put(id, {}) catch {};
+            if (self.state.modifier != null and self.state.modifier.? == .alt) {
+                // Toggle selection if clicked on node, otherwise clear selection
+                action = .selection;
+                self.state.dirty = true;
+                if (self.hovered) |*node| {
+                    const id = node.getId() catch unreachable;
+                    if (!self.selection.remove(id)) {
+                        self.selection.put(id, {}) catch {};
+                    }
+                } else {
+                    self.selection.clearAndFree();
                 }
-            } else {
-                self.selection.clearAndFree();
+            } else if (self.hovered) |*node| {
+                // Context menu
+                action = .{ .context = node.getId() catch unreachable };
+
+                log.info("Pos: {?s}", .{node.getAttribute("pos")});
+                log.info("Pin: {?s}", .{node.getAttribute("pin")});
             }
         } else if (self.assigningToParent()) |*assign| {
             const child_id = assign.child.getId() catch unreachable;
@@ -381,13 +397,23 @@ pub fn pinchUpdate(self: *Self, scale: f32) bool {
     return self.mouseScroll(scale);
 }
 
+pub fn modifierDown(self: *Self, modifier: Modifier) void {
+    self.state.modifier = modifier;
+}
+
+pub fn modifierUp(self: *Self, modifier: Modifier) void {
+    if (self.state.modifier == modifier) {
+        self.state.modifier = null;
+    }
+}
+
 /// Layout graph with aspect ratio set to match current viewport.
-pub fn layout(self: *Self, engine: []const u8) !void {
+pub fn layout(self: *Self) !void {
     if (self.view_width > 0 and self.view_height > 0) {
         const target_ratio = @as(f32, @floatFromInt(self.view_height)) / @as(f32, @floatFromInt(self.view_width));
         self.graph.setRatio(target_ratio);
     }
-    try self.graph.layout(engine);
+    try self.graph.layout();
     self.updateZoomLimits();
     self.state.dirty = true;
 }

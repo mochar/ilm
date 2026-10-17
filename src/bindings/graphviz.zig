@@ -1,6 +1,8 @@
 const std = @import("std");
 const c = @import("c");
 
+const log = std.log.scoped(.graphviz);
+
 pub const Pos = struct {
     x: f32,
     y: f32,
@@ -78,6 +80,14 @@ pub const Node = struct {
     pub fn edgeIterator(node: *const Node, graph: *const Graph) EdgeIterator {
         return .init(graph.g, node.cnode);
     }
+
+    pub fn getAttribute(node: *const Node, name: [:0]const u8) ?[:0]const u8 {
+        return getComponentAttribute(@ptrCast(node.cnode), name);
+    }
+
+    pub fn setAttribute(node: *const Node, name: [:0]const u8, value: [:0]const u8, default: [:0]const u8) void {
+        setComponentAttribute(@ptrCast(node.cnode), name, value, default);
+    }
 };
 
 pub const NodeIterator = struct {
@@ -103,6 +113,14 @@ pub const Edge = struct {
     pub fn getInfo(edge: *const Edge) *c.Agedgeinfo_t {
         return edgeInfo(edge.cedge);
     }
+
+    pub fn getAttribute(edge: *const Edge, name: [:0]const u8) ?[:0]const u8 {
+        return getComponentAttribute(@ptrCast(edge.cedge), name);
+    }
+
+    pub fn setAttribute(edge: *const Edge, name: [:0]const u8, value: [:0]const u8, default: [:0]const u8) void {
+        setComponentAttribute(@ptrCast(edge.cedge), name, value, default);
+    }
 };
 
 pub const EdgeIterator = struct {
@@ -122,6 +140,79 @@ pub const EdgeIterator = struct {
     }
 };
 
+pub const LayoutEngine = enum {
+    /// Default tool to use if edges have directionality.
+    /// Aims edges in the same direction (top to bottom, or left to
+    /// right) and then attempts to avoid edge crossings and reduce edge
+    /// length.
+    /// https://graphviz.org/docs/layouts/dot/
+    dotx,
+    /// For undirected graphs that aren't too large (about 100 nodes).
+    /// Uses a spring model.
+    /// https://graphviz.org/docs/layouts/neato/
+    neato,
+    /// Spring model like neato.
+    /// Handles larger graphs and clustered undirected graphs.
+    fdp,
+};
+
+pub const Attribute = union(enum) {
+    /// https://graphviz.org/docs/attrs/ratio/
+    ratio: union(enum) {
+        /// If the actual aspect ratio is less than the desired ratio, the
+        /// drawing height is scaled up to achieve the desired ratio; if the
+        /// actual ratio is greater than that desired ratio, the drawing width
+        /// is scaled up.
+        desired: f64,
+        fill,
+        compress,
+        expand,
+        auto,
+    },
+
+    /// https://graphviz.org/docs/attrs/size/
+    size: f64,
+
+    /// Note that the margin is not part of the drawing but just empty
+    /// space left around the drawing. The margin basically corresponds to
+    /// a translation of drawing, as would be necessary to center a
+    /// drawing on a page. Nothing is actually drawn in the margin. To
+    /// actually extend the background of a drawing, see the pad
+    /// attribute.
+    /// https://graphviz.org/docs/attrs/margin/
+    margin: f64,
+
+    /// Inches to extend the drawing area around the minimal area needed
+    /// to draw the graph.
+    /// https://graphviz.org/docs/attrs/pad/
+    pad: f64,
+
+    /// Only: dot.
+    /// https://graphviz.org/docs/attrs/rankdir/
+    rankdir: enum { TB, BT, LR, RL },
+
+    /// Technique for optimizing the layout
+    /// Only: neato.
+    /// https://graphviz.org/docs/attrs/mode/
+    mode: enum {
+        major,
+        KK,
+        /// faster and more reliable convergence than both the
+        /// previous methods, but runs in a fixed number of iterations
+        /// which may require larger values of maxiter in some graphs.
+        sgd,
+        /// Adds top-down directionality similar to dot
+        hier,
+        ipsep,
+    },
+
+    /// Number of iterations to use.
+    /// Only: neato, fdp.
+    /// Default: 100 * # nodes (mode == KK) , 200 (mode == major) , 30 (mode == sgd) , 600 (fdp)
+    /// https://graphviz.org/docs/attrs/maxiter/
+    maxiter: u64,
+};
+
 pub const Graph = struct {
     /// Allocates when building the graph and resets when cleared.
     arena: std.heap.ArenaAllocator,
@@ -129,19 +220,22 @@ pub const Graph = struct {
     g: *c.Agraph_t,
     width: u32,
     height: u32,
+    layout_engine: LayoutEngine,
+    // TODO Make this a struct with fixed values such as bounding box
+    // TODO There is gvLayoutDone() that returns if there is a layout
     has_layout: bool = false,
 
     pub const Options = struct {
+        layout_engine: LayoutEngine,
+        attributes: ?[]Attribute = null,
         width: ?u32 = null,
         height: ?u32 = null,
     };
 
     pub fn init(allocator: std.mem.Allocator, options: Options) !Graph {
         const g = agopen(@constCast("graph"), Agdirected, null) orelse return error.OpenFailed;
-        _ = c.agsafeset(g, @constCast("bgcolor"), @constCast("transparent"), @constCast(""));
         _ = c.agsafeset(g, @constCast("margin"), @constCast("0.0"), @constCast(""));
         _ = c.agsafeset(g, @constCast("pad"), @constCast("0.0"), @constCast(""));
-        _ = c.agsafeset(g, @constCast("rankdir"), @constCast("LR"), @constCast("LR"));
 
         var graph: Graph = .{
             .arena = .init(allocator),
@@ -149,12 +243,20 @@ pub const Graph = struct {
             .g = g,
             .width = options.width orelse 0,
             .height = options.height orelse 0,
+            .layout_engine = options.layout_engine,
             .has_layout = false,
         };
 
         if (options.width != null and options.height != null) {
             graph.setDimensions(options.width.?, options.height.?);
         }
+
+        graph.applyAttribute(.{ .maxiter = 3 });
+        graph.applyAttribute(.{ .rankdir = .TB });
+        graph.applyAttribute(.{ .pad = 100.0 });
+        graph.applyAttribute(.{ .margin = 100.0 });
+        // graph.setAttribute(.{ .mode = .KK });
+        // graph.setAttribute(.{ .ratio = .{ .desired = 3.0 }});
 
         return graph;
     }
@@ -168,8 +270,35 @@ pub const Graph = struct {
         graph.arena.deinit();
     }
 
-    pub fn setAttribute(graph: *Graph, name: [:0]const u8, value: [:0]const u8, default: [:0]const u8) void {
-        _ = c.agsafeset(graph.g, @constCast(name), @constCast(value), @constCast(default));
+    pub fn getAttribute(graph: *const Graph, name: [:0]const u8) ?[:0]const u8 {
+        return getComponentAttribute(@ptrCast(graph.g), name);
+    }
+
+    pub fn setAttribute(graph: *const Graph, name: [:0]const u8, value: [:0]const u8, default: [:0]const u8) void {
+        setComponentAttribute(@ptrCast(graph.g), name, value, default);
+    }
+
+    pub fn applyAttribute(graph: *Graph, attr: Attribute) void {
+        const name = @tagName(attr);
+        switch (attr) {
+            inline else => |value| {
+                const Type = @TypeOf(value);
+                const type_info = @typeInfo(Type);
+
+                const value_str: [:0]const u8 = val: switch (type_info) {
+                    .int, .float => {
+                        var buf: [32]u8 = undefined;
+                        break :val std.fmt.bufPrintZ(&buf, "{d:.4}", .{value}) catch unreachable;
+                    },
+                    .@"enum" => {
+                        break :val @tagName(value);
+                    },
+                    inline else => unreachable,
+                };
+
+                _ = c.agsafeset(graph.g, @constCast(name), @constCast(value_str.ptr), @constCast(""));
+            },
+        }
     }
 
     /// Set target aspect ratio (height / width) for Graphviz layout algorithm.
@@ -183,7 +312,6 @@ pub const Graph = struct {
     /// Set the graph dimensions given pixel width and height.
     pub fn setDimensions(graph: *Graph, width_px: u32, height_px: u32) void {
         if (width_px == 0 or height_px == 0) return;
-
         graph.width = width_px;
         graph.height = height_px;
         graph.setRatio(@as(f32, @floatFromInt(height_px)) / @as(f32, @floatFromInt(width_px)));
@@ -264,16 +392,22 @@ pub const Graph = struct {
         return @intCast(c.agnnodes(graph.g));
     }
 
-    /// Run the layout algorithm of an engine on the graph.
-    pub fn layout(graph: *Graph, engine: []const u8) !void {
+    /// Run the layout algorithm.
+    pub fn layout(graph: *Graph) !void {
         if (graph.has_layout) {
             _ = c.gvFreeLayout(graph.gvc, graph.g);
             graph.has_layout = false;
         }
-        if (c.gvLayout(graph.gvc, graph.g, @ptrCast(@constCast(engine))) != 0) return error.LayoutFailed;
-        // Writes layout coordinates into "pos" string attributes on all nodes/edges
-        c.attach_attrs(graph.g);
+
+        const layout_name = @tagName(graph.layout_engine);
+        if (c.gvLayout(graph.gvc, graph.g, @ptrCast(@constCast(layout_name))) != 0) {
+            return error.LayoutFailed;
+        }
         graph.has_layout = true;
+
+        // Writes layout coordinates into "pos" string attributes on all nodes/edges
+        // TODO Only used in neato in fdp i think, so check on that first
+        c.attach_attrs(graph.g);
     }
 
     /// Find node on the given coordinates.
@@ -292,6 +426,26 @@ pub const Graph = struct {
         return null;
     }
 };
+
+/// If null, the attribute has not been defined for any component of this kind.
+/// If empty string, attribute has been defined but set to default.
+pub fn getComponentAttribute(component: *anyopaque, name: [:0]const u8) ?[:0]const u8 {
+    const value = c.agget(component, @ptrCast(@constCast(name)));
+    return if (value) |v| std.mem.span(v) else null;
+}
+
+/// First checks that the named attribute has been declared for the
+/// given graph component. If it has not, it declares the attribute,
+/// using its last argument as the required default value. It then
+/// sets the attribute value for the specific component.
+pub fn setComponentAttribute(
+    component: *anyopaque,
+    name: [:0]const u8,
+    value: [:0]const u8,
+    default: [:0]const u8,
+) void {
+    _ = c.agsafeset(component, @constCast(name), @constCast(value), @constCast(default));
+}
 
 // ** C autogen patches
 

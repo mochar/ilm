@@ -55,6 +55,7 @@ pub fn create(opts: Options) !*Self {
     var graph_view: GraphView = try .init(.{
         .gpa = opts.gpa,
         .io = opts.io,
+        .layout_engine = .dotx,
         .max_width = MAX_GRAPH_WIDTH,
         .max_height = MAX_GRAPH_HEIGHT,
         .src = @src(),
@@ -146,7 +147,7 @@ pub fn resetGraph(self: *Self) !void {
     if (self.concept) |*concept| {
         try renderer.highlighted.put(concept.id.int, {});
         try ilm.concept.fillAncestorGraph(self.core, graph, arena, concept);
-        try renderer.layout("dotx");
+        try renderer.layout();
         try self.graph_view.updateGraph();
     }
 }
