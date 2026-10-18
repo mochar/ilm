@@ -450,6 +450,91 @@ pub fn getRelations(core: *Core, alloc: Allocator, ids: ?[]const Uuid) ![]Relati
     return result;
 }
 
+// ** Query changes
+
+pub const ChangeOp = enum(u8) {
+    insert = 0,
+    update = 1,
+    delete = 2,
+
+    pub const BaseType = u8;
+};
+
+pub const ConceptChange = struct {
+    id: Uuid,
+    name: ?[]const u8,
+    op: ChangeOp,
+    /// Because the clock table records the db_version per column, we take the max.
+    /// This gives for:
+    ///  - inserts: The version when the concept was created.
+    ///  - updates: The version of the most recent update made to this concept.
+    ///  - deletes: The version when the concept was deleted.
+    db_version: u64,
+};
+
+pub const ConceptChanges = struct {
+    /// Ordered by db version, oldest to newest
+    changes: []ConceptChange,
+    inserts: usize,
+    deletes: usize,
+    updates: usize,
+};
+
+pub fn getChangesSince(db: *Db, since_db_version: u64, alloc: Allocator) !ConceptChanges {
+    const query =
+        \\WITH changed_keys AS (
+        \\    SELECT DISTINCT key
+        \\    FROM concept__crsql_clock
+        \\    WHERE db_version > :db_version
+        \\)
+        \\SELECT
+        \\    pks.id,
+        \\    c.name,
+        \\    CASE
+        \\        WHEN c.id IS NULL THEN 2
+        \\        WHEN MIN(clk.db_version) > :db_version THEN 0
+        \\        ELSE 1
+        \\    END AS op,
+        \\    MAX(clk.db_version) AS db_version
+        \\FROM changed_keys ck
+        \\JOIN concept__crsql_clock clk ON clk.key = ck.key
+        \\JOIN concept__crsql_pks pks ON pks.__crsql_key = ck.key
+        \\LEFT JOIN concept c ON c.id = pks.id
+        \\GROUP BY ck.key
+        \\ORDER BY db_version ASC;
+    ;
+
+    var diags: Diagnostics = .{};
+    var stmt = db.prepareWithDiags(query, .{ .diags = &diags }) catch |err| {
+        log.err("SQLite prepare failed: {s}", .{diags.message});
+        return err;
+    };
+    defer stmt.deinit();
+
+    var changes: std.ArrayList(ConceptChange) = .empty;
+    defer changes.deinit(alloc);
+    var inserts: usize = 0;
+    var deletes: usize = 0;
+    var updates: usize = 0;
+
+    var iter = try stmt.iteratorAlloc(ConceptChange, alloc, .{ .db_version = since_db_version });
+    while (try iter.nextAlloc(alloc, .{ .diags = &diags })) |change| {
+        try changes.append(alloc, change);
+        switch (change.op) {
+            .insert => inserts += 1,
+            .delete => deletes += 1,
+            .update => updates += 1,
+        }
+    }
+
+    return .{
+        .changes = try changes.toOwnedSlice(alloc),
+        .inserts = inserts,
+        .deletes = deletes,
+        .updates = updates,
+    };
+}
+
 // ** Graph
 
 pub fn fillAncestorGraph(core: *Core, graph: *Graph, alloc: Allocator, concept: *Concept) !void {

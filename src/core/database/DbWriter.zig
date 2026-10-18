@@ -5,6 +5,8 @@
 //! by one. Subscribers can subscribe to WriteResult events, which contains if the
 //! command was succesfull, and if so, what table and row was affected,
 //! and through what operation (update, insert, delete).
+const Self = @This();
+
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 pub const sqlite = @import("sqlite");
@@ -13,7 +15,6 @@ const ilm = @import("../root.zig");
 const database = @import("../database.zig");
 const tables = database.tables;
 pub const Write = tables.Write;
-const Self = @This();
 
 const log = std.log.scoped(.database_writer);
 
@@ -25,6 +26,8 @@ pub const WriteRequestId = usize;
 pub const WriteResult = struct {
     id: WriteRequestId,
     cmd: tables.TableCommand,
+    /// Db version after running the command.
+    db_version: u64,
     err: ?anyerror,
 };
 
@@ -51,11 +54,11 @@ const WriteRequest = struct {
 
 const WriteQueue = std.Io.Queue(WriteRequest);
 
-pub const Callback = *const fn (*anyopaque, WriteResult) void;
+pub const CallbackFn = *const fn (*anyopaque, WriteResult) void;
 
 pub const Subscriber = struct {
     ctx: *anyopaque,
-    cb: Callback,
+    cb: CallbackFn,
     unsubscribed: bool = false,
 };
 
@@ -186,19 +189,29 @@ fn runLoop(self: *Self) !void {
         };
         defer if (req.arena) |arena| arena.deinit();
 
+        const write_err: ?anyerror = switch (req.cmd) {
+            inline else => |cmd| blk: {
+                if (cmd.write(&self.db)) {
+                    break :blk null;
+                } else |err| {
+                    log.err("Table write cmd failed: {t}", .{err});
+                    break :blk err;
+                }
+            },
+        };
+
+        var db_version: u64 = 0;
+        if (database.crdt.getDbVersion(&self.db)) |v| {
+            db_version = v;
+        } else |err| {
+            log.err("Failed to get db version: {t}", .{err});
+        }
+
         const result: WriteResult = .{
             .id = req.id,
             .cmd = req.cmd,
-            .err = switch (req.cmd) {
-                inline else => |cmd| blk: {
-                    if (cmd.write(&self.db)) {
-                        break :blk null;
-                    } else |err| {
-                        log.err("Table write cmd failed: {t}", .{err});
-                        break :blk err;
-                    }
-                },
-            },
+            .err = write_err,
+            .db_version = db_version,
         };
 
         if (req.sync_ctx) |sync_ctx| {

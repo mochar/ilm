@@ -84,29 +84,9 @@ pub fn destroy(self: *Self) void {
     self.gpa.destroy(self);
 }
 
-/// Retrieve concept from db and set state to match.
-fn getConcept(self: *Self) void {
-    if (ilm.concept.getById(self.core, self.arena.allocator(), self.concept_id) catch null) |concept| {
-        self.setConcept(concept);
-    } else {
-        log.err("Concept not found", .{});
-        dvui.toast(@src(), .{ .message = "Concept not found" });
-    }
-}
-
-fn setConcept(self: *Self, concept: ?Concept) void {
-    self.name_edit.name.clearRetainingCapacity();
-    self.graph_view.renderer.clear();
-    self.concept = concept;
-    if (concept) |c| {
-        self.name_edit.name.appendSlice(self.arena.allocator(), c.name) catch {};
-        self.resetGraph() catch {};
-    }
-}
-
 fn dbWriteCallback(self_opaque: *anyopaque, result: DbWriter.WriteResult) void {
     if (result.err != null) return;
-    if (!result.cmd.affectsTable(.concept) and !result.cmd.affectsTable(.concept_rel)) return;
+    if (!result.cmd.affectsTables(&.{ .concept, .concept_rel, .crsql_changes })) return;
     
     const self: *Self = @ptrCast(@alignCast(self_opaque));
     
@@ -134,6 +114,26 @@ fn dbWriteCallback(self_opaque: *anyopaque, result: DbWriter.WriteResult) void {
         if (affected) {
             self.dirty.store(true, .seq_cst);
         }
+    }
+}
+
+/// Retrieve concept from db and set state to match.
+fn getConcept(self: *Self) void {
+    if (ilm.concept.getById(self.core, self.arena.allocator(), self.concept_id) catch null) |concept| {
+        self.setConcept(concept);
+    } else {
+        log.err("Concept not found", .{});
+        dvui.toast(@src(), .{ .message = "Concept not found" });
+    }
+}
+
+fn setConcept(self: *Self, concept: ?Concept) void {
+    self.name_edit.name.clearRetainingCapacity();
+    self.graph_view.renderer.clear();
+    self.concept = concept;
+    if (concept) |c| {
+        self.name_edit.name.appendSlice(self.arena.allocator(), c.name) catch {};
+        self.resetGraph() catch {};
     }
 }
 

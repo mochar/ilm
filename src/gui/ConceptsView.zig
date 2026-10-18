@@ -9,6 +9,7 @@ const Core = ilm.Core;
 const Concept = ilm.concept.Concept;
 const Uuid = ilm.Uuid;
 const DbWriter = ilm.database.DbWriter;
+const TableCommand = ilm.database.tables.TableCommand;
 
 const GraphView = @import("GraphView.zig");
 const ConceptView = @import("ConceptView.zig");
@@ -33,8 +34,10 @@ viewing: ?struct {
     }
 } = null,
 
-db_writes_buf: []DbWriter.WriteResult,
-db_writes_queue: std.Io.Queue(DbWriter.WriteResult),
+last_processed_db_version: std.atomic.Value(u64) = .init(0),
+// TODO This should be a mutex so we dont mark as (un)processed
+// while processing and stored changes at the same time
+unprocessed_db_changes: std.atomic.Value(bool) = .init(true),
 
 graph_view: GraphView,
 /// To allocate graph content, reset every time we fill the graph.
@@ -43,9 +46,6 @@ graph_arena: std.heap.ArenaAllocator,
 pub fn create(gpa: Allocator, core: *Core) !*Self {
     var self = try gpa.create(Self);
     errdefer gpa.destroy(self);
-
-    const db_writes_buf = try gpa.alloc(DbWriter.WriteResult, 12);
-    errdefer gpa.free(db_writes_buf);
 
     var graph_view: GraphView = try .init(.{
         .gpa = gpa,
@@ -64,23 +64,20 @@ pub fn create(gpa: Allocator, core: *Core) !*Self {
         .core = core,
         .gpa = gpa,
         .concepts = concepts,
-        .db_writes_buf = db_writes_buf,
-        .db_writes_queue = .init(db_writes_buf),
         .graph_view = graph_view,
         .graph_arena = .init(gpa),
     };
     errdefer self.destroy();
 
+    try self.resetToLatestDbState();
+
     try core.db_writer.subscribe(.{ .cb = dbWriteCallback, .ctx = @ptrCast(self) });
 
-    self.getAllConcepts();
-    self.remakeGraph(.clear_all);
     return self;
 }
 
 pub fn destroy(self: *Self) void {
-    self.db_writes_queue.close(self.core.io);
-    self.gpa.free(self.db_writes_buf);
+    self.core.db_writer.unsubscribe(.{ .cb = dbWriteCallback, .ctx = @ptrCast(self) });
 
     self.graph_view.deinit();
     self.graph_arena.deinit();
@@ -88,31 +85,132 @@ pub fn destroy(self: *Self) void {
     if (self.viewing) |*v| v.deinit();
     self.concepts.deinit();
 
-    self.core.db_writer.unsubscribe(.{ .cb = dbWriteCallback, .ctx = @ptrCast(self) });
-
     self.gpa.destroy(self);
+}
+
+fn setLastProcessedDbVersion(self: *Self, db_version: u64) void {
+    self.last_processed_db_version.store(db_version, .seq_cst);
+}
+
+fn resetToLatestDbState(self: *Self) !void {
+    try self.getAllConcepts();
+    const db_version = try ilm.database.crdt.getDbVersion(&self.core.db);
+    self.setLastProcessedDbVersion(db_version);
+    self.remakeGraph(.clear_all);
 }
 
 fn dbWriteCallback(self_opaque: *anyopaque, result: DbWriter.WriteResult) void {
     if (result.err != null) return;
-    if (!result.cmd.affectsTables(&.{ .concept, .concept_rel, .crsql_changes })) return;
     const self: *Self = @ptrCast(@alignCast(self_opaque));
-    self.db_writes_queue.putOneUncancelable(self.core.io, result) catch |err| {
-        log.err("Failed to add concept db write: {t}", .{err});
-    };
+    if (result.cmd.affectsTables(&.{ .concept, .concept_rel, .crsql_changes })) {
+        self.unprocessed_db_changes.store(true, .seq_cst);
+    } else {
+        self.setLastProcessedDbVersion(result.db_version);
+    }
 }
 
-pub fn render(self: *Self) void {
-    // Process writes buffer
-    var write: DbWriter.WriteResult = undefined;
-    while (self.db_writes_queue.getUncancelable(self.core.io, @ptrCast(&write), 0) catch 0 != 0) {
-        if (write.cmd.affectsTables(&.{ .concept, .crsql_changes })) self.getAllConcepts();
-        self.updateGraphContent(.clear_all);
-        switch (write.cmd) {
-            .add_concept => |payload| self.viewConceptById(payload.id.int),
-            .delete_concepts, .apply_changes => self.unviewConcept(),
-            else => {},
+fn processDbChanges(self: *Self) !void {
+    var arena_alloc: std.heap.ArenaAllocator = .init(self.gpa);
+    defer arena_alloc.deinit();
+    const arena = arena_alloc.allocator();
+
+    const since_db_version = self.last_processed_db_version.load(.seq_cst);
+    const changes = try ilm.concept.getChangesSince(&self.core.db, since_db_version, arena);
+    if (changes.changes.len == 0) {
+        self.unprocessed_db_changes.store(false, .seq_cst);
+        return;
+    }
+    const need_relayout = changes.inserts > 0 or changes.deletes > 0;
+
+    // Any error midway through processing the changes will make starting again
+    // from the failure point difficult. For example multiple changes might have
+    // happened within the same db version. If we fail inbetween these changes,
+    // we cannot trivially try again before, at, or after that db version. Therefore
+    // on error we reset the graph completely.
+    errdefer self.remakeGraph(.clear_graph);
+
+    var renderer = &self.graph_view.renderer;
+    const graph = self.graph_view.graph();
+
+    // If viewing a deleted concept, need to unview first before
+    // deleting the node.
+    const viewing_id = self.viewingIdOrZero();
+    for (changes.changes) |*change| {
+        if (change.op == .delete and change.id.int == viewing_id) self.unviewConcept();
+    }
+
+    // Need to free layout before adding/removing objects from the graph.
+    if (need_relayout)
+        graph.freeLayout();
+
+    // Process concept table changes
+    var last_insert_id: ?u128 = null;
+    for (changes.changes) |*change| {
+        switch (change.op) {
+            .delete => {
+                try graph.deleteNodeAndItsEdges(change.id.int);
+            },
+            .insert => {
+                // New relationships/edges are added later, as their
+                // nodes need to be present first.
+                try graph.addNode(change.id.int, change.name.?);
+                last_insert_id = change.id.int;
+            },
+            .update => {
+                // For now these are just the names.
+                try graph.relabelNode(change.id.int, change.name.?);
+            },
         }
+    }
+
+    // Add edges of new inserts
+    // TODO Replace this with querying changes from concept_rel table
+    if (changes.inserts > 0) {
+        const insert_ids = try arena.alloc(Uuid, changes.inserts);
+        var i: usize = 0;
+        for (changes.changes) |*change| {
+            if (change.op == .insert) {
+                insert_ids[i] = change.id;
+                i += 1;
+            }
+        }
+        const ancestors = try ilm.concept.getAncestors(self.core, arena, .{
+            .ids = insert_ids,
+            .direct_only = true,
+        });
+        for (ancestors) |*ancestor| {
+            try graph.addEdge(ancestor.id.int, ancestor.child_id.int);
+        }
+    }
+
+    // Update state
+    self.setLastProcessedDbVersion(changes.changes[changes.changes.len - 1].db_version);
+    self.unprocessed_db_changes.store(false, .seq_cst);
+    try self.getAllConcepts();
+    if (need_relayout)
+        try renderer.layout();
+    try self.graph_view.renderGraph();
+
+    // View last insert
+    if (last_insert_id) |id|
+        self.viewConceptById(id);
+}
+
+// fn processWrite(self: *Self, write: *const DbWriter.WriteResult) !void {
+//     switch (write.cmd) {
+//         .add_concept_parent => |payload| {
+//             try graph.addEdge(payload.parent_id.int, payload.child_id.int);
+//         },
+//         else => {},
+//     }
+// }
+
+pub fn render(self: *Self) void {
+    // Process db changes
+    if (self.unprocessed_db_changes.load(.seq_cst)) {
+        self.processDbChanges() catch |err| {
+            log.warn("{t}: Failed to update process db changes, remaking graph", .{err});
+        };
     }
 
     const screen_size: gui.ScreenSize = .get();
@@ -189,7 +287,7 @@ fn renderConceptList(self: *Self) void {
         search_entry.deinit();
         defer if (search_changed) {
             log.info("Search changed to: {s}", .{self.concepts.search.query.items});
-            self.getMatchingConcepts();
+            self.getMatchingConcepts() catch  {};
         };
 
         if (self.concepts.isSearching())
@@ -328,16 +426,18 @@ fn renderGraph(self: *Self) void {
     }
 }
 
-fn getAllConcepts(self: *Self) void {
+fn getAllConcepts(self: *Self) !void {
     self.concepts.fetchAll() catch |err| {
         gui.toastErr(@src(), err, "Failed to get all concepts", .{});
+        return err;
     };
-    self.getMatchingConcepts();
+    try self.getMatchingConcepts();
 }
 
-fn getMatchingConcepts(self: *Self) void {
+fn getMatchingConcepts(self: *Self) !void {
     self.concepts.fetchMatching() catch |err| {
         gui.toastErr(@src(), err, "Failed to get queried concepts", .{});
+        return err;
     };
 }
 
@@ -379,6 +479,12 @@ fn deleteSelection(self: *Self) !void {
 
 pub fn viewingId(self: *Self) ?u128 {
     return if (self.viewing) |v| v.concept.id.int else null;
+}
+
+/// Useful to not have to deal with null checking.
+/// Since ids are uuids, they will never be 0.
+pub fn viewingIdOrZero(self: *const Self) u128 {
+    return if (self.viewing) |v| v.concept.id.int else 0;
 }
 
 fn viewConceptById(self: *Self, id: u128) void {

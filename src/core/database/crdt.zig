@@ -56,9 +56,12 @@ pub const Change = struct {
     /// the values are quote concatenated in pk order.
     /// BLOB NOT NULL
     pk: []const u8,
+    /// Column name(s).
+    /// If deletion, set to the string "-1".
     /// TEXT NOT NULL
     cid: []const u8,
     /// The values to patch. quote concatenated in cid order.
+    /// If deletion, empty.
     /// ANY
     val: []const u8,
     /// The version of the changed column.
@@ -115,6 +118,25 @@ pub fn getChanges(
     return try rows.toOwnedSlice(arena);
 }
 
+/// For debugging.
+pub fn getAllChanges(db: *Db, arena: Allocator) ![]Change {
+    var diags: Diagnostics = .{};
+
+    var stmt = db.prepareWithDiags(
+        \\SELECT "table", "pk", "cid", "val", "col_version", "db_version", "site_id", "cl", "seq", "ts"
+        \\FROM crsql_changes
+        \\ORDER BY db_version DESC
+    ,
+        .{ .diags = &diags },
+    ) catch |err| {
+        log.err("Failed prepare changeset stmt: ({t}) {f}", .{ err, diags });
+        return err;
+    };
+    defer stmt.deinit();
+
+    return try database.helpers.queryAll(Change, arena, &stmt, .{});
+}
+
 pub fn mergeChanges(core: *Core, changes: []Change) !void {
     const res = try core.db_writer.runCommand(
         .{ .apply_changes = .{ .changes = changes } },
@@ -149,4 +171,9 @@ pub fn mergeChangesImpl(db: *Db, changes: []Change) !void {
             return err;
         };
     }
+}
+
+/// Returns db version of this node.
+pub fn getDbVersion(db: *Db) !u64 {
+    return (try db.one(u64, "SELECT crsql_db_version()", .{}, .{})).?;
 }

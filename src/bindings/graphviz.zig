@@ -251,7 +251,7 @@ pub const Graph = struct {
             graph.setDimensions(options.width.?, options.height.?);
         }
 
-        graph.applyAttribute(.{ .maxiter = 3 });
+        // graph.applyAttribute(.{ .maxiter = 3 });
         graph.applyAttribute(.{ .rankdir = .TB });
         graph.applyAttribute(.{ .pad = 100.0 });
         graph.applyAttribute(.{ .margin = 100.0 });
@@ -363,12 +363,38 @@ pub const Graph = struct {
         const label_z = try arena.dupeZ(u8, label);
         defer arena.free(label_z);
 
-        const node = c.agnode(graph.g, @constCast(name), 1) orelse return error.NodeFailed;
-        _ = c.agsafeset(node, @constCast("label"), @ptrCast(@constCast(label_z)), @constCast(""));
+        const cnode = c.agnode(graph.g, @constCast(name), 1) orelse return error.NodeFailed;
+        const node: Node = .{ .cnode = cnode };
+        node.setAttribute("label", label_z, "");
         // Specifies space left around the node's label. By default, the value is 0.11,0.055.
-        _ = c.agsafeset(node, @constCast("margin"), @constCast("0.0"), @constCast(""));
-        _ = c.agsafeset(node, @constCast("width"), @constCast("0.1"), @constCast(""));
-        _ = c.agsafeset(node, @constCast("height"), @constCast("0.1"), @constCast(""));
+        node.setAttribute("margin", "0.0", "");
+        node.setAttribute("width", "0.1", "");
+        node.setAttribute("height", "0.1", "");
+    }
+
+    pub fn relabelNode(graph: *Graph, id: u128, label: []const u8) !void {
+        if (graph.getNodeById(id)) |node| {
+            var arena = graph.arena.allocator();
+            const label_z = try arena.dupeZ(u8, label);
+            defer arena.free(label_z);
+
+            node.setAttribute("label", label_z, "");
+        }
+    }
+
+    pub fn deleteNodeAndItsEdges(graph: *Graph, id: u128) !void {
+        log.info("Deleting node {d}...", .{id});
+        if (graph.getNodeById(id)) |node| {
+            log.info("Found node", .{});
+            var edge_iter = node.edgeIterator(graph);
+            while (edge_iter.next()) |edge| {
+                // TODO Handle err
+                _ = c.agdeledge(graph.g, edge.cedge);
+            }
+
+            // TODO Handle err
+            _ = c.agdelnode(graph.g, node.cnode);
+        }
     }
 
     /// Get a cgraph node given the uuid
@@ -380,10 +406,16 @@ pub const Graph = struct {
         }
         return null;
     }
-
+    
+    pub fn getNodeByIdErr(graph: *const Graph, id: u128) error{NodeNotFound}!Node {
+        if (graph.getNodeById(id)) |n| return n;
+        log.err("Requested node not found with id {d}", .{id});
+        return error.NodeNotFound;
+    }
+    
     pub fn addEdge(graph: *const Graph, from: u128, to: u128) !void {
-        const from_node = graph.getNodeById(from) orelse return error.NodeNotFound;
-        const to_node = graph.getNodeById(to) orelse return error.NodeNotFound;
+        const from_node = try graph.getNodeByIdErr(from);
+        const to_node = try graph.getNodeByIdErr(to);
         _ = c.agedge(graph.g, from_node.cnode, to_node.cnode, null, 1) orelse return error.EdgeFailed;
     }
 
@@ -392,13 +424,18 @@ pub const Graph = struct {
         return @intCast(c.agnnodes(graph.g));
     }
 
-    /// Run the layout algorithm.
-    pub fn layout(graph: *Graph) !void {
+    /// Must be called before manipulating the graph.
+    pub fn freeLayout(graph: *Graph) void {
         if (graph.has_layout) {
             _ = c.gvFreeLayout(graph.gvc, graph.g);
             graph.has_layout = false;
         }
+    }
 
+    /// Run the layout algorithm.
+    pub fn layout(graph: *Graph) !void {
+        graph.freeLayout();
+        
         const layout_name = @tagName(graph.layout_engine);
         if (c.gvLayout(graph.gvc, graph.g, @ptrCast(@constCast(layout_name))) != 0) {
             return error.LayoutFailed;

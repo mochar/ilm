@@ -319,10 +319,16 @@ pub fn mouseUp(self: *Self, screen_x: f32, screen_y: f32) ?Action {
 
                 action = .selection;
             },
+            .assign_parent => |*assign| {
+                const child_id = assign.child.getId() catch unreachable;
+                const parent_id = if (assign.parent) |parent|
+                    parent.getId() catch unreachable
+                else return null;
+                action = .{ .assign_parent = .{ .child = child_id, .parent = parent_id } };
+            },
             else => {},
         }
     } else {
-
         // Determine action
         if (self.state.mouse.down.? == .right) {
             if (self.state.modifier != null and self.state.modifier.? == .alt) {
@@ -341,14 +347,10 @@ pub fn mouseUp(self: *Self, screen_x: f32, screen_y: f32) ?Action {
                 // Context menu
                 action = .{ .context = node.getId() catch unreachable };
 
-                log.info("Id: {d}",  .{node.getId() catch unreachable });
+                log.info("Id: {d}", .{node.getId() catch unreachable});
                 log.info("Pos: {?s}", .{node.getAttribute("pos")});
                 log.info("Pin: {?s}", .{node.getAttribute("pin")});
             }
-        } else if (self.assigningToParent()) |*assign| {
-            const child_id = assign.child.getId() catch unreachable;
-            const parent_id = assign.parent.getId() catch unreachable;
-            action = .{ .assign_parent = .{ .child = child_id, .parent = parent_id } };
         } else if (self.hovered) |*node| {
             const id = node.getId() catch unreachable;
             action = .{ .select = id };
