@@ -134,7 +134,9 @@ fn publish(self: *Self, event: WriteResult) void {
 ///
 /// Optionally, an arena allocator can be passed that will be deinited
 /// after the command has been processed. This can be used to allocate
-/// the fields of the command.
+/// the fields of the command. If omitted, care must be taken to ensure
+/// the lifetime of the command fields are valid until after the
+/// subscribers have been notified.
 pub fn addCommand(
     self: *Self,
     cmd: tables.TableCommand,
@@ -143,7 +145,6 @@ pub fn addCommand(
     },
 ) std.Io.QueueClosedError!WriteRequestId {
     const req: WriteRequest = .{
-        // TODO I dont know what the second argument does
         .id = self.id_counter.fetchAdd(1, .seq_cst),
         .cmd = cmd,
         .arena = opts.arena,

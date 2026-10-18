@@ -74,7 +74,7 @@ pub fn create(gpa: Allocator, core: *Core) !*Self {
     try core.db_writer.subscribe(.{ .cb = dbWriteCallback, .ctx = @ptrCast(self) });
 
     self.getAllConcepts();
-    self.updateGraphContent(.clear_all);
+    self.remakeGraph(.clear_all);
     return self;
 }
 
@@ -87,7 +87,7 @@ pub fn destroy(self: *Self) void {
 
     if (self.viewing) |*v| v.deinit();
     self.concepts.deinit();
-    
+
     self.core.db_writer.unsubscribe(.{ .cb = dbWriteCallback, .ctx = @ptrCast(self) });
 
     self.gpa.destroy(self);
@@ -309,7 +309,7 @@ fn renderGraph(self: *Self) void {
             },
             .assign_parent => |assign| {
                 if (ilm.concept.addParent(self.core, .{ .int = assign.child }, .{ .int = assign.parent })) {
-                    self.updateGraphContent(.clear_all);
+                    self.remakeGraph(.clear_all);
                 } else |err| {
                     gui.toastErr(@src(), err, "Failed to assign", .{});
                 }
@@ -344,12 +344,12 @@ fn getMatchingConcepts(self: *Self) void {
 fn syncSelectionToGraph(self: *Self) !void {
     self.graph_view.renderer.selection.clearRetainingCapacity();
     try self.graph_view.renderer.selection.ensureTotalCapacity(@intCast(self.concepts.selectionSize()));
-    
+
     var sel_iter = self.concepts.selectionIter();
     while (sel_iter.next()) |concept| {
         self.graph_view.renderer.selection.putAssumeCapacity(concept.id.int, {});
     }
-    
+
     try self.graph_view.renderGraph();
 }
 
@@ -431,7 +431,7 @@ fn unviewConcept(self: *Self) void {
     }
 }
 
-fn updateGraphContent(self: *Self, how: enum { clear_all, clear_graph }) void {
+fn remakeGraph(self: *Self, how: enum { clear_all, clear_graph }) void {
     var renderer = &self.graph_view.renderer;
     const graph = self.graph_view.graph();
 
@@ -516,11 +516,10 @@ const ConceptManager = struct {
     pub fn isSelected(self: *ConceptManager, concept: *const Concept) bool {
         return self.getVisible().isSelected(concept);
     }
-    
+
     pub fn selectionIter(self: *ConceptManager) Concepts.SelectionIterator {
         return self.getVisible().selectionIter();
     }
-
 
     /// Returns the new toggle state
     pub fn toggleSelected(self: *ConceptManager, concept_id: u128) bool {
@@ -664,16 +663,16 @@ const Concepts = struct {
         concepts: *Concepts,
         i_conc: usize = 0,
         i_sel: usize = 0,
-        
+
         pub fn next(self: *@This()) ?*Concept {
             if (self.i_conc == self.concepts.items.len) return null;
-            
+
             const n_selected = self.concepts.selectionSize();
             if (self.i_sel == n_selected) return null;
 
             for (self.concepts.items[self.i_conc..]) |*concept| {
                 defer self.i_conc += 1;
-                
+
                 if (self.concepts.isSelected(concept)) {
                     self.i_sel += 1;
                     return concept;

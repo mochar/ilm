@@ -341,6 +341,7 @@ pub fn mouseUp(self: *Self, screen_x: f32, screen_y: f32) ?Action {
                 // Context menu
                 action = .{ .context = node.getId() catch unreachable };
 
+                log.info("Id: {d}",  .{node.getId() catch unreachable });
                 log.info("Pos: {?s}", .{node.getAttribute("pos")});
                 log.info("Pin: {?s}", .{node.getAttribute("pin")});
             }

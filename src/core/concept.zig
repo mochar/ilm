@@ -11,7 +11,6 @@ const Write = database.tables.Write;
 const Graph = @import("graphviz").Graph;
 
 pub const Concept = struct {
-    rowid: i64,
     id: Uuid,
     name: []const u8,
 };
@@ -157,7 +156,7 @@ pub fn deleteManyImpl(db: *Db, ids: []const Uuid) !void {
     for (ids) |*id| {
         del_rel_stmt.reset();
         del_conc_stmt.reset();
-        
+
         del_rel_stmt.exec(
             .{ .diags = &diags },
             .{ id.asBlob(), id.asBlob() },
@@ -187,7 +186,7 @@ pub fn addParent(core: *Core, child_id: Uuid, parent_id: Uuid) !void {
 }
 
 pub fn addParentImpl(db: *Db, child_id: Uuid, parent_id: Uuid) !void {
-    var diags: sqlite.Diagnostics = .{};
+    var diags: Diagnostics = .{};
     var stmt = try db.prepareWithDiags(
         "INSERT OR IGNORE INTO concept_rel(parent_id, child_id) VALUES (?, ?)",
         .{ .diags = &diags },
@@ -203,7 +202,7 @@ pub fn addParentImpl(db: *Db, child_id: Uuid, parent_id: Uuid) !void {
 }
 
 pub fn removeParent(core: *Core, child_id: Uuid, parent_id: Uuid) !void {
-    var diags: sqlite.Diagnostics = .{};
+    var diags: Diagnostics = .{};
     var stmt = try core.db.prepareWithDiags(
         "DELETE FROM concept_rel WHERE parent_id = ? AND child_id = ?",
         .{ .diags = &diags },
@@ -219,7 +218,7 @@ pub fn removeParent(core: *Core, child_id: Uuid, parent_id: Uuid) !void {
 }
 
 fn queryConcepts(alloc: Allocator, stmt: anytype, values: anytype) ![]Concept {
-    var diags: sqlite.Diagnostics = .{};
+    var diags: Diagnostics = .{};
     var iter = try stmt.iteratorAlloc(Concept, alloc, values);
     var rows: std.ArrayList(Concept) = .empty;
     defer rows.deinit(alloc);
@@ -230,10 +229,10 @@ fn queryConcepts(alloc: Allocator, stmt: anytype, values: anytype) ![]Concept {
 }
 
 pub fn getAll(core: *Core, alloc: Allocator) ![]Concept {
-    var diags: sqlite.Diagnostics = .{};
+    var diags: Diagnostics = .{};
     var stmt = try core.db.prepareWithDiags(
         // "SELECT id, name FROM concept ORDER BY name",
-        "SELECT rowid, id, name FROM concept",
+        "SELECT id, name FROM concept",
         .{ .diags = &diags },
     );
     defer stmt.deinit();
@@ -241,9 +240,9 @@ pub fn getAll(core: *Core, alloc: Allocator) ![]Concept {
 }
 
 pub fn getById(core: *Core, alloc: Allocator, id: Uuid) !?Concept {
-    var diags: sqlite.Diagnostics = .{};
+    var diags: Diagnostics = .{};
     var stmt = try core.db.prepareWithDiags(
-        "SELECT rowid, id, name FROM concept WHERE id = ?",
+        "SELECT id, name FROM concept WHERE id = ?",
         .{ .diags = &diags },
     );
     defer stmt.deinit();
@@ -259,7 +258,7 @@ pub fn getByIds(core: *Core, alloc: Allocator, ids: []const Uuid) ![]Concept {
 
     var query_builder: std.ArrayList(u8) = .empty;
     defer query_builder.deinit(arena);
-    try query_builder.appendSlice(arena, "SELECT rowid, id, name FROM concept WHERE id IN (");
+    try query_builder.appendSlice(arena, "SELECT id, name FROM concept WHERE id IN (");
     for (0..ids.len) |i| {
         if (i > 0) try query_builder.appendSlice(arena, ", ");
         try query_builder.appendSlice(arena, "?");
@@ -267,7 +266,7 @@ pub fn getByIds(core: *Core, alloc: Allocator, ids: []const Uuid) ![]Concept {
     try query_builder.appendSlice(arena, ")");
     const query: []const u8 = query_builder.items;
 
-    var diags: sqlite.Diagnostics = .{};
+    var diags: Diagnostics = .{};
     var stmt = try core.db.prepareDynamicWithDiags(query, .{ .diags = &diags });
     defer stmt.deinit();
 
@@ -276,21 +275,14 @@ pub fn getByIds(core: *Core, alloc: Allocator, ids: []const Uuid) ![]Concept {
 
 pub fn getByNameMatch(core: *Core, alloc: Allocator, substr: []const u8) ![]Concept {
     const query =
-        \\SELECT rowid, id, name
+        \\SELECT id, name
         \\FROM concept
         \\WHERE instr(name, ?) > 0
     ;
-    var diags: sqlite.Diagnostics = .{};
+    var diags: Diagnostics = .{};
     var stmt = try core.db.prepareWithDiags(query, .{ .diags = &diags });
     defer stmt.deinit();
     return try queryConcepts(alloc, &stmt, .{substr});
-}
-
-pub fn getIdByRowId(core: *Core, rowid: i64) !?Uuid {
-    if (try core.db.one(Uuid.ByteT, "SELECT id FROM concept WHERE rowid = ?", .{}, .{rowid})) |id_bytes| {
-        return .{ .uuid = @bitCast(id_bytes) };
-    }
-    return null;
 }
 
 /// Retrieve the hierarchy of ancestors for a set of concepts.
@@ -357,7 +349,7 @@ pub fn getAncestors(
     }
     const query: []const u8 = query_builder.items;
 
-    var diags: sqlite.Diagnostics = .{};
+    var diags: Diagnostics = .{};
     var stmt = core.db.prepareDynamicWithDiags(query, .{ .diags = &diags }) catch |err| {
         log.err("SQLite prepare failed: {s}", .{diags.message});
         return err;
@@ -379,7 +371,7 @@ pub fn getAncestors(
 pub fn getRoots(core: *Core, allocator: std.mem.Allocator) ![]Concept {
     // A concept has no ancestors if it never appears as a child_id in concept_rel
     const query =
-        \\SELECT c.rowid, c.id, c.name
+        \\SELECT c.id, c.name
         \\FROM concept c
         \\WHERE NOT EXISTS (
         \\    SELECT 1 FROM concept_rel cr WHERE cr.child_id = c.id
@@ -387,7 +379,7 @@ pub fn getRoots(core: *Core, allocator: std.mem.Allocator) ![]Concept {
         \\ORDER BY c.name
     ;
 
-    var diags: sqlite.Diagnostics = .{};
+    var diags: Diagnostics = .{};
     var stmt = core.db.prepareDynamicWithDiags(query, .{ .diags = &diags }) catch |err| {
         log.err("SQLite prepare failed: {s}", .{diags.message});
         return err;
@@ -437,7 +429,7 @@ pub fn getRelations(core: *Core, alloc: Allocator, ids: ?[]const Uuid) ![]Relati
     }
     const query = query_builder.items;
 
-    var diags: sqlite.Diagnostics = .{};
+    var diags: Diagnostics = .{};
     var stmt = core.db.prepareDynamicWithDiags(query, .{ .diags = &diags }) catch |err| {
         log.err("SQLite prepare failed: {s}", .{diags.message});
         return err;
@@ -524,7 +516,7 @@ fn createTestCore(t: *std.testing.TmpDir) !Core {
     const len = try t.dir.realPath(std.testing.io, &path_buf);
     const real_path = path_buf[0..len];
 
-    var diags: sqlite.Diagnostics = .{};
+    var diags: Diagnostics = .{};
     const core = Core.create(std.testing.allocator, std.testing.io, real_path, .{
         .sqlite_diagnostics = &diags,
     }) catch |err| {
@@ -547,7 +539,7 @@ test "concept: basic creation and retrieval" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    var diags: sqlite.Diagnostics = .{};
+    var diags: Diagnostics = .{};
     const c1_id = try add(&core, "Math", &.{}, .{ .diags = &diags });
     const c2_id = try add(&core, "Physics", &.{}, .{ .diags = &diags });
 
@@ -565,7 +557,7 @@ test "concept: prevent self loop" {
     var core = try createTestCore(&tmp);
     defer core.destroy();
 
-    var diags: sqlite.Diagnostics = .{};
+    var diags: Diagnostics = .{};
     const c1_id = try add(&core, "Math", &.{}, .{ .diags = &diags });
 
     // Adding self as parent should fail due to CHECK (parent_id != child_id)
@@ -580,7 +572,7 @@ test "concept: prevent 2-node cycle" {
     var core = try createTestCore(&tmp);
     defer core.destroy();
 
-    var diags: sqlite.Diagnostics = .{};
+    var diags: Diagnostics = .{};
     const a = try add(&core, "A", &.{}, .{ .diags = &diags });
     const b = try add(&core, "B", &.{a}, .{ .diags = &diags }); // A -> B (A is parent of B)
 
@@ -596,7 +588,7 @@ test "concept: prevent multi-node cycle (A -> B -> C, then C -> A)" {
     var core = try createTestCore(&tmp);
     defer core.destroy();
 
-    var diags: sqlite.Diagnostics = .{};
+    var diags: Diagnostics = .{};
     const a = try add(&core, "A", &.{}, .{ .diags = &diags });
     const b = try add(&core, "B", &.{a}, .{ .diags = &diags }); // A -> B
     const c = try add(&core, "C", &.{b}, .{ .diags = &diags }); // B -> C
@@ -613,7 +605,7 @@ test "concept: prevent redundant edge insertion (A -> B -> C, then A -> C)" {
     var core = try createTestCore(&tmp);
     defer core.destroy();
 
-    var diags: sqlite.Diagnostics = .{};
+    var diags: Diagnostics = .{};
     const a = try add(&core, "A", &.{}, .{ .diags = &diags });
     const b = try add(&core, "B", &.{a}, .{ .diags = &diags }); // A -> B
     const c = try add(&core, "C", &.{b}, .{ .diags = &diags }); // B -> C
@@ -630,7 +622,7 @@ test "concept: transitive reduction prunes shortcut edge after insertion" {
     var core = try createTestCore(&tmp);
     defer core.destroy();
 
-    var diags: sqlite.Diagnostics = .{};
+    var diags: Diagnostics = .{};
     // 1. Create A -> C and A -> B
     const a = try add(&core, "A", &.{}, .{ .diags = &diags });
     const c = try add(&core, "C", &.{a}, .{ .diags = &diags }); // A -> C
@@ -681,7 +673,7 @@ test "concept: getAncestors hierarchy and direct parents" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    var diags: sqlite.Diagnostics = .{};
+    var diags: Diagnostics = .{};
     // Hierarchy: A -> B -> C -> D
     // and        E -> C
     const a = try add(&core, "A", &.{}, .{ .diags = &diags });
