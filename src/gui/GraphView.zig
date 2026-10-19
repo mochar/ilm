@@ -39,9 +39,14 @@ pub const Options = struct {
 };
 
 pub fn init(opts: Options) !Self {
+    var graph_theme: GraphRenderer.Theme = .{};
+    if (dvui.themeGet().window.fill) |bg| {
+        graph_theme.background = .rgba(bg.r, bg.g, bg.b, bg.a);
+    }
     var renderer = try GraphRenderer.init(.{
         .gpa = opts.gpa,
         .io = opts.io,
+        .theme = graph_theme,
         .graph_options = .{
             .layout_engine = opts.layout_engine,
             .attributes = opts.attributes,
@@ -101,14 +106,14 @@ pub fn render(self: *Self, box_opts: dvui.Options) !?Action {
     _ = dvui.animationGet(self.animation_id, "_");
 
     // Floating buttons
-    {
-        // if (dvui.button(@src(), "Layout", .{}, .{ .rect = .all(0.0) })) {
-        if (dvui.button(@src(), "Layout", .{}, .{})) {
-            log.info("Running layout", .{});
-            self.renderer.layout() catch {};
-            self.renderGraph() catch {};
-        }
-    }
+    // {
+    //     // if (dvui.button(@src(), "Layout", .{}, .{ .rect = .all(0.0) })) {
+    //     if (dvui.button(@src(), "Layout", .{}, .{})) {
+    //         log.info("Running layout", .{});
+    //         self.renderer.layout() catch {};
+    //         self.renderGraph() catch {};
+    //     }
+    // }
 
     var texture_box = dvui.box(@src(), .{}, .{
         .expand = .both,

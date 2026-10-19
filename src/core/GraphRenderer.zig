@@ -22,6 +22,7 @@ gpa: std.mem.Allocator,
 /// For getting time to limit render fps
 io: std.Io,
 graph: Graph,
+theme: Theme,
 padding: f32,
 hovered: ?Node = null,
 // highlighted: std.AutoHashMap(u128, graphviz.Node),
@@ -45,6 +46,21 @@ managed: bool,
 
 const TARGET_FPS = 60;
 const FRAMES_NS = 1_000_000_000 / TARGET_FPS;
+
+pub const Theme = struct {
+    pub const Color = struct {
+        r: u8 = 0xff,
+        g: u8 = 0xff,
+        b: u8 = 0xff,
+        a: u8 = 0xff,
+
+        pub fn rgba(r: u8, g: u8, b: u8, a: u8) Color {
+            return .{ .r = r, .g = g, .b = b, .a = a };
+        }
+    };
+
+    background: Color = .{ .r = 31, .g = 31, .b = 38 },
+};
 
 const Camera = struct {
     /// Center of the camera in world coordinates
@@ -123,6 +139,7 @@ pub const Options = struct {
     /// ARGB32 pixel buffer. If null, buffer allocation is managed internally.
     buffer: ?[]u8 = null,
     camera: Camera = .{},
+    theme: Theme = .{},
 };
 
 pub fn init(options: Options) !Self {
@@ -164,6 +181,7 @@ pub fn init(options: Options) !Self {
         .gpa = gpa,
         .io = options.io,
         .graph = graph,
+        .theme = options.theme,
         .padding = options.padding,
         .highlighted = .init(gpa),
         .selection = .init(gpa),
@@ -323,7 +341,8 @@ pub fn mouseUp(self: *Self, screen_x: f32, screen_y: f32) ?Action {
                 const child_id = assign.child.getId() catch unreachable;
                 const parent_id = if (assign.parent) |parent|
                     parent.getId() catch unreachable
-                else return null;
+                else
+                    return null;
                 action = .{ .assign_parent = .{ .child = child_id, .parent = parent_id } };
             },
             else => {},
@@ -593,7 +612,13 @@ pub fn render(self: *Self) !void {
     defer canvas.restore();
 
     // Clear background (dark theme background)
-    canvas.setRGBA(0.12, 0.12, 0.15, 1.0);
+    const bg = self.theme.background;
+    canvas.setRGBA(
+        @as(f32, @floatFromInt(bg.r)) / 255.0,
+        @as(f32, @floatFromInt(bg.g)) / 255.0,
+        @as(f32, @floatFromInt(bg.b)) / 255.0,
+        @as(f32, @floatFromInt(bg.a)) / 255.0,
+    );
     canvas.fillRect(0, 0, @floatFromInt(render_w), @floatFromInt(render_h));
 
     // Apply camera transformation:

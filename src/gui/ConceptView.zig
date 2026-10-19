@@ -274,10 +274,11 @@ pub fn render(self: *Self) ?Action {
             gui.toastErr(@src(), err, "Failed to delete node", .{});
         }
     }
-
+    
     if (self.graph_view.render(.{
         .expand = .ratio,
         .margin = .all(10.0),
+        .border = .all(1.0),
     }) catch |err| {
         gui.toastErr(@src(), err, "Failed to render graph", .{});
         return action;

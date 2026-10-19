@@ -76,24 +76,22 @@ pub fn render(self: *Self) void {
 }
 
 fn renderTabs(self: *Self, size: gui.ScreenSize) void {
-    var tabs = dvui.tabs(@src(), .{}, .{ .expand = .horizontal });
-    defer tabs.deinit();
+    _ = size;
+    var box = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal, .background = true });
+    defer box.deinit();
 
-    const tab_names = [_][]const u8{ "Concepts", "Peers", "Debug" };
+    const tab_names = [_][]const u8{ "concepts", "peers", "debug" };
     for (tab_names, 0..) |tab_name, tab_index| {
         const is_selected = self.tab == tab_index;
-        var tab_opts: dvui.Options = .{};
-        if (size.width == .compact) {
-            tab_opts.padding = .rect(12, 18, 12, 18);
-            tab_opts.border = .all(0.0);
-            tab_opts.expand = .horizontal;
-            if (is_selected) {
-                tab_opts.color_fill = .{ .color = dvui.themeGet().highlight.fill orelse .blue };
-            }
-        } else {
-            tab_opts.border = if (is_selected) null else .{ .h = 1.0 };
-        }
-        if (tabs.addTabLabel(true, tab_name, tab_opts)) {
+        const tab_opts: dvui.Options = .{
+            .id_extra = tab_index,
+            .background = false,
+            .border = .all(0.0),
+            .font = dvui.Font.theme(.mono).larger(4.5),
+            // .font = dvui.Font.theme(.title).larger(2.0),
+            .color_text = if (is_selected) null else .{ .color = .gray },
+        };
+        if (dvui.button(@src(), tab_name, .{ .draw_focus = false }, tab_opts)) {
             self.tab = tab_index;
         }
     }

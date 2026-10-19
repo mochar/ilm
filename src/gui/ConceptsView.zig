@@ -281,13 +281,18 @@ fn renderConceptList(self: *Self) void {
                     },
                 },
             },
-            .{ .expand = .horizontal },
+            .{
+                .expand = .horizontal,
+                .font = dvui.Font.theme(.body).larger(2.0),
+                .border = .all(0.0),
+                .padding = .rect(4.0, 8.0, 4.0, 8.0),
+            },
         );
         const search_changed = search_entry.text_changed;
         search_entry.deinit();
         defer if (search_changed) {
             log.info("Search changed to: {s}", .{self.concepts.search.query.items});
-            self.getMatchingConcepts() catch  {};
+            self.getMatchingConcepts() catch {};
         };
 
         if (self.concepts.isSearching())

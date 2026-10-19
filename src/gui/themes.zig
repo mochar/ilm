@@ -82,3 +82,83 @@ pub const Papyrus = struct {
         };
     };
 };
+
+
+pub const Obsidian = struct {
+    pub const cursor: Color = .fromHex("#eeddbb");
+    pub const bg_main: Color = .fromHex("#181818");
+    pub const fg_main: Color = .fromHex("#e7e7e7");
+    pub const border: Color = .fromHex("#727272");
+    pub const bg_shadow_subtle: Color = .fromHex("#2f2f2f");
+    pub const fg_shadow_subtle: Color = .fromHex("#969696");
+    pub const bg_neutral: Color = .fromHex("#3a3a3a");
+    pub const fg_neutral: Color = .fromHex("#bcbcbc");
+    pub const bg_shadow_intense: Color = .fromHex("#505050");
+    pub const fg_shadow_intense: Color = .fromHex("#b0b0b0");
+    pub const bg_accent: Color = .fromHex("#432f2a");
+    pub const fg_accent: Color = .fromHex("#b59487");
+    pub const fg_red: Color = .fromHex("#eca28f");
+    pub const fg_green: Color = .fromHex("#b9d0aa");
+    pub const fg_yellow: Color = .fromHex("#c0b080");
+    pub const fg_blue: Color = .fromHex("#9fbfe7");
+    pub const fg_magenta: Color = .fromHex("#e9acbf");
+    pub const fg_cyan: Color = .fromHex("#a0c0d0");
+    pub const bg_red: Color = .fromHex("#4d1f20");
+    pub const bg_green: Color = .fromHex("#1f402e");
+    pub const bg_yellow: Color = .fromHex("#504432");
+    pub const bg_blue: Color = .fromHex("#223567");
+    pub const bg_magenta: Color = .fromHex("#603254");
+    pub const bg_cyan: Color = .fromHex("#2f4f54");
+
+    const adwaita_dark = Theme.builtin.adwaita_dark;
+
+    pub const dark = dark: {
+        @setEvalBranchQuota(3123);
+        break :dark Theme{
+            .name = "Obsidian",
+            .dark = true,
+
+            // .embedded_fonts = fonts,
+
+            .font_body = .find(.{ .family = "Vera Sans" }),
+            .font_heading = .find(.{ .family = "Vera Sans", .weight = .bold }),
+            .font_title = .find(.{ .family = "Vera Sans", .size = dvui.Font.DefaultSize + 2 }),
+            .font_mono = .find(.{ .family = "Vera Sans Mono" }),
+
+            .focus = bg_neutral,
+
+            .fill = bg_main,
+            .fill_hover = (Color.HSLuv{ .s = 0, .l = 82 }).color(),
+            .fill_press = (Color.HSLuv{ .s = 0, .l = 72 }).color(),
+            .text = fg_main,
+            .text_select = .{ .r = 0x91, .g = 0xbc, .b = 0xf0 },
+            .border = (Color.HSLuv{ .s = 0, .l = 63 }).color(),
+
+            .control = .{
+                .fill = bg_shadow_subtle,
+                .fill_hover = bg_neutral,
+                .fill_press = (Color.HSLuv{ .s = 0, .l = 72 }).color(),
+            },
+
+            .window = .{
+                .fill = bg_main,
+            },
+
+            .highlight = .{
+                .fill = bg_neutral,
+                .fill_hover = adwaita_dark.highlight.fill_hover,
+                .fill_press = adwaita_dark.highlight.fill_press,
+                .text = Color.white,
+                .border = adwaita_dark.highlight.border,
+            },
+
+            .err = .{
+                .fill = adwaita_dark.err.fill,
+                .fill_hover = adwaita_dark.err.fill_hover,
+                .fill_press = adwaita_dark.err.fill_press,
+                .text = Color.white,
+                .border = adwaita_dark.err.border,
+            },
+        };
+    };
+};

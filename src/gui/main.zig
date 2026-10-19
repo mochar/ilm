@@ -75,6 +75,8 @@ pub fn appInit(win: *dvui.Window) !void {
     // TODO Find out how to find out if dark or light mode
     if (std.mem.eql(u8, win.theme.name, "Adwaita Light")) {
         win.themeSet(themes.Papyrus.light);
+    } else {
+        win.themeSet(themes.Obsidian.dark);
     }
 
     try dvui.addFont("dejavu sans", assets.fonts.dejavu_sans, null);
