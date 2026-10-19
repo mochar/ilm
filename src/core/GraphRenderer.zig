@@ -312,6 +312,7 @@ pub fn mouseMove(self: *Self, screen_x: f32, screen_y: f32) bool {
 pub fn mouseUp(self: *Self, screen_x: f32, screen_y: f32) ?Action {
     var action: ?Action = null;
     self.state.mouse.last_pos = .{ .x = screen_x, .y = screen_y };
+    const down_btn = self.state.mouse.down.?;
 
     defer {
         self.state.mouse.down = null;
@@ -323,7 +324,9 @@ pub fn mouseUp(self: *Self, screen_x: f32, screen_y: f32) ?Action {
 
         switch (drag.mode) {
             .selection => |*bb| {
-                self.selection.clearRetainingCapacity();
+                // Shift mod extends selection.
+                if (self.state.modifier != .shift)
+                    self.selection.clearRetainingCapacity();
 
                 var node_iter = self.graph.nodeIterator();
                 while (node_iter.next()) |node| {
@@ -349,30 +352,35 @@ pub fn mouseUp(self: *Self, screen_x: f32, screen_y: f32) ?Action {
         }
     } else {
         // Determine action
-        if (self.state.mouse.down.? == .right) {
-            if (self.state.modifier != null and self.state.modifier.? == .alt) {
-                // Toggle selection if clicked on node, otherwise clear selection
+        if (self.hovered) |*node| {
+            const id = node.getId() catch unreachable;
+
+            if (down_btn == .right and self.state.modifier == .shift) {
+                // Toggle selection of node
                 action = .selection;
                 self.state.dirty = true;
-                if (self.hovered) |*node| {
-                    const id = node.getId() catch unreachable;
-                    if (!self.selection.remove(id)) {
-                        self.selection.put(id, {}) catch {};
-                    }
-                } else {
-                    self.selection.clearAndFree();
-                }
-            } else if (self.hovered) |*node| {
+                if (!self.selection.remove(id))
+                    self.selection.put(id, {}) catch {};
+            } else if (down_btn == .right) {
                 // Context menu
-                action = .{ .context = node.getId() catch unreachable };
+                action = .{ .context = id };
 
-                log.info("Id: {d}", .{node.getId() catch unreachable});
+                log.info("Id: {d}", .{id});
                 log.info("Pos: {?s}", .{node.getAttribute("pos")});
                 log.info("Pin: {?s}", .{node.getAttribute("pin")});
+            } else {
+                // Select node
+                action = .{ .select = id };
             }
-        } else if (self.hovered) |*node| {
-            const id = node.getId() catch unreachable;
-            action = .{ .select = id };
+        } else {
+            if (down_btn == .right and self.state.modifier == null) {
+                // Right click on bg, clear selection.
+                // Only when no modifier, because that could have been
+                // a misclick during node selection.
+                action = .selection;
+                self.state.dirty = true;
+                self.selection.clearAndFree();
+            }
         }
 
         // Register mouse click
