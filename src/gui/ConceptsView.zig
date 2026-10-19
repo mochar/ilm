@@ -10,6 +10,7 @@ const Concept = ilm.concept.Concept;
 const Uuid = ilm.Uuid;
 const DbWriter = ilm.database.DbWriter;
 const TableCommand = ilm.database.tables.TableCommand;
+const crdt = ilm.database.crdt;
 
 const GraphView = @import("GraphView.zig");
 const ConceptView = @import("ConceptView.zig");
@@ -34,10 +35,12 @@ viewing: ?struct {
     }
 } = null,
 
-last_processed_db_version: std.atomic.Value(u64) = .init(0),
-// TODO This should be a mutex so we dont mark as (un)processed
-// while processing and stored changes at the same time
-unprocessed_db_changes: std.atomic.Value(bool) = .init(true),
+db_state: struct {
+    mutex: std.Io.Mutex = .init,
+    dirty: bool = false,
+    /// The last db versions we have processed.
+    last_db_versions: crdt.DbVersionsMap = .empty,
+} = .{},
 
 graph_view: GraphView,
 /// To allocate graph content, reset every time we fill the graph.
@@ -88,46 +91,74 @@ pub fn destroy(self: *Self) void {
     self.gpa.destroy(self);
 }
 
-fn setLastProcessedDbVersion(self: *Self, db_version: u64) void {
-    self.last_processed_db_version.store(db_version, .seq_cst);
-}
-
 fn resetToLatestDbState(self: *Self) !void {
+    log.info("Reset to latest db state", .{});
     try self.getAllConcepts();
-    const db_version = try ilm.database.crdt.getDbVersion(&self.core.db);
-    self.setLastProcessedDbVersion(db_version);
+
+    const db_versions = try crdt.getDbVersionsMap(&self.core.db, self.gpa);
+    {
+        self.db_state.mutex.lockUncancelable(self.core.io);
+        defer self.db_state.mutex.unlock(self.core.io);
+        self.db_state.last_db_versions.deinit(self.gpa);
+        self.db_state.last_db_versions = db_versions;
+        self.db_state.dirty = false;
+    }
+
     self.remakeGraph(.clear_all);
 }
 
 fn dbWriteCallback(self_opaque: *anyopaque, result: DbWriter.WriteResult) void {
     if (result.err != null) return;
     const self: *Self = @ptrCast(@alignCast(self_opaque));
+
+    self.db_state.mutex.lockUncancelable(self.core.io);
+    defer self.db_state.mutex.unlock(self.core.io);
+
     if (result.cmd.affectsTables(&.{ .concept, .concept_rel, .crsql_changes })) {
-        self.unprocessed_db_changes.store(true, .seq_cst);
+        self.db_state.dirty = true;
     } else {
-        self.setLastProcessedDbVersion(result.db_version);
+        self.db_state.last_db_versions.deinit(self.gpa);
+        self.db_state.last_db_versions = result.db_versions.clone(self.gpa) catch @panic("OOM");
     }
 }
 
+// TODO Exend this to also update the concept manager, currently it only updates the graph.
+//      However as we might want to remove storing all concepts in memory, it might be
+//      better to isolate this logic in a ConceptGraph struct.
 fn processDbChanges(self: *Self) !void {
-    var arena_alloc: std.heap.ArenaAllocator = .init(self.gpa);
-    defer arena_alloc.deinit();
-    const arena = arena_alloc.allocator();
-
-    const since_db_version = self.last_processed_db_version.load(.seq_cst);
-    const changes = try ilm.concept.getChangesSince(&self.core.db, since_db_version, arena);
-    if (changes.changes.len == 0) {
-        self.unprocessed_db_changes.store(false, .seq_cst);
-        return;
-    }
-    const need_relayout = changes.inserts > 0 or changes.deletes > 0;
 
     // Any error midway through processing the changes will make starting again
     // from the failure point difficult. For example multiple changes might have
     // happened within the same db version. If we fail inbetween these changes,
     // we cannot trivially try again before, at, or after that db version. Therefore
-    // on error we reset the graph completely.
-    errdefer self.remakeGraph(.clear_graph);
+    // on error we reset the state and graph completely to the latest db data.
+    errdefer {
+        log.err("Error processing db changes, resetting to latest db state, and remaking graph", .{});
+        self.resetToLatestDbState() catch {};
+    }
+
+    // Since any error will reset the graph, we always mark processed changes as done
+    // to avoid infinte loops.
+    defer self.db_state.dirty = false;
+    
+    self.db_state.mutex.lockUncancelable(self.core.io);
+    defer self.db_state.mutex.unlock(self.core.io);
+
+    var arena_alloc: std.heap.ArenaAllocator = .init(self.gpa);
+    defer arena_alloc.deinit();
+    const arena = arena_alloc.allocator();
+
+    var current_db_versions = try crdt.getDbVersionsMap(&self.core.db, self.gpa);
+    // As before, any error will reset the state, so we can safely set this.
+    defer self.db_state.last_db_versions = current_db_versions;
+    const changes = try ilm.concept.getChanges(
+        &self.core.db,
+        &self.db_state.last_db_versions,
+        &current_db_versions,
+        arena,
+    );
+    if (changes.concepts.changes.len == 0 and changes.relations.changes.len == 0)
+        return;
 
     var renderer = &self.graph_view.renderer;
     const graph = self.graph_view.graph();
@@ -135,83 +166,86 @@ fn processDbChanges(self: *Self) !void {
     // If viewing a deleted concept, need to unview first before
     // deleting the node.
     const viewing_id = self.viewingIdOrZero();
-    for (changes.changes) |*change| {
-        if (change.op == .delete and change.id.int == viewing_id) self.unviewConcept();
+    for (changes.concepts.changes) |*change| {
+        if (change.op == .delete and change.id.int == viewing_id) {
+            self.unviewConcept();
+            break;
+        }
     }
 
     // Need to free layout before adding/removing objects from the graph.
+    const need_relayout = changes.relations.changes.len > 0 or changes.concepts.inserts > 0 or changes.concepts.deletes > 0;
     if (need_relayout)
         graph.freeLayout();
 
     // Process concept table changes
-    var last_insert_id: ?u128 = null;
-    for (changes.changes) |*change| {
-        switch (change.op) {
-            .delete => {
-                try graph.deleteNodeAndItsEdges(change.id.int);
-            },
-            .insert => {
-                // New relationships/edges are added later, as their
-                // nodes need to be present first.
-                try graph.addNode(change.id.int, change.name.?);
-                last_insert_id = change.id.int;
-            },
-            .update => {
-                // For now these are just the names.
-                try graph.relabelNode(change.id.int, change.name.?);
-            },
-        }
-    }
+    log.info("Changes: {d}", .{changes.concepts.changes.len + changes.relations.changes.len});
 
-    // Add edges of new inserts
-    // TODO Replace this with querying changes from concept_rel table
-    if (changes.inserts > 0) {
-        const insert_ids = try arena.alloc(Uuid, changes.inserts);
-        var i: usize = 0;
-        for (changes.changes) |*change| {
-            if (change.op == .insert) {
-                insert_ids[i] = change.id;
-                i += 1;
+    // First remove deleted edges. This makes sure deleted nodes will not lead
+    // to edges pointing nowhere.
+    if (changes.relations.deletes > 0) {
+        for (changes.relations.changes) |*rel| {
+            if (rel.op == .delete) {
+                try graph.deleteEdge(rel.parent_id.int, rel.child_id.int);
             }
         }
-        const ancestors = try ilm.concept.getAncestors(self.core, arena, .{
-            .ids = insert_ids,
-            .direct_only = true,
-        });
-        for (ancestors) |*ancestor| {
-            try graph.addEdge(ancestor.id.int, ancestor.child_id.int);
+    }
+
+    // Remove deleted nodes now safely.
+    if (changes.concepts.deletes > 0) {
+        for (changes.concepts.changes) |*concept| {
+            if (concept.op == .delete) {
+                try graph.deleteNodeAndItsEdges(concept.id.int);
+            }
         }
     }
 
-    // Update state
-    self.setLastProcessedDbVersion(changes.changes[changes.changes.len - 1].db_version);
-    self.unprocessed_db_changes.store(false, .seq_cst);
+    // Add new nodes before we apply their updates or add their edges.
+    var last_concept_insert: ?*ilm.concept.ConceptChange = null;
+    if (changes.concepts.inserts > 0) {
+        for (changes.concepts.changes) |*concept| {
+            if (concept.op == .insert) {
+                try graph.addNode(concept.id.int, concept.name.?);
+                last_concept_insert = concept;
+            }
+        }
+    }
+
+    // Name changes.
+    if (changes.concepts.updates > 0) {
+        for (changes.concepts.changes) |*concept| {
+            if (concept.op == .update) {
+                try graph.relabelNode(concept.id.int, concept.name.?);
+            }
+        }
+    }
+
+    // Finally insert the new edges.
+    if (changes.relations.inserts > 0) {
+        for (changes.relations.changes) |*rel| {
+            if (rel.op == .insert) {
+                try graph.addEdge(rel.parent_id.int, rel.child_id.int);
+            }
+        }
+    }
+
+    // Update internal state
     try self.getAllConcepts();
     if (need_relayout)
         try renderer.layout();
     try self.graph_view.renderGraph();
 
-    // View last insert
-    if (last_insert_id) |id|
-        self.viewConceptById(id);
+    // View last insert if we made it.
+    if (last_concept_insert) |concept| {
+        if (std.mem.eql(u8, &concept.site_id, self.core.siteId()))
+            self.viewConceptById(concept.id.int);
+    }
 }
-
-// fn processWrite(self: *Self, write: *const DbWriter.WriteResult) !void {
-//     switch (write.cmd) {
-//         .add_concept_parent => |payload| {
-//             try graph.addEdge(payload.parent_id.int, payload.child_id.int);
-//         },
-//         else => {},
-//     }
-// }
 
 pub fn render(self: *Self) void {
     // Process db changes
-    if (self.unprocessed_db_changes.load(.seq_cst)) {
-        self.processDbChanges() catch |err| {
-            log.warn("{t}: Failed to update process db changes, remaking graph", .{err});
-        };
-    }
+    if (self.db_state.dirty)
+        self.processDbChanges() catch {};
 
     const screen_size: gui.ScreenSize = .get();
     const is_wide = screen_size.width != .compact;
@@ -411,11 +445,13 @@ fn renderGraph(self: *Self) void {
                 _ = id;
             },
             .assign_parent => |assign| {
-                if (ilm.concept.addParent(self.core, .{ .int = assign.child }, .{ .int = assign.parent })) {
-                    self.remakeGraph(.clear_all);
-                } else |err| {
+                ilm.concept.addParent(
+                    self.core,
+                    .{ .int = assign.child },
+                    .{ .int = assign.parent },
+                ) catch |err| {
                     gui.toastErr(@src(), err, "Failed to assign", .{});
-                }
+                };
                 dvui.currentWindow().refreshWindow(@src(), null);
             },
             .selection => {

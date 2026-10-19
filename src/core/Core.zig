@@ -1,3 +1,5 @@
+const Core = @This();
+
 const std = @import("std");
 const known_folders = @import("known-folders");
 const iroh = @import("iroh");
@@ -8,7 +10,6 @@ const Uuid = database.Uuid;
 const p2p = @import("p2p.zig");
 const Router = p2p.Router;
 const Peer = p2p.Peer;
-const Core = @This();
 
 const log = std.log.scoped(.core);
 
@@ -134,6 +135,17 @@ fn dbWriteCallback(core_opaque: *anyopaque, result: DbWriter.WriteResult) void {
     }
 }
 
+/// Id for p2p connections.
+pub fn peerId(core: *const Core) *const Peer.Id {
+    return &core.router.peer_id;
+}
+
+/// Id for sqlite crdt.
+/// Note this is just the first 16 bytes of the peer id.
+pub fn siteId(core: *const Core) *const database.crdt.SiteId {
+    return core.router.peer_id.bytes[0..16];
+}
+
 fn getPeers(core: *Core) void {
     core.gpa.free(core.peers);
     core.peers = &.{};
@@ -156,19 +168,4 @@ pub fn isValid(core: *Core) bool {
 
 pub fn newId(core: *Core) Uuid {
     return Uuid.new(core.io);
-}
-
-pub fn exec(core: *Core, comptime query: []const u8, args: anytype) !void {
-    var diags: sqlite.Diagnostics = .{};
-
-    var stmt = core.db.prepareWithDiags(query, .{ .diags = &diags }) catch |err| {
-        std.log.err("DB prepare error: {s} \nQuery: {s}", .{ diags.message, query });
-        return err;
-    };
-    defer stmt.deinit();
-
-    stmt.exec(.{ .diags = &diags }, args) catch |err| {
-        std.log.err("DB exec error: {s} \nQuery: {s}", .{ diags.message, query });
-        return err;
-    };
 }

@@ -31,7 +31,7 @@ pub fn deinit(self: *Self) void {
 fn getData(self: *Self) void {
     _ = self.arena.reset(.retain_capacity);
 
-    if (crdt.getDbVersion(&self.core.db)) |db_version| {
+    if (crdt.getLatestDbVersion(&self.core.db)) |db_version| {
         self.db_version = db_version;
     } else |err| {
         gui.toastErr(@src(), err, "Failed to get db version", .{});

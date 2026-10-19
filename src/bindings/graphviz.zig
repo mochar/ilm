@@ -383,9 +383,7 @@ pub const Graph = struct {
     }
 
     pub fn deleteNodeAndItsEdges(graph: *Graph, id: u128) !void {
-        log.info("Deleting node {d}...", .{id});
         if (graph.getNodeById(id)) |node| {
-            log.info("Found node", .{});
             var edge_iter = node.edgeIterator(graph);
             while (edge_iter.next()) |edge| {
                 // TODO Handle err
@@ -418,7 +416,14 @@ pub const Graph = struct {
         const to_node = try graph.getNodeByIdErr(to);
         _ = c.agedge(graph.g, from_node.cnode, to_node.cnode, null, 1) orelse return error.EdgeFailed;
     }
-
+    
+    pub fn deleteEdge(graph: *const Graph, from: u128, to: u128) !void {
+        const from_node = try graph.getNodeByIdErr(from);
+        const to_node = try graph.getNodeByIdErr(to);
+        const edge = c.agedge(graph.g, from_node.cnode, to_node.cnode, null, 0) orelse return error.NotFound;
+        _ = c.agdeledge(graph.g, edge);
+    }
+    
     /// Number of nodes in the graph
     pub fn n_nodes(graph: *const Graph) usize {
         return @intCast(c.agnnodes(graph.g));

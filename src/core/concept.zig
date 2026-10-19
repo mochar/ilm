@@ -8,6 +8,7 @@ const Db = database.Db;
 const Diagnostics = database.Diagnostics;
 const Uuid = database.Uuid;
 const Write = database.tables.Write;
+const crdt = database.crdt;
 const Graph = @import("graphviz").Graph;
 
 pub const Concept = struct {
@@ -452,11 +453,32 @@ pub fn getRelations(core: *Core, alloc: Allocator, ids: ?[]const Uuid) ![]Relati
 
 // ** Query changes
 
+// The following gets the rows of the 'concept' and 'concept_rel'
+// tables, including deleted ones (though these only contain pks),
+// that were edited, added, or removed between a db version interval
+// per peer id. Each row has a field describing what kind of change it
+// is.
+// This is messy for two reasons:
+//   1. The cr-sqlite fork stores for each change the original db
+//      version, so we cannot just say "get everything after db version x",
+//      as peers with a smaller db version may have made the change
+//      later than a peer with a larger db versionn. We thus have to
+//      check for each peer to get "latest changes since".
+//   2. Instead of using the 'crsql_changes' virtual table that is
+//      used to get and apply changesets, we parse the table-specific
+//      clock tables directly. Not sure why. It is def possible to do the
+//      same with 'crsql_changes' using the id packing function of crsql:
+//         SELECT pks.id, c.cid, c.val, c.col_version
+//         FROM crsql_changes c
+//         JOIN concept__crsql_pks pks ON c.pk = crsql_pack_columns(pks.id)
+//         WHERE c."table" = 'concept' AND c.site_id IS :site_id AND c.db_version > :db_version;
+
 pub const ChangeOp = enum(u8) {
     insert = 0,
     update = 1,
     delete = 2,
 
+    // for sqlite
     pub const BaseType = u8;
 };
 
@@ -470,60 +492,88 @@ pub const ConceptChange = struct {
     ///  - updates: The version of the most recent update made to this concept.
     ///  - deletes: The version when the concept was deleted.
     db_version: u64,
+    /// The site that made this change.
+    site_id: [16]u8,
 };
 
-pub const ConceptChanges = struct {
-    /// Ordered by db version, oldest to newest
-    changes: []ConceptChange,
-    inserts: usize,
-    deletes: usize,
-    updates: usize,
+pub const RelationChange = struct {
+    parent_id: Uuid,
+    child_id: Uuid,
+    /// As of now only has inserts and deletes
+    op: ChangeOp,
+    db_version: u64,
+    site_id: [16]u8,
 };
 
-pub fn getChangesSince(db: *Db, since_db_version: u64, alloc: Allocator) !ConceptChanges {
-    const query =
-        \\WITH changed_keys AS (
-        \\    SELECT DISTINCT key
-        \\    FROM concept__crsql_clock
-        \\    WHERE db_version > :db_version
-        \\)
-        \\SELECT
-        \\    pks.id,
-        \\    c.name,
-        \\    CASE
-        \\        WHEN c.id IS NULL THEN 2
-        \\        WHEN MIN(clk.db_version) > :db_version THEN 0
-        \\        ELSE 1
-        \\    END AS op,
-        \\    MAX(clk.db_version) AS db_version
-        \\FROM changed_keys ck
-        \\JOIN concept__crsql_clock clk ON clk.key = ck.key
-        \\JOIN concept__crsql_pks pks ON pks.__crsql_key = ck.key
-        \\LEFT JOIN concept c ON c.id = pks.id
-        \\GROUP BY ck.key
-        \\ORDER BY db_version ASC;
-    ;
+pub fn TableChanges(comptime T: type) type {
+    return struct {
+        /// Ordered by db version, oldest to newest
+        changes: []T,
+        inserts: usize,
+        deletes: usize,
+        updates: usize,
 
+        pub fn lastDbVersion(self: *const @This()) ?u64 {
+            if (self.changes.len == 0) return null;
+            return self.changes[self.changes.len - 1].db_version;
+        }
+    };
+}
+pub const ConceptChanges = TableChanges(ConceptChange);
+pub const RelationChanges = TableChanges(RelationChange);
+
+fn queryChanges(
+    comptime T: type,
+    db: *Db,
+    comptime query: []const u8,
+    since_db_versions: *const crdt.DbVersionsMap,
+    until_db_versions: *const crdt.DbVersionsMap,
+    alloc: Allocator,
+) !TableChanges(T) {
     var diags: Diagnostics = .{};
     var stmt = db.prepareWithDiags(query, .{ .diags = &diags }) catch |err| {
-        log.err("SQLite prepare failed: {s}", .{diags.message});
+        const detail = db.getDetailedError();
+        log.err("SQLite prepare failed for 'queryChanges' ({t}): {f}", .{ err, detail });
         return err;
     };
     defer stmt.deinit();
 
-    var changes: std.ArrayList(ConceptChange) = .empty;
+    var changes: std.ArrayList(T) = .empty;
     defer changes.deinit(alloc);
     var inserts: usize = 0;
     var deletes: usize = 0;
     var updates: usize = 0;
 
-    var iter = try stmt.iteratorAlloc(ConceptChange, alloc, .{ .db_version = since_db_version });
-    while (try iter.nextAlloc(alloc, .{ .diags = &diags })) |change| {
-        try changes.append(alloc, change);
-        switch (change.op) {
-            .insert => inserts += 1,
-            .delete => deletes += 1,
-            .update => updates += 1,
+    // Site ids may not match, as new peers might have been added or old
+    // ones removed. In general don't want to assume structure of version
+    // maps. So first find union of site ids.
+    var site_ids: std.AutoHashMapUnmanaged(crdt.SiteId, void) = .empty;
+    try site_ids.ensureTotalCapacity(
+        alloc,
+        @intCast(since_db_versions.count() + until_db_versions.count()),
+    );
+    defer site_ids.deinit(alloc);
+    for (since_db_versions.keys()) |site_id|
+        site_ids.putAssumeCapacity(site_id, {});
+    for (until_db_versions.keys()) |site_id|
+        site_ids.putAssumeCapacity(site_id, {});
+
+    var site_ids_iter = site_ids.keyIterator();
+    while (site_ids_iter.next()) |site_id| {
+        stmt.reset();
+
+        var stmt_iter = try stmt.iteratorAlloc(T, alloc, .{
+            .since_db_version = since_db_versions.get(site_id.*) orelse 0,
+            .until_db_version = until_db_versions.get(site_id.*) orelse std.math.maxInt(u64),
+            .site_id = sqlite.Blob{ .data = site_id },
+        });
+        while (try stmt_iter.nextAlloc(alloc, .{ .diags = &diags })) |change| {
+            try changes.append(alloc, change);
+            switch (change.op) {
+                .insert => inserts += 1,
+                .delete => deletes += 1,
+                .update => updates += 1,
+            }
         }
     }
 
@@ -532,6 +582,100 @@ pub fn getChangesSince(db: *Db, since_db_version: u64, alloc: Allocator) !Concep
         .inserts = inserts,
         .deletes = deletes,
         .updates = updates,
+    };
+}
+
+pub fn getConceptChanges(
+    db: *Db,
+    since_db_versions: *const crdt.DbVersionsMap,
+    until_db_versions: *const crdt.DbVersionsMap,
+    alloc: Allocator,
+) !ConceptChanges {
+    const query =
+        \\WITH changed_keys AS (
+        \\    SELECT
+        \\        clk.key,
+        \\        MIN(clk.db_version) AS min_db_version,
+        \\        MAX(clk.db_version) AS max_db_version
+        \\    FROM concept__crsql_clock clk
+        \\    JOIN crsql_site_id s ON s.ordinal = clk.site_id
+        \\    WHERE s.site_id = :site_id
+        \\      AND clk.db_version >  :since_db_version
+        \\      AND clk.db_version <= :until_db_version
+        \\    GROUP BY clk.key
+        \\)
+        \\SELECT
+        \\    pks.id,
+        \\    c.name,
+        \\    CASE
+        \\        WHEN c.id IS NULL THEN 2 -- delete
+        \\        WHEN ck.min_db_version > :since_db_version THEN 0 -- insert
+        \\        ELSE 1 -- update
+        \\    END AS op,
+        \\    ck.max_db_version AS db_version,
+        \\    :site_id AS site_id
+        \\FROM changed_keys ck
+        \\JOIN concept__crsql_pks pks ON pks.__crsql_key = ck.key
+        \\LEFT JOIN concept c ON c.id = pks.id;
+    ;
+    return try queryChanges(ConceptChange, db, query, since_db_versions, until_db_versions, alloc);
+}
+
+pub fn getRelationChanges(
+    db: *Db,
+    since_db_versions: *const crdt.DbVersionsMap,
+    until_db_versions: *const crdt.DbVersionsMap,
+    alloc: Allocator,
+) !RelationChanges {
+    const query =
+        \\WITH changed_keys AS (
+        \\    SELECT
+        \\        clk.key,
+        \\        MAX(clk.db_version) AS db_version
+        \\    FROM concept_rel__crsql_clock clk
+        \\    JOIN crsql_site_id s ON s.ordinal = clk.site_id
+        \\    WHERE s.site_id = :site_id
+        \\      AND clk.db_version > :since_db_version
+        \\      AND clk.db_version <= :until_db_version
+        \\    GROUP BY clk.key
+        \\)
+        \\SELECT
+        \\    pks.parent_id,
+        \\    pks.child_id,
+        \\    CASE
+        \\        WHEN r.parent_id IS NULL THEN 2 -- delete
+        \\        ELSE 0                          -- insert
+        \\    END AS op,
+        \\    ck.db_version AS db_version,
+        \\    :site_id AS site_id
+        \\FROM changed_keys ck
+        \\JOIN concept_rel__crsql_pks pks ON pks.__crsql_key = ck.key
+        \\LEFT JOIN concept_rel r
+        \\    ON  r.parent_id = pks.parent_id
+        \\    AND r.child_id = pks.child_id;
+    ;
+    return try queryChanges(RelationChange, db, query, since_db_versions, until_db_versions, alloc);
+}
+
+pub const Change = union(enum) {
+    concept: ConceptChange,
+    relation: RelationChange,
+};
+
+pub const Changes = struct {
+    concepts: ConceptChanges,
+    relations: RelationChanges,
+};
+
+pub fn getChanges(
+    db: *Db,
+    since_db_versions: *const crdt.DbVersionsMap,
+    until_db_versions: *const crdt.DbVersionsMap,
+    alloc: Allocator,
+) !Changes {
+    return .{
+        .concepts = try getConceptChanges(db, since_db_versions, until_db_versions, alloc),
+        .relations = try getRelationChanges(db, since_db_versions, until_db_versions, alloc),
     };
 }
 

@@ -102,6 +102,7 @@ endpoint: iroh.Endpoint,
 
 /// Gets consumed when creating an endpoint, so we .dupe() this one.
 secret_key: iroh.SecretKey,
+peer_id: Peer.Id,
 name: []const u8,
 
 io_group: std.Io.Group,
@@ -114,7 +115,12 @@ connections: struct {
 
 event_triggers: std.ArrayList(EventTrigger),
 
-pub fn init(gpa: std.mem.Allocator, io: std.Io, db_path: [:0]const u8, secret_key: iroh.SecretKey) !Self {
+pub fn init(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    db_path: [:0]const u8,
+    secret_key: iroh.SecretKey,
+) !Self {
     iroh.enableTracing();
 
     var db = try database.getDb(db_path, .{});
@@ -127,16 +133,24 @@ pub fn init(gpa: std.mem.Allocator, io: std.Io, db_path: [:0]const u8, secret_ke
     });
     errdefer endpoint.deinit();
 
+    const public_key = secret_key.public();
+    defer public_key.deinit();
+    const peer_id: Peer.Id = .{ .bytes = public_key.copyBytes() };
+
+    // TODO
+    const name = try gpa.dupe(u8, "Ilm enjoyer");
+
     return .{
         .gpa = gpa,
         .io = io,
         .db = db,
         .endpoint = endpoint,
         .secret_key = secret_key,
+        .peer_id = peer_id,
+        .name = name,
         .io_group = .init,
         .connections = .{ .peers = .init(gpa) },
         .event_triggers = .empty,
-        .name = try gpa.dupe(u8, "Ilm enjoyer"),
     };
 }
 
@@ -394,7 +408,7 @@ fn connLoop(self: *Self, conn_peer: *ConnectedPeer) error{Canceled}!void {
     // await on all threads of ConnectedPeer.io_group. If we run it here,
     // then we are in a deadlock state. For the same reason we use self.io_group
     // rather than ConnectedPeer.io_group.
-    defer self.io_group.concurrent(self.io, disconnectPeer, .{self, peer_id, .{ .conn = conn }}) catch {};
+    defer self.io_group.concurrent(self.io, disconnectPeer, .{ self, peer_id, .{ .conn = conn } }) catch {};
 
     while (true) {
         log.info("Waiting for stream from peer {x}...", .{peer_id.bytes[0..4]});

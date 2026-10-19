@@ -46,6 +46,44 @@ pub fn getSiteDbVersions(db: *Db, arena: Allocator) ![]SiteDbVersion {
     return try rows.toOwnedSlice(arena);
 }
 
+pub const DbVersionsMap = std.array_hash_map.Auto(SiteId, u64);
+
+pub fn getDbVersionsMap(db: *Db, alloc: Allocator) !DbVersionsMap {
+    var diags: Diagnostics = .{};
+
+    var stmt = db.prepareWithDiags(
+        \\SELECT site_id, db_version
+        \\FROM crsql_db_versions
+    ,
+        .{ .diags = &diags },
+    ) catch |err| {
+        log.err("Failed prepare stmt: ({t}) {f}", .{ err, diags });
+        return err;
+    };
+    defer stmt.deinit();
+
+    var map: DbVersionsMap = .empty;
+    var iter = try stmt.iterator(SiteDbVersion, .{});
+    while (try iter.next(.{ .diags = &diags })) |row| {
+        try map.put(alloc, row.site_id, row.db_version);
+    }
+    return map;
+}
+
+/// Returns db version of this node.
+/// This is NOT the latest db version in this database.
+/// For that use getLatestDbVersion.
+pub fn getMyDbVersion(db: *Db) !u64 {
+    return (try db.one(u64, "SELECT crsql_db_version()", .{}, .{})).?;
+}
+
+/// Returns the db version of the last change.
+/// This is NOT the current node's db version.
+/// For that use getMyDbVersion.
+pub fn getLatestDbVersion(db: *Db) !u64 {
+    return (try db.one(u64, "SELECT MAX(db_version) FROM crsql_db_versions", .{}, .{})).?;
+}
+
 /// See changes-vtab.c
 pub const Change = struct {
     /// The name of the table the patch is from.
@@ -171,9 +209,4 @@ pub fn mergeChangesImpl(db: *Db, changes: []Change) !void {
             return err;
         };
     }
-}
-
-/// Returns db version of this node.
-pub fn getDbVersion(db: *Db) !u64 {
-    return (try db.one(u64, "SELECT crsql_db_version()", .{}, .{})).?;
 }

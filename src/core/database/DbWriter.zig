@@ -12,8 +12,9 @@ const Allocator = std.mem.Allocator;
 pub const sqlite = @import("sqlite");
 pub const Diagnostics = sqlite.Diagnostics;
 const ilm = @import("../root.zig");
-const database = @import("../database.zig");
+const database = ilm.database;
 const tables = database.tables;
+const crdt = database.crdt;
 pub const Write = tables.Write;
 
 const log = std.log.scoped(.database_writer);
@@ -26,8 +27,11 @@ pub const WriteRequestId = usize;
 pub const WriteResult = struct {
     id: WriteRequestId,
     cmd: tables.TableCommand,
-    /// Db version after running the command.
-    db_version: u64,
+    /// Db versions after running the command.
+    /// Points to DbWriter's internal field, which will be overwritten
+    /// right after a new db write. Subscribers should therefore make
+    /// a copy if need to be kept around.
+    db_versions: *const crdt.DbVersionsMap,
     err: ?anyerror,
 };
 
@@ -65,6 +69,8 @@ pub const Subscriber = struct {
 gpa: Allocator,
 io: std.Io,
 db: sqlite.Db,
+/// Gets updated after every write
+db_versions: crdt.DbVersionsMap,
 queue_buf: []WriteRequest,
 queue: WriteQueue,
 id_counter: std.atomic.Value(WriteRequestId) = .init(0),
@@ -75,6 +81,9 @@ pub fn init(gpa: Allocator, io: std.Io, db_path: [:0]const u8) !Self {
     var db = try database.getDb(db_path, .{ .flags = .{ .write = true } });
     errdefer db.deinit();
 
+    var db_versions = try crdt.getDbVersionsMap(&db, gpa);
+    errdefer db_versions.deinit(gpa);
+
     const queue_buf = try gpa.alloc(WriteRequest, 64);
     errdefer gpa.free(queue_buf);
 
@@ -82,6 +91,7 @@ pub fn init(gpa: Allocator, io: std.Io, db_path: [:0]const u8) !Self {
         .gpa = gpa,
         .io = io,
         .db = db,
+        .db_versions = db_versions,
         .queue_buf = queue_buf,
         .queue = .init(queue_buf),
     };
@@ -96,6 +106,7 @@ pub fn deinit(self: *Self) void {
     // for the duration of the application, so this is not a big deal?
     self.queue.close(self.io);
     self.gpa.free(self.queue_buf);
+    self.db_versions.deinit(self.gpa);
     self.db.deinit();
 }
 
@@ -192,6 +203,10 @@ fn runLoop(self: *Self) !void {
         const write_err: ?anyerror = switch (req.cmd) {
             inline else => |cmd| blk: {
                 if (cmd.write(&self.db)) {
+                    // Update db version map on successful write.
+                    self.db_versions.deinit(self.gpa);
+                    self.db_versions = crdt.getDbVersionsMap(&self.db, self.gpa) catch unreachable;
+
                     break :blk null;
                 } else |err| {
                     log.err("Table write cmd failed: {t}", .{err});
@@ -200,18 +215,11 @@ fn runLoop(self: *Self) !void {
             },
         };
 
-        var db_version: u64 = 0;
-        if (database.crdt.getDbVersion(&self.db)) |v| {
-            db_version = v;
-        } else |err| {
-            log.err("Failed to get db version: {t}", .{err});
-        }
-
         const result: WriteResult = .{
             .id = req.id,
             .cmd = req.cmd,
             .err = write_err,
-            .db_version = db_version,
+            .db_versions = &self.db_versions,
         };
 
         if (req.sync_ctx) |sync_ctx| {
