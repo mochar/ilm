@@ -140,7 +140,7 @@ fn processDbChanges(self: *Self) !void {
     // Since any error will reset the graph, we always mark processed changes as done
     // to avoid infinte loops.
     defer self.db_state.dirty = false;
-    
+
     self.db_state.mutex.lockUncancelable(self.core.io);
     defer self.db_state.mutex.unlock(self.core.io);
 
@@ -385,7 +385,12 @@ fn renderConceptList(self: *Self) void {
 
     // Concept list
     {
-        var scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both });
+        var scroll = dvui.scrollArea(@src(), .{}, .{
+            .expand = .both,
+            // Dont expand to content size, which will push all widgets below
+            // the scrollArea out of frame if there are too many elements
+            .max_size_content = .height(0), // or .zero
+        });
         defer scroll.deinit();
 
         const viewing_id = self.viewingId();

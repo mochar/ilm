@@ -77,7 +77,11 @@ pub fn render(self: *Self) void {
 
 fn renderTabs(self: *Self, size: gui.ScreenSize) void {
     _ = size;
-    var box = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal, .background = true });
+    var box = dvui.box(
+        @src(),
+        .{ .dir = .horizontal },
+        .{ .expand = .horizontal, .background = true },
+    );
     defer box.deinit();
 
     const tab_names = [_][]const u8{ "concepts", "peers", "debug" };

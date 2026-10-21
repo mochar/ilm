@@ -96,24 +96,14 @@ pub fn animateFitToGraph(self: *Self) !void {
 }
 
 pub fn render(self: *Self, box_opts: dvui.Options) !?Action {
-    var vbox = dvui.box(@src(), .{ .dir = .vertical }, box_opts);
-    defer vbox.deinit();
-
     // By retrieving the animation, dvui takes note of it and
     // schedules a rerender if the animatino is ongoing. Normally the
     // idea is to use the animation value of the returned Animation,
     // but GraphRenderer handles that internally.
     _ = dvui.animationGet(self.animation_id, "_");
 
-    // Floating buttons
-    // {
-    //     // if (dvui.button(@src(), "Layout", .{}, .{ .rect = .all(0.0) })) {
-    //     if (dvui.button(@src(), "Layout", .{}, .{})) {
-    //         log.info("Running layout", .{});
-    //         self.renderer.layout() catch {};
-    //         self.renderGraph() catch {};
-    //     }
-    // }
+    var vbox = dvui.box(@src(), .{ .dir = .vertical }, box_opts);
+    defer vbox.deinit();
 
     var texture_box = dvui.box(@src(), .{}, .{
         .expand = .both,
@@ -151,31 +141,63 @@ pub fn render(self: *Self, box_opts: dvui.Options) !?Action {
         });
     }
 
+    // Floating buttons
+    const graph_rs = texture_box.data().rectScale();
+    self.renderFloatingButtons(graph_rs);
+
     // Debug window
-    if (debug_window) {
-        const debug_win = dvui.osWindow(
-            @src(),
-            .{ .title = "Graph", .size = .{ .w = 500, .h = 300 } },
-            .{
-                .open_flag = &debug_window,
-                .id_extra = self.animation_id.asUsize(),
-            },
-        );
-        defer debug_win.deinit();
-
-        const b = dvui.box(@src(), .{}, .{ .background = true, .corners = .{
-            .tl = .square,
-            .tr = .square,
-            .br = .default,
-            .bl = .default,
-        }, .expand = .both });
-        defer b.deinit();
-
-        dvui.structUI(@src(), "state", &self.renderer.state, 3, .{}, .{ .expand = .both });
-        dvui.structUI(@src(), "camera", &self.renderer.camera, 3, .{}, .{ .expand = .both });
-    }
+    if (debug_window)
+        self.renderDebugWindow();
 
     return action;
+}
+
+fn renderFloatingButtons(self: *Self, graph_rs: dvui.RectScale) void {
+    const point = graph_rs.pointToPhysical(.{
+        .x = graph_rs.r.w - 30,
+        .y = 50,
+    });
+
+    var fw: dvui.FloatingWidget = undefined;
+    fw.init(@src(), .{ .from = point }, .{ .min_size_content = .all(20) });
+    defer fw.deinit();
+
+    const box = dvui.box(@src(), .{ .dir = .vertical }, .{});
+    defer box.deinit();
+
+    const color_fill: dvui.ColorOrGradient = .{ .color = dvui.themeGet().focus.opacity(0.5) };
+
+    if (dvui.buttonIcon(@src(), "layout", dvui.entypo.cycle, .{}, .{}, .{ .color_fill = color_fill })) {
+        self.renderer.layout() catch {};
+        self.renderGraph() catch {};
+    }
+
+    if (dvui.buttonIcon(@src(), "center", dvui.entypo.hair_cross, .{}, .{}, .{ .color_fill = color_fill })) {
+        self.animateFitToGraph() catch {};
+    }
+}
+
+fn renderDebugWindow(self: *Self) void {
+    const debug_win = dvui.osWindow(
+        @src(),
+        .{ .title = "Graph", .size = .{ .w = 500, .h = 300 } },
+        .{
+            .open_flag = &debug_window,
+            .id_extra = self.animation_id.asUsize(),
+        },
+    );
+    defer debug_win.deinit();
+
+    const b = dvui.box(@src(), .{}, .{ .background = true, .corners = .{
+        .tl = .square,
+        .tr = .square,
+        .br = .default,
+        .bl = .default,
+    }, .expand = .both });
+    defer b.deinit();
+
+    dvui.structUI(@src(), "state", &self.renderer.state, 3, .{}, .{ .expand = .both });
+    dvui.structUI(@src(), "camera", &self.renderer.camera, 3, .{}, .{ .expand = .both });
 }
 
 /// React to mouse, touch and key events on the graph.
