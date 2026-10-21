@@ -88,6 +88,17 @@ pub const Node = struct {
     pub fn setAttribute(node: *const Node, name: [:0]const u8, value: [:0]const u8, default: [:0]const u8) void {
         setComponentAttribute(@ptrCast(node.cnode), name, value, default);
     }
+
+    pub fn setPos(node: *const Node, x: f64, y: f64) void {
+        var buf: [64]u8 = undefined;
+        const pos = std.fmt.bufPrintZ(&buf, "{d:.3},{d:.3}", .{ x, y }) catch unreachable;
+        node.setAttribute("pos", pos, "");
+        // The below proved to be unnecessary for moving nodes around and redrawing
+        // edges, but maybe useful in some other scenario.
+        // var info = node.getInfo();
+        // info.coord.x = x;
+        // info.coord.y = y;
+    }
 };
 
 pub const NodeIterator = struct {
@@ -211,6 +222,21 @@ pub const Attribute = union(enum) {
     /// Default: 100 * # nodes (mode == KK) , 200 (mode == major) , 30 (mode == sgd) , 600 (fdp)
     /// https://graphviz.org/docs/attrs/maxiter/
     maxiter: u64,
+
+    /// Avoid translating layout to the origin point.
+    /// Only: neato.
+    /// By default, final layout is translated so that lower-left corner
+    /// of the bounding box is at the origin.
+    /// This can be annoying if some nodes are pinned or if the user runs neato -n.
+    notranslate: bool,
+
+    // TODO Not finished, see last link
+    /// Seed of the model.
+    /// Only: neato, fdp, sfdp.
+    /// Default: "" (no seed)
+    /// https://graphviz.org/docs/attrs/start/
+    /// https://graphviz.org/docs/attr-types/startType/
+    start: u64,
 };
 
 pub const Graph = struct {
@@ -234,13 +260,12 @@ pub const Graph = struct {
 
     pub fn init(allocator: std.mem.Allocator, options: Options) !Graph {
         const g = agopen(@constCast("graph"), Agdirected, null) orelse return error.OpenFailed;
-        _ = c.agsafeset(g, @constCast("margin"), @constCast("0.0"), @constCast(""));
-        _ = c.agsafeset(g, @constCast("pad"), @constCast("0.0"), @constCast(""));
+        const gvc = c.gvContext() orelse return error.GVCFailed;
 
         var graph: Graph = .{
             .arena = .init(allocator),
-            .gvc = c.gvContext() orelse return error.GVCFailed,
             .g = g,
+            .gvc = gvc,
             .width = options.width orelse 0,
             .height = options.height orelse 0,
             .layout_engine = options.layout_engine,
@@ -251,12 +276,22 @@ pub const Graph = struct {
             graph.setDimensions(options.width.?, options.height.?);
         }
 
-        // graph.applyAttribute(.{ .maxiter = 3 });
-        graph.applyAttribute(.{ .rankdir = .TB });
-        graph.applyAttribute(.{ .pad = 100.0 });
-        graph.applyAttribute(.{ .margin = 100.0 });
-        // graph.setAttribute(.{ .mode = .KK });
-        // graph.setAttribute(.{ .ratio = .{ .desired = 3.0 }});
+        graph.applyAttribute(.{ .pad = 0.0 });
+        graph.applyAttribute(.{ .margin = 0.0 });
+        graph.applyAttribute(.{ .start = 1 });
+        // graph.applyAttribute(.{ .ratio = .{ .desired = 3.0 }});
+        switch (options.layout_engine) {
+            .dotx => {
+                graph.applyAttribute(.{ .rankdir = .TB });
+            },
+            .neato => {
+                graph.applyAttribute(.{ .notranslate = true });
+                // graph.applyAttribute(.{ .maxiter = 3 });
+                // graph.applyAttribute(.{ .mode = .KK });
+                // graph.applyAttribute(.{ .mode = .hier });
+            },
+            else => {},
+        }
 
         return graph;
     }
@@ -290,6 +325,7 @@ pub const Graph = struct {
                         var buf: [32]u8 = undefined;
                         break :val std.fmt.bufPrintZ(&buf, "{d:.4}", .{value}) catch unreachable;
                     },
+                    .bool => if (value) "true" else "false",
                     .@"enum" => {
                         break :val @tagName(value);
                     },
@@ -404,26 +440,26 @@ pub const Graph = struct {
         }
         return null;
     }
-    
+
     pub fn getNodeByIdErr(graph: *const Graph, id: u128) error{NodeNotFound}!Node {
         if (graph.getNodeById(id)) |n| return n;
         log.err("Requested node not found with id {d}", .{id});
         return error.NodeNotFound;
     }
-    
+
     pub fn addEdge(graph: *const Graph, from: u128, to: u128) !void {
         const from_node = try graph.getNodeByIdErr(from);
         const to_node = try graph.getNodeByIdErr(to);
         _ = c.agedge(graph.g, from_node.cnode, to_node.cnode, null, 1) orelse return error.EdgeFailed;
     }
-    
+
     pub fn deleteEdge(graph: *const Graph, from: u128, to: u128) !void {
         const from_node = try graph.getNodeByIdErr(from);
         const to_node = try graph.getNodeByIdErr(to);
         const edge = c.agedge(graph.g, from_node.cnode, to_node.cnode, null, 0) orelse return error.NotFound;
         _ = c.agdeledge(graph.g, edge);
     }
-    
+
     /// Number of nodes in the graph
     pub fn n_nodes(graph: *const Graph) usize {
         return @intCast(c.agnnodes(graph.g));
@@ -439,16 +475,45 @@ pub const Graph = struct {
 
     /// Run the layout algorithm.
     pub fn layout(graph: *Graph) !void {
+        log.info("Layout", .{});
         graph.freeLayout();
-        
+
         const layout_name = @tagName(graph.layout_engine);
-        if (c.gvLayout(graph.gvc, graph.g, @ptrCast(@constCast(layout_name))) != 0) {
+        const rc = c.gvLayout(graph.gvc, graph.g, @ptrCast(@constCast(layout_name)));
+        if (rc != 0) {
+            log.err("Failed to layout: errno {d}", .{rc});
             return error.LayoutFailed;
         }
         graph.has_layout = true;
 
         // Writes layout coordinates into "pos" string attributes on all nodes/edges
         // TODO Only used in neato in fdp i think, so check on that first
+        c.attach_attrs(graph.g);
+    }
+
+    pub fn layoutEdges(graph: *Graph) !void {
+        log.info("Layout (edges)", .{});
+
+        // Need this, otherwise the coordinates jump around
+        _ = c.agsafeset(graph.g, @constCast("ratio"), @constCast(""), @constCast(""));
+
+        // Clear edge positions
+        var node_iter = graph.nodeIterator();
+        while (node_iter.next()) |node| {
+            var edge_iter = node.edgeIterator(graph);
+            while (edge_iter.next()) |edge| {
+                edge.setAttribute("pos", "", "");
+            }
+        }
+        
+        graph.freeLayout();
+
+        const rc = c.gvLayout(graph.gvc, graph.g, @ptrCast(@constCast("nop2")));
+        if (rc != 0) {
+            log.err("Failed to layout edges: errno {d}", .{rc});
+            return error.LayoutFailed;
+        }
+        graph.has_layout = true;
         c.attach_attrs(graph.g);
     }
 

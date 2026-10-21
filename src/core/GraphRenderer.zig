@@ -258,8 +258,14 @@ pub fn mouseMove(self: *Self, screen_x: f32, screen_y: f32) bool {
             .pan_camera => {
                 self.pan(screen_x - last_pos.x, screen_y - last_pos.y);
             },
-            .drag_node => {},
+            .drag_node => |*drag_node| {
+                const node: graphviz.Node = .{ .cnode = drag_node.cnode };
+                node.setPos(world_pos.x, world_pos.y);
+                self.graph.layoutEdges() catch {};
+                self.state.dirty = true;
+            },
             .assign_parent => |*assign| {
+                // TODO Holding mod flips arrow
                 blk: {
                     if (self.getNodeAt(screen_x, screen_y)) |node| {
                         if (assign.child.cnode != node.cnode) {
@@ -348,6 +354,7 @@ pub fn mouseUp(self: *Self, screen_x: f32, screen_y: f32) ?Action {
                     return null;
                 action = .{ .assign_parent = .{ .child = child_id, .parent = parent_id } };
             },
+            .drag_node => self.graph.layoutEdges() catch {},
             else => {},
         }
     } else {
