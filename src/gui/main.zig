@@ -122,7 +122,10 @@ pub fn appFrame() !dvui.App.Result {
         } else |_| {}
     }
 
-    var box = dvui.box(@src(), .{}, .{ .rect = safe_area });
+    var box = if (safe_area) |area|
+        dvui.box(@src(), .{}, .{ .rect = area })
+    else
+        dvui.box(@src(), .{}, .{ .expand = .both });
     defer box.deinit();
 
     switch (view) {

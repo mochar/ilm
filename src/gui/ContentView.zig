@@ -95,6 +95,9 @@ fn renderTabs(self: *Self, size: gui.ScreenSize) void {
             .border = .all(0.0),
             .font = dvui.Font.theme(.mono).larger(4.5),
             .color_text = if (is_selected) null else .{ .color = .gray },
+            .color_text_hover = if (is_selected)
+                .{ .color = dvui.themeGet().text }
+            else if (dvui.themeGet().text_hover) |c| .{ .color = c } else null,
         };
         if (dvui.button(@src(), tab_name, .{ .draw_focus = false }, tab_opts)) {
             self.tab = tab_index;
@@ -103,10 +106,19 @@ fn renderTabs(self: *Self, size: gui.ScreenSize) void {
 
     _ = dvui.spacer(@src(), .{ .expand = .horizontal });
 
-    if (dvui.button(@src(), "Sync", .{}, .{ .padding = .all(4.0) })) {
-        var iter = self.core.router.connections.peers.valueIterator();
-        while (iter.next()) |peer| {
-            self.core.router.sendSyncRequest(peer.*.id) catch {};
+    var menu = dvui.menu(@src(), .horizontal, .{ .expand = .vertical });
+    defer menu.deinit();
+
+    if (dvui.menuItemIcon(@src(), "dots", dvui.entypo.dots_three_vertical, .{ .submenu = true, .focus_as_outline = true }, .{ .expand = .vertical, .background = false, .gravity_y = 0.5, .margin = .{ .w = 6 } })) |r| {
+        var float_menu = dvui.floatingMenu(@src(), .{ .from = r }, .{});
+        defer float_menu.deinit();
+
+        if (dvui.menuItemLabel(@src(), "Sync with peers", .{}, .{})) |_| {
+            var iter = self.core.router.connections.peers.valueIterator();
+            while (iter.next()) |peer| {
+                self.core.router.sendSyncRequest(peer.*.id) catch {};
+            }
+            float_menu.close();
         }
     }
 }

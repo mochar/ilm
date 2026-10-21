@@ -132,6 +132,7 @@ pub const Obsidian = struct {
             .fill_press = (Color.HSLuv{ .s = 0, .l = 72 }).color(),
             .text = fg_main,
             .text_select = .{ .r = 0x91, .g = 0xbc, .b = 0xf0 },
+            .text_hover = fg_accent,
             .border = (Color.HSLuv{ .s = 0, .l = 63 }).color(),
 
             .control = .{
