@@ -65,7 +65,6 @@ fn onPeerEvent(window_opaque: ?*anyopaque, event: ilm.p2p.Router.Event) void {
 
 pub fn render(self: *Self) void {
     const screen_size: gui.ScreenSize = .get();
-
     if (screen_size.width == .compact) {
         self.renderContent();
         self.renderTabs(screen_size);
@@ -76,11 +75,14 @@ pub fn render(self: *Self) void {
 }
 
 fn renderTabs(self: *Self, size: gui.ScreenSize) void {
-    _ = size;
     var box = dvui.box(
         @src(),
         .{ .dir = .horizontal },
-        .{ .expand = .horizontal, .background = true },
+        .{
+            .expand = .horizontal,
+            .background = true,
+            .padding = if (size.width == .compact) .{ .h = 6, .y = 6 } else null,
+        },
     );
     defer box.deinit();
 
@@ -92,7 +94,6 @@ fn renderTabs(self: *Self, size: gui.ScreenSize) void {
             .background = false,
             .border = .all(0.0),
             .font = dvui.Font.theme(.mono).larger(4.5),
-            // .font = dvui.Font.theme(.title).larger(2.0),
             .color_text = if (is_selected) null else .{ .color = .gray },
         };
         if (dvui.button(@src(), tab_name, .{ .draw_focus = false }, tab_opts)) {

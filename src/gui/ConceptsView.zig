@@ -249,28 +249,53 @@ pub fn render(self: *Self) void {
 
     const screen_size: gui.ScreenSize = .get();
     const is_wide = screen_size.width != .compact;
-    var hbox = dvui.box(@src(), .{
-        .dir = if (is_wide) .horizontal else .vertical,
-        .equal_space = !is_wide,
-    }, .{ .expand = .both });
-    defer hbox.deinit();
+
+    var box = dvui.box(@src(), .{}, .{ .expand = .both });
+    defer box.deinit();
+
+    const ratio = if (is_wide)
+        dvui.dataGetPtrDefault(null, box.data().id, "concepts_view_ratio_wide", f32, 0.3)
+    else
+        dvui.dataGetPtrDefault(null, box.data().id, "concepts_view_ratio", f32, 0.7);
+    var paned = dvui.paned(@src(), .{
+        .direction = if (is_wide) .horizontal else .vertical,
+        .split_ratio = ratio,
+        .uncollapse_ratio = ratio.*,
+        .collapsed_size = 0,
+        .handle_margin = 4,
+        .handle_size = if (is_wide) 4 else 8,
+        .handle_dynamic = .{
+            .handle_size_max = if (is_wide) 4 else 8,
+            .distance_max = if (is_wide) 40 else 99999,
+        },
+    }, .{
+        .expand = .both,
+        .background = true,
+    });
+    defer paned.deinit();
 
     if (is_wide) {
-        self.renderSidebar(is_wide);
-        self.renderGraph();
+        if (paned.showFirst())
+            self.renderSidebar(is_wide);
+        if (paned.showSecond())
+            self.renderGraph();
     } else {
-        self.renderGraph();
-        self.renderSidebar(is_wide);
+        if (paned.showFirst())
+            self.renderGraph();
+        if (paned.showSecond())
+            self.renderSidebar(is_wide);
     }
 }
 
 fn renderSidebar(self: *Self, is_wide: bool) void {
-    const box_width = dvui.windowRect().w * 0.3;
+    _ = is_wide; // autofix
+    // const box_width = dvui.windowRect().w * 0.3;
     var box = dvui.box(@src(), .{}, .{
         .background = true,
-        .expand = if (is_wide) .vertical else .both,
-        .min_size_content = .width(box_width),
-        .max_size_content = .width(box_width),
+        .expand = .both,
+        // .expand = if (is_wide) .vertical else .both,
+        // .min_size_content = .width(box_width),
+        // .max_size_content = .width(box_width),
     });
     defer box.deinit();
     if (self.viewing == null) {
