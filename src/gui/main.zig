@@ -26,7 +26,7 @@ pub const dvui_app: dvui.App = .{
     .config = .{
         .options = .{
             .size = .{ .w = 800.0, .h = 600.0 },
-            .min_size = .{ .w = 250.0, .h = 350.0 },
+            // .min_size = .{ .w = 250.0, .h = 350.0 },
             .title = "ilm",
         },
     },
@@ -72,23 +72,20 @@ pub fn appInit(win: *dvui.Window) !void {
     // _ = sdl.c.SDL_SetHint(sdl.c.SDL_HINT_TOUCH_MOUSE_EVENTS, "1");
     // _ = sdl.c.SDL_SetHint(sdl.c.SDL_HINT_MOUSE_TOUCH_EVENTS, "1");
 
-    // TODO Find out how to find out if dark or light mode
-    if (std.mem.eql(u8, win.theme.name, "Adwaita Light")) {
-        win.themeSet(themes.Papyrus.light);
-    } else {
+    if (win.theme.dark) {
         win.themeSet(themes.Obsidian.dark);
+    } else {
+        win.themeSet(themes.Papyrus.light);
     }
 
     try dvui.addFont("dejavu sans", assets.fonts.dejavu_sans, null);
 
     var data_dir: ?[]const u8 = null;
     if (builtin.abi == .android) {
-        if (sdl.c.SDL_GetPrefPath("org.libsdl", "ilm")) |c_str| {
-            data_dir = std.mem.span(c_str);
-        } else {
+        data_dir = android.getPrefPath() orelse {
             dvui.toast(@src(), .{ .message = "Failed to find prefpath" });
             return;
-        }
+        };
     }
 
     if (data_dir) |dir| {
@@ -115,15 +112,17 @@ pub fn appDeinit(win: *dvui.Window) void {
 }
 
 pub fn appFrame() !dvui.App.Result {
-    // Eatchs pinch events, cannot use it downstream...
-    // var scaler = dvui.scale(
-    //     @src(),
-    //     .{ .scale = &dvui.currentWindow().content_scale, .pinch_zoom = .global },
-    //     .{ .rect = .cast(dvui.windowRect()) },
-    // );
-    // scaler.deinit();
+    // Get safe area rect on android
+    var safe_area: ?dvui.Rect = null;
+    if (builtin.abi.isAndroid()) {
+        const window = dvui.currentWindow();
+        if (android.getSafeArea(window)) |area| {
+            const wrs = window.rectScale();
+            safe_area = wrs.rectFromPhysical(area);
+        } else |_| {}
+    }
 
-    var box = dvui.box(@src(), .{}, .{ .expand = .both });
+    var box = dvui.box(@src(), .{}, .{ .rect = safe_area });
     defer box.deinit();
 
     switch (view) {

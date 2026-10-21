@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const dvui = @import("dvui");
+const sdl = @import("sdl-backend");
 
 // ** Main
 // For android we build a static lib, so zig's start.zig never runs
@@ -64,4 +65,24 @@ pub fn logFn(
     };
     const text = std.fmt.bufPrintZ(&android_log_buf, format, args) catch "OOM";
     _ = __android_log_write(prio, @ptrCast(@tagName(scope)), text);
+}
+
+// ** SDL
+
+pub fn getPrefPath() ?[]const u8 {
+    if (sdl.c.SDL_GetPrefPath("org.libsdl", "ilm")) |c_str|
+        return std.mem.span(c_str);
+    return null;
+}
+
+pub fn getSafeArea(win: *dvui.Window) !dvui.Rect.Physical {
+    var rect: sdl.c.struct_SDL_Rect = .{};
+    const ok = sdl.c.SDL_GetWindowSafeArea(win.backend.impl.window, &rect);
+    if (!ok) return error.SafeArea;
+    return .{
+        .x = @floatFromInt(rect.x),
+        .y = @floatFromInt(rect.y),
+        .w = @floatFromInt(rect.w),
+        .h = @floatFromInt(rect.h),
+    };
 }
